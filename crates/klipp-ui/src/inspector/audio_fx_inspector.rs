@@ -1,3 +1,4 @@
+use crate::colour32::Colour029;
 use crate::theme::KlippTheme;
 use crate::widgets::scrubby_param::{scrubby_param_row, KeyframeState};
 use klipp_audio::ladspa::LadspaPluginInfo;
@@ -471,7 +472,7 @@ pub fn show(
                         .color(theme.text_accent),
                 )
                 .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(1.0_f32, theme.accent.linear_multiply(0.5))),
+                .stroke(egui::Stroke::new(1.0_f32, theme.accent.lin_mul(0.5))),
             );
             let popup_id = ui.id().with("add_audio_fx_popup");
             if btn.clicked() {
@@ -528,7 +529,7 @@ pub fn show_content(
                         .color(theme.text_accent),
                 )
                 .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(1.0_f32, theme.accent.linear_multiply(0.5))),
+                .stroke(egui::Stroke::new(1.0_f32, theme.accent.lin_mul(0.5))),
             );
             let popup_id = ui.id().with("add_audio_fx_popup_card");
             if btn.clicked() {

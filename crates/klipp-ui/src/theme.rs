@@ -403,7 +403,7 @@ impl KlippTheme {
     pub fn role_color(&self, roles: &klipp_core::roles::RoleSet, role: Option<&klipp_core::roles::RoleRef>) -> Color32 {
         let Some(role) = role else { return self.role_broll };
         if let Some([r, g, b, a]) = roles.colour(role) {
-            return Color32::from_rgba_unmultiplied(r, g, b, a);
+            return crate::colour32::rgba(r, g, b, a);
         }
         let palette = [self.role_dialogue, self.role_music, self.role_sfx, self.role_graphics, self.role_voiceover, self.role_ambience, self.role_foley];
         roles.palette_slot(role).map_or(self.role_broll, |i| palette[i % palette.len()])

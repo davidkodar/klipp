@@ -1547,7 +1547,7 @@ impl KlippApp {
                     if let Ok((rgba, w, h)) = klipp_media::disk_cache::load_thumbnail_cache(&key, crate::browser::FILE_THUMB_MAX_WIDTH) {
                         let pixels: Vec<egui::Color32> = rgba
                             .chunks_exact(4)
-                            .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                            .map(|c| crate::colour32::rgba(c[0], c[1], c[2], c[3]))
                             .collect();
                         let image = egui::ColorImage::new([w as usize, h as usize], pixels);
                         if let Some(old) = self.state.file_info_thumb.take() {
@@ -1680,7 +1680,7 @@ impl KlippApp {
                 {
                     let pixels: Vec<egui::Color32> = rgba
                         .chunks_exact(4)
-                        .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                        .map(|c| crate::colour32::rgba(c[0], c[1], c[2], c[3]))
                         .collect();
                     let image = egui::ColorImage::new([w as usize, h as usize], pixels);
                     if let Some(old) = self.state.quick_look_texture.take() {
@@ -1742,7 +1742,7 @@ impl KlippApp {
                     ui.painter().rect_filled(
                         wave_rect,
                         8.0,
-                        egui::Color32::from_rgba_unmultiplied(30, 30, 36, 200),
+                        crate::colour32::rgba(30, 30, 36, 200),
                     );
                     // Large audio icon in center.
                     ui.painter().text(

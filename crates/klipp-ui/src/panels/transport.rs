@@ -413,7 +413,7 @@ impl TransportBar {
                         .size(10.0)
                         .strong()
                         .color(theme.marker_error)
-                        .background_color(egui::Color32::from_rgba_unmultiplied(theme.marker_error.r(), theme.marker_error.g(), theme.marker_error.b(), 30)),
+                        .background_color(crate::colour32::rgba(theme.marker_error.r(), theme.marker_error.g(), theme.marker_error.b(), 30)),
                 )
                 .on_hover_text(
                     "Klipp's audio is muted at the OS level.\n\

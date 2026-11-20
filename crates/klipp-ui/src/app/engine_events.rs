@@ -450,7 +450,7 @@ impl KlippApp {
                     }
                     let pixels: Vec<egui::Color32> = rgba
                         .chunks_exact(4)
-                        .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                        .map(|c| crate::colour32::rgba(c[0], c[1], c[2], c[3]))
                         .collect();
                     let img = egui::ColorImage::new([width as usize, height as usize], pixels);
                     let tex = ctx.load_texture(

@@ -317,7 +317,7 @@ fn draw_chart_tool(ui: &mut egui::Ui, state: &mut AppState, image_rect: egui::Re
     let unit = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
     if let Some(map) = klipp_core::color_grade::PlaneMap::from_quads(&unit, &tool.corners) {
         let at = |u: f32, v: f32| map.apply((u, v)).map(|(x, y)| to_screen([x, y]));
-        let thin = egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(90, 200, 255, 170));
+        let thin = egui::Stroke::new(1.0_f32, crate::colour32::rgba(90, 200, 255, 170));
         let (cols, rows) = (klipp_color::chart::COLS, klipp_color::chart::ROWS);
         for i in 0..=cols {
             let u = i as f32 / cols as f32;
@@ -1169,9 +1169,9 @@ impl ViewerPanel {
             logo_tex.id(),
             logo_rect,
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            egui::Color32::from_white_alpha(102),
+            crate::colour32::white(102),
         );
-        let logo_color = egui::Color32::from_rgba_unmultiplied(
+        let logo_color = crate::colour32::rgba(
             theme.accent.r(), theme.accent.g(), theme.accent.b(), 102,
         );
         ui.painter().text(
@@ -1397,7 +1397,7 @@ impl ViewerPanel {
         let pill = |ui: &egui::Ui, pos: egui::Pos2, align: egui::Align2, text: &str| {
             let galley = ui.painter().layout_no_wrap(text.to_string(), label_font.clone(), egui::Color32::WHITE);
             let rect = align.anchor_size(pos, galley.size() + egui::vec2(10.0, 4.0));
-            ui.painter().rect_filled(rect, 3.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 170));
+            ui.painter().rect_filled(rect, 3.0, crate::colour32::rgba(0, 0, 0, 170));
             ui.painter().galley(rect.min + egui::vec2(5.0, 2.0), galley, egui::Color32::WHITE);
         };
         pill(ui, egui::pos2(split_x - 8.0, label_y), egui::Align2::RIGHT_CENTER, &left_label);
@@ -1562,7 +1562,7 @@ impl ViewerPanel {
                 egui::Align2::RIGHT_TOP,
                 "PREVIEW",
                 egui::FontId::monospace(10.0),
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140),
+                crate::colour32::rgba(255, 255, 255, 140),
             );
         } else if state.use_proxies && frame.current_media_info.is_some_and(|(_, _, proxy_ready)| proxy_ready) {
             let badge_pos = egui::pos2(image_rect.right() - 8.0, image_rect.top() + 8.0);
@@ -1713,9 +1713,9 @@ impl ViewerPanel {
                 let box_w = (sample_radius as f32 * 2.0 + 1.0) * scale_x;
                 let box_h = (sample_radius as f32 * 2.0 + 1.0) * scale_y;
                 let cursor_color = if state.scope_cursor_locked {
-                    egui::Color32::from_rgba_unmultiplied(232, 160, 32, 220)
+                    crate::colour32::rgba(232, 160, 32, 220)
                 } else {
-                    egui::Color32::from_rgba_unmultiplied(255, 200, 50, 200)
+                    crate::colour32::rgba(255, 200, 50, 200)
                 };
                 let box_rect = egui::Rect::from_center_size(pos, egui::vec2(box_w, box_h));
                 painter.rect_stroke(box_rect, 0.0, egui::Stroke::new(1.0_f32, cursor_color), egui::StrokeKind::Outside);
@@ -2182,7 +2182,7 @@ impl ViewerPanel {
         painter.rect_stroke(bb.expand(4.0), crate::theme::radius::CONTROL, egui::Stroke::new(1.5_f32, theme.accent), egui::StrokeKind::Outside);
         let positions = &state.viewer_char_positions;
         if let Some((s, e)) = state.viewer_text_selection {
-            let fill = egui::Color32::from_rgba_unmultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 90);
+            let fill = crate::colour32::rgba(theme.accent.r(), theme.accent.g(), theme.accent.b(), 90);
             for cp in positions.iter().filter(|cp| cp.char_index >= s && cp.char_index < e) {
                 // A vertical cell runs down its column (#1704).
                 let (across, down) = if cp.vertical { (cp.height, cp.advance) } else { (cp.advance, cp.height) };
@@ -2723,7 +2723,7 @@ impl ViewerPanel {
                             klipp_core::MediaMarkerKind::Analysis => {
                                 // Analysis marks are quieter than the editor's: a
                                 // thin grey line for a cut, a faint band for a silence.
-                                let colour = egui::Color32::from_rgba_unmultiplied(170, 180, 200, 110);
+                                let colour = crate::colour32::rgba(170, 180, 200, 110);
                                 if m.is_range() {
                                     ui.painter().rect_filled(
                                         egui::Rect::from_min_max(egui::pos2(x_of(m.secs), track_rect.min.y + 1.0), egui::pos2(x_of(m.end_secs()), track_rect.max.y - 1.0)),
@@ -2741,9 +2741,9 @@ impl ViewerPanel {
                             }
                             kind => {
                                 let colour = if kind == klipp_core::MediaMarkerKind::Favourite {
-                                    egui::Color32::from_rgba_unmultiplied(80, 200, 120, 170)
+                                    crate::colour32::rgba(80, 200, 120, 170)
                                 } else {
-                                    egui::Color32::from_rgba_unmultiplied(220, 70, 70, 170)
+                                    crate::colour32::rgba(220, 70, 70, 170)
                                 };
                                 ui.painter().rect_filled(
                                     egui::Rect::from_min_max(egui::pos2(x_of(m.secs), track_rect.min.y - 2.0), egui::pos2(x_of(m.end_secs()), track_rect.max.y + 2.0)),
@@ -2802,7 +2802,7 @@ impl ViewerPanel {
             let head_x = track_rect.min.x + fill_w;
             let head_center = egui::pos2(head_x, rect.center().y);
             let ph = theme.playhead;
-            ui.painter().circle_filled(head_center, 7.0, egui::Color32::from_rgba_unmultiplied(ph.r(), ph.g(), ph.b(), 60));
+            ui.painter().circle_filled(head_center, 7.0, crate::colour32::rgba(ph.r(), ph.g(), ph.b(), 60));
             ui.painter().circle_filled(head_center, 5.0, ph);
         }
 
@@ -3744,7 +3744,7 @@ impl ViewerPanel {
             // "TRACKING" label top-left
             let label_pos = egui::pos2(image_rect.left() + 8.0, image_rect.top() + 8.0);
             let label_bg = egui::Rect::from_min_size(label_pos, egui::vec2(80.0, 18.0));
-            ui.painter().rect_filled(label_bg, 2.0, egui::Color32::from_rgba_unmultiplied(
+            ui.painter().rect_filled(label_bg, 2.0, crate::colour32::rgba(
                 theme.accent.r(), theme.accent.g(), theme.accent.b(), 200,
             ));
             ui.painter().text(
@@ -3805,10 +3805,10 @@ impl ViewerPanel {
                     };
 
                     if let Some((nx, ny)) = pos {
-                        let color = egui::Color32::from_rgba_unmultiplied(
+                        let color = crate::colour32::rgba(
                             tp.color[0], tp.color[1], tp.color[2], tp.color[3],
                         );
-                        let dim_color = egui::Color32::from_rgba_unmultiplied(
+                        let dim_color = crate::colour32::rgba(
                             tp.color[0], tp.color[1], tp.color[2], 50,
                         );
 
@@ -4543,7 +4543,7 @@ impl ViewerPanel {
                 let painter = ui.painter_at(image_rect);
                 let galley = painter.layout(why.hint().to_string(), egui::FontId::proportional(crate::theme::type_scale::CAPTION), egui::Color32::WHITE, (image_rect.width() - 24.0).max(40.0));
                 let r = egui::Rect::from_min_size(image_rect.left_top() + egui::vec2(12.0, 12.0), galley.size() + egui::vec2(12.0, 6.0));
-                painter.rect_filled(r, 3.0, egui::Color32::from_rgba_unmultiplied(20, 20, 24, 220));
+                painter.rect_filled(r, 3.0, crate::colour32::rgba(20, 20, 24, 220));
                 painter.galley(r.min + egui::vec2(6.0, 3.0), galley, egui::Color32::WHITE);
                 return;
             }
@@ -4556,7 +4556,7 @@ impl ViewerPanel {
         // Object-editor colours are deliberately fixed (not theme-
         // The theme's accent, as every selection in Klipp is drawn.
         let accent = ui.visuals().selection.stroke.color;
-        let inactive_stroke = egui::Color32::from_rgba_unmultiplied(220, 220, 230, 180);
+        let inactive_stroke = crate::colour32::rgba(220, 220, 230, 180);
         let handle_fill = egui::Color32::from_rgb(20, 20, 24);
         let painter = ui.painter_at(image_rect);
 
@@ -4823,7 +4823,7 @@ impl ViewerPanel {
                             at.y = p.y - 14.0 - size.y;
                         }
                         let r = egui::Rect::from_min_size(at, size);
-                        painter.rect_filled(r, 2.0, egui::Color32::from_rgba_unmultiplied(20, 20, 24, 220));
+                        painter.rect_filled(r, 2.0, crate::colour32::rgba(20, 20, 24, 220));
                         painter.galley(r.min + pad, galley, egui::Color32::WHITE);
                     }
                     let new_font_size = if matches!(
@@ -5257,14 +5257,14 @@ impl ViewerPanel {
         let painter = viewer_overlay_painter(ui, viewer_rect);
 
         // Draw bounding box outline
-        let outline_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180);
+        let outline_color = crate::colour32::rgba(255, 255, 255, 180);
         let outline_stroke = egui::Stroke::new(1.5_f32, outline_color);
         for i in 0..4 {
             painter.line_segment([corners[i], corners[(i + 1) % 4]], outline_stroke);
         }
 
         // Draw diagonal crosshairs through center (subtle)
-        let cross_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 60);
+        let cross_color = crate::colour32::rgba(255, 255, 255, 60);
         let cross_stroke = egui::Stroke::new(0.5_f32, cross_color);
         let mid_top = egui::pos2(
             (corners[0].x + corners[1].x) * 0.5,
@@ -5317,7 +5317,7 @@ impl ViewerPanel {
             egui::pos2(pos_screen.x, pos_screen.y + anchor_diamond),
             egui::pos2(pos_screen.x - anchor_diamond, pos_screen.y),
         ];
-        let anchor_color = egui::Color32::from_rgba_unmultiplied(255, 200, 50, 220);
+        let anchor_color = crate::colour32::rgba(255, 200, 50, 220);
         for i in 0..4 {
             painter.line_segment(
                 [anchor_pts[i], anchor_pts[(i + 1) % 4]],
@@ -5685,7 +5685,7 @@ impl ViewerPanel {
             // The rectangle being drawn.
             if let Some((6, from, _)) = tool.drag.filter(|_| down) {
                 let r = egui::Rect::from_two_pos(from, p);
-                painter.rect(r, 0.0, egui::Color32::from_rgba_unmultiplied(255, 90, 90, 40), egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(255, 110, 110)), egui::StrokeKind::Outside);
+                painter.rect(r, 0.0, crate::colour32::rgba(255, 90, 90, 40), egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(255, 110, 110)), egui::StrokeKind::Outside);
             }
         }
         if !down {
@@ -5697,7 +5697,7 @@ impl ViewerPanel {
         for e in &tool.exclude {
             let pts = to_screen(e);
             let strong = tool.edit == SurfaceEdit::LeaveOut;
-            painter.add(egui::Shape::convex_polygon(pts.clone(), egui::Color32::from_rgba_unmultiplied(255, 90, 90, if strong { 48 } else { 24 }), egui::Stroke::NONE));
+            painter.add(egui::Shape::convex_polygon(pts.clone(), crate::colour32::rgba(255, 90, 90, if strong { 48 } else { 24 }), egui::Stroke::NONE));
             painter.add(egui::Shape::closed_line(pts, egui::Stroke::new(if strong { 1.5_f32 } else { 1.0 }, leave_out)));
         }
         let area = egui::Color32::from_rgb(255, 190, 70);
@@ -5715,7 +5715,7 @@ impl ViewerPanel {
         let accent = egui::Color32::from_rgb(90, 200, 255);
         let corners = to_screen(&tool.corners);
         let pinning = tool.edit == SurfaceEdit::Corners || (tool.edit == SurfaceEdit::Area && tool.track.is_none());
-        painter.add(egui::Shape::convex_polygon(corners.clone(), egui::Color32::from_rgba_unmultiplied(90, 200, 255, 28), egui::Stroke::NONE));
+        painter.add(egui::Shape::convex_polygon(corners.clone(), crate::colour32::rgba(90, 200, 255, 28), egui::Stroke::NONE));
         painter.add(egui::Shape::closed_line(corners.clone(), egui::Stroke::new(1.5_f32, if tool.edit == SurfaceEdit::Area && tool.track.is_none() { area } else { accent })));
         if pinning {
             for (i, p) in corners.iter().enumerate() {
@@ -5758,7 +5758,7 @@ impl ViewerPanel {
         let screen: Vec<egui::Pos2> = quad.iter().map(|c| viewer_norm_to_screen(image_rect, c[0], c[1])).collect();
         let painter = ui.painter().with_clip_rect(ui.clip_rect());
         let accent = egui::Color32::from_rgb(90, 200, 255);
-        painter.add(egui::Shape::convex_polygon(screen.clone(), egui::Color32::from_rgba_unmultiplied(90, 200, 255, 60), egui::Stroke::new(2.0_f32, accent)));
+        painter.add(egui::Shape::convex_polygon(screen.clone(), crate::colour32::rgba(90, 200, 255, 60), egui::Stroke::new(2.0_f32, accent)));
         painter.text(screen[0] + egui::vec2(0.0, -4.0), egui::Align2::LEFT_BOTTOM, format!("Pin to \u{201c}{}\u{201d}", surface.name), egui::FontId::proportional(12.0), accent);
         // Let go here: pinned, and the drag is over before the timeline
         // can take it as a drop of its own.
@@ -5904,7 +5904,7 @@ impl ViewerPanel {
                 let painter = ui.painter_at(image_rect);
                 let galley = painter.layout("This clip is placed in a way the pin's corners can't follow here: set them in the inspector.".to_string(), egui::FontId::proportional(crate::theme::type_scale::CAPTION), egui::Color32::WHITE, image_rect.width() - 24.0);
                 let r = egui::Rect::from_min_size(image_rect.left_top() + egui::vec2(12.0, 12.0), galley.size() + egui::vec2(12.0, 6.0));
-                painter.rect_filled(r, 3.0, egui::Color32::from_rgba_unmultiplied(20, 20, 24, 220));
+                painter.rect_filled(r, 3.0, crate::colour32::rgba(20, 20, 24, 220));
                 painter.galley(r.min + egui::vec2(6.0, 3.0), galley, egui::Color32::WHITE);
                 return;
             }
@@ -6402,7 +6402,7 @@ impl ViewerPanel {
         if trigger_visible {
             let hovered = resp.hovered();
             let bg_alpha = if hovered { 230 } else { 160 };
-            let bg = egui::Color32::from_rgba_unmultiplied(
+            let bg = crate::colour32::rgba(
                 theme.bg_panel.r(),
                 theme.bg_panel.g(),
                 theme.bg_panel.b(),
@@ -6411,7 +6411,7 @@ impl ViewerPanel {
             let painter = ui.painter();
             painter.rect_filled(trigger_rect, BTN_SIZE * 0.25, bg);
             let stroke_alpha = if hovered { 200 } else { 90 };
-            let stroke_col = egui::Color32::from_rgba_unmultiplied(
+            let stroke_col = crate::colour32::rgba(
                 theme.text_secondary.r(),
                 theme.text_secondary.g(),
                 theme.text_secondary.b(),
@@ -6963,7 +6963,7 @@ impl ViewerPanel {
             );
             ui.painter().rect_filled(
                 fill_rect, 0.0,
-                egui::Color32::from_rgba_unmultiplied(
+                crate::colour32::rgba(
                     theme.accent.r(), theme.accent.g(), theme.accent.b(), 60,
                 ),
             );
@@ -7062,7 +7062,7 @@ fn draw_platform_overlay(painter: &egui::Painter, platform: &crate::platform_ove
         let size = if image.width() / image.height() > want { egui::vec2(image.height() * want, image.height()) } else { egui::vec2(image.width(), image.width() / want) };
         egui::Rect::from_center_size(image.center(), size)
     };
-    let colour = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 170);
+    let colour = crate::colour32::rgba(255, 255, 255, 170);
     let font = egui::FontId::proportional(10.0);
     if frame != image {
         painter.rect_stroke(frame, 0.0, egui::Stroke::new(1.0_f32, colour), egui::StrokeKind::Outside);
@@ -7074,7 +7074,7 @@ fn draw_platform_overlay(painter: &egui::Painter, platform: &crate::platform_ove
     for z in &platform.zones {
         let [x, y, w, h] = z.rect;
         let r = egui::Rect::from_min_size(frame.min + egui::vec2(x * frame.width(), y * frame.height()), egui::vec2(w * frame.width(), h * frame.height()));
-        painter.rect_filled(r, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 40));
+        painter.rect_filled(r, 0.0, crate::colour32::rgba(0, 0, 0, 40));
         painter.rect_stroke(r, 0.0, egui::Stroke::new(1.0_f32, colour), egui::StrokeKind::Outside);
         let galley = painter.layout(z.label.clone(), font.clone(), colour, (r.width() - 8.0).max(24.0));
         inside.galley(r.left_top() + egui::vec2(4.0, 2.0), galley, colour);

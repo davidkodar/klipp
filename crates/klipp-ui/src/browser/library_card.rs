@@ -89,12 +89,12 @@ pub fn favourite_star(ui: &mut egui::Ui, theme: &KlippTheme, card: &egui::Respon
     if is_fav || card.hovered() || star.hovered() {
         if grid {
             let alpha = if is_fav { 180 } else { 130 };
-            ui.painter().rect_filled(star_rect, 4.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, alpha));
+            ui.painter().rect_filled(star_rect, 4.0, crate::colour32::rgba(0, 0, 0, alpha));
         }
         let colour = if is_fav || star.hovered() {
             egui::Color32::from_rgb(255, 215, 106)
         } else if grid {
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200)
+            crate::colour32::rgba(255, 255, 255, 200)
         } else {
             theme.text_dim
         };

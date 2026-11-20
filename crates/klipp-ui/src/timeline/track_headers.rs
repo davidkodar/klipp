@@ -194,7 +194,7 @@ pub fn show(
         let (badge_fill, badge_text) = if track.targeted {
             (badge_color, egui::Color32::WHITE)
         } else {
-            (badge_color.gamma_multiply(0.3), egui::Color32::from_white_alpha(110))
+            (badge_color.gamma_multiply(0.3), crate::colour32::white(110))
         };
         ui.painter().rect_filled(badge_rect, 2.0, badge_fill);
         ui.painter().text(

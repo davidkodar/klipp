@@ -1,3 +1,4 @@
+use crate::colour32::Colour029;
 use crate::widgets::colour_field::ColourField;
 use klipp_timeline::GradeAccess;
 use crate::state::AppState;
@@ -1024,14 +1025,14 @@ fn show_clip_video(
                             let alpha = if (speed_line - 1.0).abs() < 0.01 { 50 } else { 20 };
                             gp.line_segment(
                                 [egui::pos2(inner.left(), y), egui::pos2(inner.right(), y)],
-                                egui::Stroke::new(0.5_f32, egui::Color32::from_white_alpha(alpha)),
+                                egui::Stroke::new(0.5_f32, crate::colour32::white(alpha)),
                             );
                             gp.text(
                                 egui::pos2(inner.left() + 2.0, y - 9.0),
                                 egui::Align2::LEFT_BOTTOM,
                                 format!("{}x", speed_line as i32),
                                 egui::FontId::proportional(10.0),
-                                egui::Color32::from_white_alpha(60),
+                                crate::colour32::white(60),
                             );
                         }
 
@@ -1052,7 +1053,7 @@ fn show_clip_video(
                             fill_pts.push(egui::pos2(inner.left(), inner.bottom()));
                             gp.add(egui::Shape::convex_polygon(
                                 fill_pts,
-                                egui::Color32::from_rgba_unmultiplied(theme.marker_info.r(), theme.marker_info.g(), theme.marker_info.b(), 15),
+                                crate::colour32::rgba(theme.marker_info.r(), theme.marker_info.g(), theme.marker_info.b(), 15),
                                 egui::Stroke::NONE,
                             ));
                         }
@@ -1433,7 +1434,7 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
                     let is_selected = selected_tp == Some(*idx);
                     let _row_resp = ui.horizontal(|ui| {
                         // Colored dot
-                        let dot_color = egui::Color32::from_rgba_unmultiplied(
+                        let dot_color = crate::colour32::rgba(
                             color[0], color[1], color[2], color[3],
                         );
                         let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
@@ -3542,7 +3543,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                     let btn_text = |label: &str| egui::RichText::new(label).size(11.0);
                     for (label, speed_val) in [("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0), ("400%", 4.0)] {
                         let is_active = (clip.speed.abs() - speed_val).abs() < 0.001;
-                        let fill = if is_active { theme.accent.linear_multiply(0.25) } else { theme.bg_raised };
+                        let fill = if is_active { theme.accent.lin_mul(0.25) } else { theme.bg_raised };
                         let stroke = if is_active {
                             egui::Stroke::new(1.0_f32, theme.accent)
                         } else {

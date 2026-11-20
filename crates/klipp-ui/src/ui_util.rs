@@ -106,7 +106,7 @@ fn decode_png_inner(bytes: &[u8]) -> egui::ColorImage {
     let pixels: Vec<egui::Color32> = match info.color_type {
         png::ColorType::Rgba => bytes
             .chunks_exact(4)
-            .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+            .map(|c| crate::colour32::rgba(c[0], c[1], c[2], c[3]))
             .collect(),
         png::ColorType::Rgb => bytes
             .chunks_exact(3)

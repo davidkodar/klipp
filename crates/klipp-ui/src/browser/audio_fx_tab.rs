@@ -1669,7 +1669,7 @@ fn audio_fx_row(
         // taller than the unselected rows next to it.
         const HIGHLIGHT_HEIGHT: f32 = 40.0; // ~icon-tile + 4px padding
         const HIGHLIGHT_INSET_X: f32 = 8.0;
-        let bg = egui::Color32::from_rgba_unmultiplied(
+        let bg = crate::colour32::rgba(
             theme.accent.r(),
             theme.accent.g(),
             theme.accent.b(),

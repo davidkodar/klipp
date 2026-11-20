@@ -1,3 +1,4 @@
+use crate::colour32::Colour029;
 use crate::widgets::menu::MenuRows;
 use crate::icons::Icon;
 use crate::state::AppState;
@@ -423,7 +424,7 @@ fn slider_row(
         ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
         ui.style_mut().visuals.widgets.active.bg_fill = egui::Color32::TRANSPARENT;
         ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
-        ui.style_mut().visuals.selection.bg_fill = theme.accent.linear_multiply(0.3);
+        ui.style_mut().visuals.selection.bg_fill = theme.accent.lin_mul(0.3);
 
         let dv = crate::widgets::number_field(value)
             .range(min..=max)
@@ -1020,7 +1021,7 @@ fn show_clip_audio(
                     egui::Button::new(
                         egui::RichText::new("Apply Auto Duck").size(11.0).color(theme.text_primary),
                     )
-                    .fill(theme.accent.linear_multiply(0.3))
+                    .fill(theme.accent.lin_mul(0.3))
                     .stroke(egui::Stroke::new(1.0_f32, theme.accent))
                     .min_size(egui::vec2(ui.available_width() - 14.0, 24.0)),
                 );

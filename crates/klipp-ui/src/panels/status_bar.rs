@@ -1,3 +1,4 @@
+use crate::colour32::Colour029;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_engine::PlaybackState;
@@ -112,7 +113,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
                     egui::RichText::new(format!("{pct}%"))
                         .size(10.0)
                         .monospace()
-                        .color(theme.text_secondary.linear_multiply(alpha)),
+                        .color(theme.text_secondary.lin_mul(alpha)),
                 );
 
                 // Progress bar
@@ -120,7 +121,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
                 let bar_h = 3.0;
                 let (bar_rect, _) =
                     ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
-                ui.painter().rect_filled(bar_rect, 2.0, theme.bg_raised.linear_multiply(alpha));
+                ui.painter().rect_filled(bar_rect, 2.0, theme.bg_raised.lin_mul(alpha));
                 let fill_w = (progress * bar_w).clamp(0.0, bar_w);
                 if fill_w > 0.0 {
                     ui.painter().rect_filled(
@@ -129,7 +130,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
                             egui::vec2(fill_w, bar_h),
                         ),
                         2.0,
-                        bar_color.linear_multiply(alpha),
+                        bar_color.lin_mul(alpha),
                     );
                 }
 

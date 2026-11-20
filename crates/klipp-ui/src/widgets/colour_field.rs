@@ -12,6 +12,7 @@
 //! `widgets/color_picker.rs` (egui 0.34, MIT OR Apache-2.0), so the field
 //! looks as it did.
 
+use crate::colour32::Colour029;
 use egui::ecolor::{Color32, Hsva, HsvaGamma, Rgba};
 use egui::epaint::{Mesh, Shape, Stroke, StrokeKind};
 use egui::{
@@ -40,10 +41,10 @@ pub trait ColourField {
 
 impl ColourField for Ui {
     fn colour_srgba(&mut self, colour: &mut Color32) -> Response {
-        let mut bytes = colour.to_srgba_unmultiplied();
+        let mut bytes = colour.unmul();
         let response = edit(self, &mut bytes, true);
         if response.changed() {
-            *colour = Color32::from_rgba_unmultiplied(bytes[0], bytes[1], bytes[2], bytes[3]);
+            *colour = crate::colour32::rgba(bytes[0], bytes[1], bytes[2], bytes[3]);
         }
         response
     }
@@ -99,7 +100,7 @@ fn edit(ui: &mut Ui, value: &mut [u8; 4], alpha: bool) -> Response {
 }
 
 fn shown([r, g, b, a]: [u8; 4]) -> Color32 {
-    Color32::from_rgba_unmultiplied(r, g, b, a)
+    crate::colour32::rgba(r, g, b, a)
 }
 
 /// The popup's contents. The hue, saturation and value the square and bars

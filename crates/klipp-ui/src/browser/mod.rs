@@ -2127,7 +2127,7 @@ impl BrowserPanel {
             }
             let pixels: Vec<egui::Color32> = result.rgba
                 .chunks_exact(4)
-                .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                .map(|c| crate::colour32::rgba(c[0], c[1], c[2], c[3]))
                 .collect();
             let image = egui::ColorImage::new([result.width as usize, result.height as usize], pixels);
             let name = format!("file_thumb_{}", result.path.display());
@@ -2196,7 +2196,7 @@ impl BrowserPanel {
             if !result.rgba.is_empty() && result.width > 0 && result.height > 0 {
                 let pixels: Vec<egui::Color32> = result.rgba
                     .chunks_exact(4)
-                    .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                    .map(|c| crate::colour32::rgba(c[0], c[1], c[2], c[3]))
                     .collect();
                 let image = egui::ColorImage::new([result.width as usize, result.height as usize], pixels);
                 let tex = crate::app::alloc_texture_logged(
@@ -2271,7 +2271,7 @@ impl BrowserPanel {
                         let pixels: Vec<egui::Color32> = rgba
                             .chunks_exact(4)
                             .map(|c| {
-                                egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+                                crate::colour32::rgba(c[0], c[1], c[2], c[3])
                             })
                             .collect();
                         let image = egui::ColorImage::new([w as usize, h as usize], pixels);
@@ -3488,7 +3488,7 @@ impl BrowserPanel {
                             let tint = if active_idx == Some(i) {
                                 egui::Color32::WHITE
                             } else {
-                                egui::Color32::from_rgba_unmultiplied(180, 180, 180, 255)
+                                crate::colour32::rgba(180, 180, 180, 255)
                             };
                             ui.painter().image(
                                 tex.id(),
@@ -3571,7 +3571,7 @@ impl BrowserPanel {
                                         egui::Align2::RIGHT_BOTTOM,
                                         format!("{}/{}", idx + 1, tiles.len()),
                                         egui::FontId::proportional(10.0),
-                                        egui::Color32::from_rgba_unmultiplied(220, 220, 220, 200),
+                                        crate::colour32::rgba(220, 220, 220, 200),
                                     );
                                 });
                         }

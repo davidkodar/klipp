@@ -267,7 +267,7 @@ pub fn paint_glyph_overlays(
         let is_hover = hover_index == Some(cp.char_index);
         let alpha: u8 = if is_snapped { 220 } else if is_hover { 170 } else { 70 };
         let stroke_w = if is_snapped { 1.5_f32 } else { 1.0_f32 };
-        let stroke_col = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), alpha);
+        let stroke_col = crate::colour32::rgba(accent.r(), accent.g(), accent.b(), alpha);
         painter.rect_stroke(rect, 0.0, Stroke::new(stroke_w, stroke_col), egui::StrokeKind::Outside);
         if is_snapped {
             // Centroid dot — confirms the snap visually even when

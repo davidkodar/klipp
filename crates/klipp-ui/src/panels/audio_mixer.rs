@@ -1,3 +1,4 @@
+use crate::colour32::Colour029;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -234,7 +235,7 @@ fn draw_lufs_bar(
                 egui::pos2(x, bottom - on_hi * h),
                 egui::pos2(x + bar_w, bottom - on_lo * h),
             ),
-            0.0, theme.marker_success.linear_multiply(0.10),
+            0.0, theme.marker_success.lin_mul(0.10),
         );
     }
 
@@ -243,7 +244,7 @@ fn draw_lufs_bar(
     if i_t > 0.0 {
         painter.rect_filled(
             egui::Rect::from_min_max(egui::pos2(x, bottom - i_t * h), egui::pos2(x + bar_w, bottom)),
-            0.0, lufs_bar_color(integrated, target, theme).linear_multiply(0.35),
+            0.0, lufs_bar_color(integrated, target, theme).lin_mul(0.35),
         );
     }
 
@@ -255,7 +256,7 @@ fn draw_lufs_bar(
                 egui::pos2(x + 1.0, bottom - st_t * h),
                 egui::pos2(x + bar_w - 1.0, bottom),
             ),
-            0.0, lufs_bar_color(short_term, target, theme).linear_multiply(0.55),
+            0.0, lufs_bar_color(short_term, target, theme).lin_mul(0.55),
         );
     }
 
@@ -267,7 +268,7 @@ fn draw_lufs_bar(
                 egui::pos2(x + 3.0, bottom - m_t * h),
                 egui::pos2(x + bar_w - 3.0, bottom),
             ),
-            0.0, lufs_bar_color(momentary, target, theme).linear_multiply(0.85),
+            0.0, lufs_bar_color(momentary, target, theme).lin_mul(0.85),
         );
     }
 
@@ -485,7 +486,7 @@ fn fader_strip(
                 egui::pos2(fill_l, pan_rect.center().y - 1.5),
                 egui::pos2(fill_r, pan_rect.center().y + 1.5),
             ),
-            1.0, theme.accent.linear_multiply(0.5),
+            1.0, theme.accent.lin_mul(0.5),
         );
     }
     // Thumb (rounded rect, bigger)

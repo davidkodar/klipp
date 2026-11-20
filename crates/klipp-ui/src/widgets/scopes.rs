@@ -90,7 +90,7 @@ fn val_to_y(val: f32, rect: &egui::Rect, scale: ScopeScale) -> f32 {
 /// The colour the legal range is marked in: a cool line, apart from the
 /// amber graticule.
 fn legal_colour(a: u8) -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(120, 200, 255, a)
+    crate::colour32::rgba(120, 200, 255, a)
 }
 
 /// The units a scope's graticule is drawn in: nits while the scopes
@@ -107,7 +107,7 @@ fn graticule_amber(theme: &KlippTheme, a: u8) -> egui::Color32 {
     let r = ((grid.r() as f32) * (1.0 - t) + 232.0 * t) as u8;
     let g = ((grid.g() as f32) * (1.0 - t) + 168.0 * t) as u8;
     let b = ((grid.b() as f32) * (1.0 - t) + 32.0 * t) as u8;
-    egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+    crate::colour32::rgba(r, g, b, a)
 }
 
 /// `rect` snapped to whole physical pixels, and its size in them. An image
@@ -197,7 +197,7 @@ pub(crate) fn draw_histogram_scale(
         }
         painter.line_segment(
             [egui::pos2(panel.min.x, panel.max.y), egui::pos2(panel.max.x, panel.max.y)],
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24)),
+            egui::Stroke::new(1.0_f32, crate::colour32::rgba(255, 255, 255, 24)),
         );
         // Labels under the image, as many as stay apart: every major in a
         // wide panel, every other in a narrow one, and always the ends.
@@ -299,14 +299,14 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, leg
     // Axis separator — 1px vertical at x=AXIS_W, rgba(255,255,255,0.08)
     painter.line_segment(
         [egui::pos2(rect.min.x + AXIS_W, rect.min.y), egui::pos2(rect.min.x + AXIS_W, rect.max.y - PAD_BOTTOM)],
-        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
+        egui::Stroke::new(1.0_f32, crate::colour32::rgba(255, 255, 255, 20)),
     );
 
     // Bottom baseline — horizontal at y=(height-PAD_BOTTOM), rgba(255,255,255,0.08)
     let bottom_y = rect.max.y - PAD_BOTTOM;
     painter.line_segment(
         [egui::pos2(rect.min.x + AXIS_W, bottom_y), egui::pos2(rect.max.x, bottom_y)],
-        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
+        egui::Stroke::new(1.0_f32, crate::colour32::rgba(255, 255, 255, 20)),
     );
 
     // Bottom ticks — DaVinci-style dense ruler row sitting INSIDE
@@ -354,7 +354,7 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, leg
             let x = trace_x0 + i as f32 * (section_w + gap) - gap / 2.0;
             painter.line_segment(
                 [egui::pos2(x, rect.min.y + PAD_TOP), egui::pos2(x, bottom_y)],
-                egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 13)),
+                egui::Stroke::new(0.5_f32, crate::colour32::rgba(255, 255, 255, 13)),
             );
         }
     }
@@ -520,7 +520,7 @@ pub fn show_scopes(
 
             // 1. Range rings at 25 / 50 / 75 % — subtle so they don't
             // compete with the trace.
-            let inner_ring_color = egui::Color32::from_rgba_unmultiplied(
+            let inner_ring_color = crate::colour32::rgba(
                 label_color.r(), label_color.g(), label_color.b(), 40,
             );
             for frac in [0.25_f32, 0.50, 0.75] {
@@ -544,7 +544,7 @@ pub fn show_scopes(
                 // Hue at angle 0 = red, increasing counter-clockwise.
                 let hue = (a0 / std::f32::consts::TAU).fract();
                 let (rh, gh, bh) = hue_to_rgb(hue);
-                let seg_color = egui::Color32::from_rgba_unmultiplied(
+                let seg_color = crate::colour32::rgba(
                     (rh * 255.0) as u8,
                     (gh * 255.0) as u8,
                     (bh * 255.0) as u8,
@@ -557,7 +557,7 @@ pub fn show_scopes(
 
             // 3. Center crosshair — very subtle reference axes across
             // the full diameter so the eye can find chroma null.
-            let cross_color = egui::Color32::from_rgba_unmultiplied(
+            let cross_color = crate::colour32::rgba(
                 label_color.r(), label_color.g(), label_color.b(), 30,
             );
             painter.line_segment(
@@ -594,7 +594,7 @@ pub fn show_scopes(
             // 5. Target boxes at the six broadcast chroma positions.
             // Small unfilled squares — same shape colorists see on
             // hardware vectorscopes and in DaVinci / FCPX.
-            let target_color = egui::Color32::from_rgba_unmultiplied(
+            let target_color = crate::colour32::rgba(
                 label_color.r(), label_color.g(), label_color.b(), 180,
             );
             let box_half = 4.0;
@@ -959,7 +959,7 @@ pub(crate) fn render_audio_spectrum(bins: &[f32], rw: usize, rh: usize) -> egui:
     let idx = |x: usize, y: usize| y * w + x;
 
     // Background gridlines at fixed dB thresholds, faint amber.
-    let grid_color = Color32::from_rgba_unmultiplied(245, 180, 60, 32);
+    let grid_color = crate::colour32::rgba(245, 180, 60, 32);
     let label_db = [-12.0f32, -24.0, -48.0, -72.0];
     for &db in &label_db {
         let t = ((db + 96.0) / 96.0).clamp(0.0, 1.0);
@@ -1117,7 +1117,7 @@ pub(crate) fn render_lufs_history(
     let band_bot = lufs_to_y((target_lufs - 1.0).max(lufs_min));
     for x in 0..w {
         for y in band_top..=band_bot.min(h - 1) {
-            pixels[y * w + x] = Color32::from_rgba_unmultiplied(40, 120, 40, 60);
+            pixels[y * w + x] = crate::colour32::rgba(40, 120, 40, 60);
         }
         if target_y < h {
             pixels[target_y * w + x] = Color32::from_rgb(60, 200, 60);

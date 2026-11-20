@@ -1,5 +1,5 @@
 use crate::theme::KlippTheme;
-use egui::{Color32, Painter, Pos2, Rect, Stroke};
+use egui::{Painter, Pos2, Rect, Stroke};
 
 const MIN_LABEL_SPACING_PX: f32 = 80.0;
 const MIN_MINOR_TICK_PX: f32 = 6.0;
@@ -240,7 +240,7 @@ pub fn draw_ruler(
                 ruler_rect.max,
             ),
             0.0,
-            Color32::from_rgba_unmultiplied(220, 220, 228, 14),
+            crate::colour32::rgba(220, 220, 228, 14),
         );
     }
 }
@@ -281,7 +281,7 @@ mod render_status_tests {
 
     /// The strip's fills over `spans`, at 100 px a second and 100 ticks a
     /// second: each fill's left, right and colour.
-    fn fills(spans: &[RenderSpan], theme: &KlippTheme) -> Vec<(f32, f32, Color32)> {
+    fn fills(spans: &[RenderSpan], theme: &KlippTheme) -> Vec<(f32, f32, egui::Color32)> {
         let ctx = egui::Context::default();
         let out = ctx.run(egui::RawInput::default(), |ctx| {
             let painter = ctx.layer_painter(egui::LayerId::background());

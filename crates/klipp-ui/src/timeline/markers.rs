@@ -45,10 +45,10 @@ pub fn show(
             let x_end = x_of(secs + dur.to_secs_f64()).min(ruler_rect.right());
             if x_end > x {
                 let band = egui::Rect::from_min_max(egui::pos2(x.max(ruler_rect.left()), ruler_rect.top()), egui::pos2(x_end, ruler_rect.bottom()));
-                painter.rect_filled(band, 0.0, egui::Color32::from_rgba_unmultiplied(r, g, b, 50));
+                painter.rect_filled(band, 0.0, crate::colour32::rgba(r, g, b, 50));
                 painter.line_segment(
                     [egui::pos2(x_end, ruler_rect.top()), egui::pos2(x_end, ruler_rect.bottom())],
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(r, g, b, 160)),
+                    egui::Stroke::new(1.0_f32, crate::colour32::rgba(r, g, b, 160)),
                 );
                 // The band says what it is as well: only its flag did, and
                 // the wide bands a reframe leaves to check read as
@@ -108,7 +108,7 @@ pub fn draw_lines(ui: &egui::Ui, tracks_rect: egui::Rect, ruler_left: f32, state
         let (r, g, b) = marker.color.to_rgb();
         painter.line_segment(
             [egui::pos2(x, tracks_rect.top()), egui::pos2(x, tracks_rect.bottom())],
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(r, g, b, 110)),
+            egui::Stroke::new(1.0_f32, crate::colour32::rgba(r, g, b, 110)),
         );
     }
 }

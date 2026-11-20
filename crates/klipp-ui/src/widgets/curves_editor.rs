@@ -154,7 +154,7 @@ pub fn curves_editor_in(
         let max_count = bins.iter().max().copied().unwrap_or(1) as f32;
         let curve_col = channel_color(channel);
         let hist_alpha = 35u8; // subtle, per spec
-        let hist_color = egui::Color32::from_rgba_unmultiplied(
+        let hist_color = crate::colour32::rgba(
             curve_col.r(), curve_col.g(), curve_col.b(), hist_alpha,
         );
         let bin_w = rect.width() / 256.0;

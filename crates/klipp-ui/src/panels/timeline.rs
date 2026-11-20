@@ -1,3 +1,4 @@
+use crate::colour32::Colour029;
 use crate::widgets::menu::{SubmenuRows, MenuRows};
 use klipp_timeline::GradeAccess;
 use crate::icons::Icon;
@@ -513,34 +514,34 @@ struct AudioCurvePalette {
 fn audio_curve_palette(param: klipp_core::AudioParam) -> AudioCurvePalette {
     let (line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm, fill_color, ref_color) = match param {
         klipp_core::AudioParam::Volume => (
-            egui::Color32::from_rgba_unmultiplied(255, 195, 50, 250),
-            egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220),
-            egui::Color32::from_rgba_unmultiplied(255, 210, 60, 250),
-            egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200),
-            egui::Color32::from_rgba_unmultiplied(255, 195, 50, 38),
-            egui::Color32::from_rgba_unmultiplied(255, 220, 130, 70),
+            crate::colour32::rgba(255, 195, 50, 250),
+            crate::colour32::rgba(255, 195, 50, 220),
+            crate::colour32::rgba(255, 210, 60, 250),
+            crate::colour32::rgba(255, 195, 50, 200),
+            crate::colour32::rgba(255, 195, 50, 38),
+            crate::colour32::rgba(255, 220, 130, 70),
         ),
         klipp_core::AudioParam::Pan => (
-            egui::Color32::from_rgba_unmultiplied(50, 195, 255, 250),
-            egui::Color32::from_rgba_unmultiplied(50, 195, 255, 220),
-            egui::Color32::from_rgba_unmultiplied(60, 210, 255, 250),
-            egui::Color32::from_rgba_unmultiplied(50, 195, 255, 200),
-            egui::Color32::from_rgba_unmultiplied(50, 195, 255, 38),
-            egui::Color32::from_rgba_unmultiplied(140, 220, 255, 70),
+            crate::colour32::rgba(50, 195, 255, 250),
+            crate::colour32::rgba(50, 195, 255, 220),
+            crate::colour32::rgba(60, 210, 255, 250),
+            crate::colour32::rgba(50, 195, 255, 200),
+            crate::colour32::rgba(50, 195, 255, 38),
+            crate::colour32::rgba(140, 220, 255, 70),
         ),
         klipp_core::AudioParam::Gain => (
-            egui::Color32::from_rgba_unmultiplied(50, 220, 100, 250),
-            egui::Color32::from_rgba_unmultiplied(50, 220, 100, 220),
-            egui::Color32::from_rgba_unmultiplied(60, 240, 110, 250),
-            egui::Color32::from_rgba_unmultiplied(50, 220, 100, 200),
-            egui::Color32::from_rgba_unmultiplied(50, 220, 100, 38),
-            egui::Color32::from_rgba_unmultiplied(140, 240, 170, 70),
+            crate::colour32::rgba(50, 220, 100, 250),
+            crate::colour32::rgba(50, 220, 100, 220),
+            crate::colour32::rgba(60, 240, 110, 250),
+            crate::colour32::rgba(50, 220, 100, 200),
+            crate::colour32::rgba(50, 220, 100, 38),
+            crate::colour32::rgba(140, 240, 170, 70),
         ),
     };
     AudioCurvePalette {
         line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm,
         fill_color, ref_color,
-        shadow_color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150),
+        shadow_color: crate::colour32::rgba(0, 0, 0, 150),
     }
 }
 
@@ -686,13 +687,13 @@ fn paint_audio_curve_band(
                 egui::pos2(cx, cy + outline_d),
                 egui::pos2(cx - outline_d, cy),
             ],
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+            crate::colour32::rgba(0, 0, 0, 200),
             egui::Stroke::NONE,
         ));
 
         // Brighten fill on hover.
         let fill = if is_hovered {
-            egui::Color32::from_rgba_unmultiplied(
+            crate::colour32::rgba(
                 diamond_fill.r().saturating_add(30),
                 diamond_fill.g().saturating_add(30),
                 diamond_fill.b().saturating_add(30),
@@ -704,7 +705,7 @@ fn paint_audio_curve_band(
         let stroke = if is_kf_selected {
             egui::Stroke::new(2.0_f32, egui::Color32::WHITE)
         } else {
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220))
+            egui::Stroke::new(1.0_f32, crate::colour32::rgba(20, 20, 20, 220))
         };
         painter.add(egui::Shape::convex_polygon(
             vec![
@@ -725,7 +726,7 @@ fn paint_audio_curve_band(
             } else {
                 1.0
             };
-            let tangent_line_color = egui::Color32::from_rgba_unmultiplied(
+            let tangent_line_color = crate::colour32::rgba(
                 active_line_color.r(), active_line_color.g(), active_line_color.b(), 120,
             );
             let handle_radius = 4.0_f32;
@@ -741,7 +742,7 @@ fn paint_audio_curve_band(
                 egui::pos2(tout_x, tout_y),
                 handle_radius,
                 active_line_color,
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                egui::Stroke::new(1.0_f32, crate::colour32::rgba(20, 20, 20, 200)),
             );
 
             // In (left).
@@ -755,7 +756,7 @@ fn paint_audio_curve_band(
                 egui::pos2(tin_x, tin_y),
                 handle_radius,
                 active_line_color,
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                egui::Stroke::new(1.0_f32, crate::colour32::rgba(20, 20, 20, 200)),
             );
         }
     }
@@ -2364,11 +2365,11 @@ impl TimelinePanel {
         let cursor_alpha = (140.0 + 80.0 * pulse) as u8;
         let cursor_stroke = egui::Stroke::new(
             2.0_f32,
-            egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), cursor_alpha),
+            crate::colour32::rgba(accent.r(), accent.g(), accent.b(), cursor_alpha),
         );
         let persistent_stroke = egui::Stroke::new(
             1.5_f32,
-            egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 120),
+            crate::colour32::rgba(accent.r(), accent.g(), accent.b(), 120),
         );
 
         for (i, hit) in self.search_hits.iter().enumerate() {
@@ -3690,7 +3691,7 @@ impl TimelinePanel {
         painter.rect_filled(
             highlight_rect,
             3.0,
-            egui::Color32::from_rgba_unmultiplied(warn.r(), warn.g(), warn.b(), 60),
+            crate::colour32::rgba(warn.r(), warn.g(), warn.b(), 60),
         );
         painter.rect_stroke(
             highlight_rect,
@@ -4308,7 +4309,7 @@ impl TimelinePanel {
                             painter.rect_filled(
                                 fill_rect,
                                 0.0,
-                                egui::Color32::from_rgba_unmultiplied(r, g, b, 50),
+                                crate::colour32::rgba(r, g, b, 50),
                             );
                             painter.line_segment(
                                 [
@@ -4317,7 +4318,7 @@ impl TimelinePanel {
                                 ],
                                 egui::Stroke::new(
                                     1.0_f32,
-                                    egui::Color32::from_rgba_unmultiplied(r, g, b, 160),
+                                    crate::colour32::rgba(r, g, b, 160),
                                 ),
                             );
                             // Hover tooltip on the shaded band.
@@ -4579,9 +4580,9 @@ impl TimelinePanel {
 
                 // Clip background
                 ghost_painter.rect_filled(ghost_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(60, 80, 140, 200));
+                    crate::colour32::rgba(60, 80, 140, 200));
                 ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(120, 160, 240, 220)), egui::StrokeKind::Outside);
+                    egui::Stroke::new(1.5_f32, crate::colour32::rgba(120, 160, 240, 220)), egui::StrokeKind::Outside);
                 // A group shows its size: "+2" for three clips travelling.
                 if state.dragging_media_group.len() > 1 {
                     let badge = format!("+{}", state.dragging_media_group.len() - 1);
@@ -4651,9 +4652,9 @@ impl TimelinePanel {
                 ));
 
                 ghost_painter.rect_filled(ghost_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(120, 80, 180, 200));
+                    crate::colour32::rgba(120, 80, 180, 200));
                 ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(180, 140, 255, 220)), egui::StrokeKind::Outside);
+                    egui::Stroke::new(1.5_f32, crate::colour32::rgba(180, 140, 255, 220)), egui::StrokeKind::Outside);
 
                 // "T" icon
                 ghost_painter.text(
@@ -4694,9 +4695,9 @@ impl TimelinePanel {
                 ));
 
                 ghost_painter.rect_filled(ghost_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(140, 80, 200, 210));
+                    crate::colour32::rgba(140, 80, 200, 210));
                 ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(200, 160, 255, 230)), egui::StrokeKind::Outside);
+                    egui::Stroke::new(1.5_f32, crate::colour32::rgba(200, 160, 255, 230)), egui::StrokeKind::Outside);
 
                 // "FX" icon
                 ghost_painter.text(
@@ -4738,9 +4739,9 @@ impl TimelinePanel {
                 ));
 
                 ghost_painter.rect_filled(ghost_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(60, 160, 120, 210));
+                    crate::colour32::rgba(60, 160, 120, 210));
                 ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(100, 220, 170, 230)), egui::StrokeKind::Outside);
+                    egui::Stroke::new(1.5_f32, crate::colour32::rgba(100, 220, 170, 230)), egui::StrokeKind::Outside);
 
                 // Audio icon
                 ghost_painter.text(
@@ -4782,9 +4783,9 @@ impl TimelinePanel {
                 ));
 
                 ghost_painter.rect_filled(ghost_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 180, 40, 210));
+                    crate::colour32::rgba(255, 180, 40, 210));
                 ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(255, 210, 100, 230)), egui::StrokeKind::Outside);
+                    egui::Stroke::new(1.5_f32, crate::colour32::rgba(255, 210, 100, 230)), egui::StrokeKind::Outside);
 
                 let truncated = crate::ui_util::elide(name, 16);
                 ghost_painter.text(
@@ -4816,17 +4817,17 @@ impl TimelinePanel {
                     klipp_core::GeneratorData::Gradient { top, .. } =>
                         egui::Color32::from_rgba_premultiplied(top[0], top[1], top[2], 220),
                     klipp_core::GeneratorData::ColorBars =>
-                        egui::Color32::from_rgba_unmultiplied(128, 128, 128, 220),
+                        crate::colour32::rgba(128, 128, 128, 220),
                     klipp_core::GeneratorData::ColorBars100 | klipp_core::GeneratorData::ColorBarsSmpte =>
-                        egui::Color32::from_rgba_unmultiplied(180, 180, 180, 220),
+                        crate::colour32::rgba(180, 180, 180, 220),
                     klipp_core::GeneratorData::Countdown =>
-                        egui::Color32::from_rgba_unmultiplied(40, 40, 40, 220),
+                        crate::colour32::rgba(40, 40, 40, 220),
                     klipp_core::GeneratorData::Timer { background_color, .. } =>
                         egui::Color32::from_rgba_premultiplied(background_color[0], background_color[1], background_color[2], 220),
                     klipp_core::GeneratorData::Slate { background_color, .. } =>
                         egui::Color32::from_rgba_premultiplied(background_color[0], background_color[1], background_color[2], 220),
                     klipp_core::GeneratorData::StillFrame { .. } =>
-                        egui::Color32::from_rgba_unmultiplied(80, 140, 200, 220),
+                        crate::colour32::rgba(80, 140, 200, 220),
                     klipp_core::GeneratorData::Polygon { color, .. } =>
                         egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220),
                     klipp_core::GeneratorData::LivingGradient { a, .. } =>
@@ -4848,7 +4849,7 @@ impl TimelinePanel {
 
                 ghost_painter.rect_filled(ghost_rect, 4.0, pill_color);
                 ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(180, 220, 180, 220)), egui::StrokeKind::Outside);
+                    egui::Stroke::new(1.5_f32, crate::colour32::rgba(180, 220, 180, 220)), egui::StrokeKind::Outside);
 
                 ghost_painter.text(
                     egui::pos2(ghost_rect.left() + 14.0, ghost_rect.center().y),
@@ -5265,13 +5266,13 @@ impl TimelinePanel {
                     content_rect.top()..=content_rect.bottom(),
                 );
                 painter.rect_filled(halo_outer, 0.0,
-                    egui::Color32::from_rgba_unmultiplied(ph.r(), ph.g(), ph.b(), 18));
+                    crate::colour32::rgba(ph.r(), ph.g(), ph.b(), 18));
                 let halo_inner = egui::Rect::from_x_y_ranges(
                     (playhead_x - 2.0)..=(playhead_x + 2.0),
                     content_rect.top()..=content_rect.bottom(),
                 );
                 painter.rect_filled(halo_inner, 0.0,
-                    egui::Color32::from_rgba_unmultiplied(ph.r(), ph.g(), ph.b(), 40));
+                    crate::colour32::rgba(ph.r(), ph.g(), ph.b(), 40));
                 painter.line_segment(
                     [
                         egui::pos2(playhead_x, content_rect.top()),
@@ -5434,7 +5435,7 @@ impl TimelinePanel {
         let glow_alpha = (50.0 + 110.0 * highlight) as u8;
         let pill_alpha = 220u8;
         let snap_color = tt.accent;
-        let snap_color_faded = egui::Color32::from_rgba_unmultiplied(
+        let snap_color_faded = crate::colour32::rgba(
             snap_color.r(), snap_color.g(), snap_color.b(), line_alpha,
         );
         // Thick amber line spanning full track area
@@ -5453,7 +5454,7 @@ impl TimelinePanel {
             ],
             egui::Stroke::new(
                 6.0 + 6.0 * highlight,
-                egui::Color32::from_rgba_unmultiplied(snap_color.r(), snap_color.g(), snap_color.b(), glow_alpha),
+                crate::colour32::rgba(snap_color.r(), snap_color.g(), snap_color.b(), glow_alpha),
             ),
         );
         // Target-aware legend label — replaces the old timecode-only
@@ -5481,7 +5482,7 @@ impl TimelinePanel {
         painter.rect_filled(
             pill_rect,
             2.0,
-            egui::Color32::from_rgba_unmultiplied(bgd.r(), bgd.g(), bgd.b(), pill_alpha),
+            crate::colour32::rgba(bgd.r(), bgd.g(), bgd.b(), pill_alpha),
         );
         painter.text(
             label_pos,
@@ -6207,12 +6208,12 @@ impl TimelinePanel {
                 painter.rect_filled(
                     pill_rect.expand(1.0),
                     pill_h / 2.0 + 1.0,
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160),
+                    crate::colour32::rgba(0, 0, 0, 160),
                 );
                 painter.rect_filled(
                     pill_rect,
                     pill_h / 2.0,
-                    egui::Color32::from_rgba_unmultiplied(140, 80, 200, 220),
+                    crate::colour32::rgba(140, 80, 200, 220),
                 );
                 painter.galley(
                     egui::pos2(pill_rect.left() + 3.0, pill_rect.top() + 1.0),
@@ -6261,12 +6262,12 @@ impl TimelinePanel {
                 painter.rect_filled(
                     pill_rect.expand(1.0),
                     pill_h / 2.0 + 1.0,
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160),
+                    crate::colour32::rgba(0, 0, 0, 160),
                 );
                 painter.rect_filled(
                     pill_rect,
                     pill_h / 2.0,
-                    egui::Color32::from_rgba_unmultiplied(40, 160, 180, 220),
+                    crate::colour32::rgba(40, 160, 180, 220),
                 );
                 painter.galley(
                     egui::pos2(pill_rect.left() + 4.0, pill_rect.top() + 1.0),
@@ -6295,7 +6296,7 @@ impl TimelinePanel {
         // Stencil clips share the same hidden-from-composite visual
         // as `consumed_as_matte` (different reason, same outcome).
         if (clip.consumed_as_matte || clip.matte_stencil.is_some()) && clip_rect.width() > 24.0 && clip_rect.height() > 12.0 {
-            let stripe_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70);
+            let stripe_color = crate::colour32::rgba(0, 0, 0, 70);
             let spacing = 8.0_f32;
             let mut x = clip_rect.left() - clip_rect.height();
             while x < clip_rect.right() {
@@ -6314,7 +6315,7 @@ impl TimelinePanel {
                 let tag_galley = painter.layout_no_wrap(
                     tag_text.to_string(),
                     tag_font,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
+                    crate::colour32::rgba(255, 255, 255, 200),
                 );
                 let tag_rect = egui::Rect::from_min_size(
                     egui::pos2(clip_rect.left() + 4.0, clip_rect.bottom() - tag_galley.size().y - 4.0),
@@ -6323,7 +6324,7 @@ impl TimelinePanel {
                 painter.rect_filled(
                     tag_rect.expand(2.0),
                     2.0,
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140),
+                    crate::colour32::rgba(0, 0, 0, 140),
                 );
                 painter.galley(tag_rect.min, tag_galley, egui::Color32::WHITE);
             }
@@ -6337,7 +6338,7 @@ impl TimelinePanel {
             let size = galley.size() + egui::vec2(8.0, 2.0);
             if clip_rect.width() > size.x + 34.0 && clip_rect.height() > size.y + 4.0 {
                 let badge = egui::Rect::from_min_size(egui::pos2(clip_rect.right() - 22.0 - size.x, clip_rect.top() + 2.0), size);
-                painter.rect_filled(badge, size.y / 2.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 170));
+                painter.rect_filled(badge, size.y / 2.0, crate::colour32::rgba(0, 0, 0, 170));
                 painter.galley(badge.min + egui::vec2(4.0, 1.0), galley, egui::Color32::WHITE);
             }
         }
@@ -6586,7 +6587,7 @@ impl TimelinePanel {
                 );
                 let acc = tt.accent;
                 painter.rect_filled(bar_rect, 0.0,
-                    egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 160));
+                    crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 160));
             }
         }
 
@@ -6595,7 +6596,7 @@ impl TimelinePanel {
             let dot_x = clip_rect.right() - 8.0;
             let dot_y = clip_rect.bottom() - 7.0;
             let dot_pos = egui::pos2(dot_x, dot_y);
-            painter.circle_filled(dot_pos, 3.5, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120));
+            painter.circle_filled(dot_pos, 3.5, crate::colour32::rgba(0, 0, 0, 120));
             painter.circle_filled(dot_pos, 2.5, tt.accent);
         }
 
@@ -7186,7 +7187,7 @@ impl TimelinePanel {
                     egui::vec2(cell_rect.width(), 1.0),
                 ),
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(
+                crate::colour32::rgba(
                     accent_color.r(), accent_color.g(), accent_color.b(), 240,
                 ),
             );
@@ -7341,7 +7342,7 @@ impl TimelinePanel {
             painter.rect_stroke(
                 strip_rect,
                 0.0,
-                egui::Stroke::new(0.5_f32, effect_color.linear_multiply(0.6)), egui::StrokeKind::Outside,
+                egui::Stroke::new(0.5_f32, effect_color.lin_mul(0.6)), egui::StrokeKind::Outside,
             );
 
             // Pointer hover within ±2px vertically (small strips need
@@ -7437,10 +7438,10 @@ impl TimelinePanel {
 
             let tt = theme();
             let acc = tt.accent;
-            let fade_line_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 200);
-            let fade_line_highlight = egui::Color32::from_rgba_unmultiplied(
+            let fade_line_color = crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 200);
+            let fade_line_highlight = crate::colour32::rgba(
                 acc.r().saturating_add(20), acc.g().saturating_add(40), acc.b().saturating_add(110), 100);
-            let fade_line_shadow = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120);
+            let fade_line_shadow = crate::colour32::rgba(0, 0, 0, 120);
             let num_segments: usize = 40;
             let num_gradient_strips: usize = 10;
 
@@ -7459,7 +7460,7 @@ impl TimelinePanel {
                     // frac=0 at interior (right), frac=1 at edge (left)
                     let frac = 1.0 - (s as f32 + 0.5) / num_gradient_strips as f32;
                     let alpha = (frac * frac * 100.0) as u8;
-                    let strip_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, alpha);
+                    let strip_color = crate::colour32::rgba(0, 0, 0, alpha);
                     let strip_x = fade_rect.left() + s as f32 * strip_w;
                     let strip_rect = egui::Rect::from_min_size(
                         egui::pos2(strip_x, fade_rect.top()),
@@ -7508,7 +7509,7 @@ impl TimelinePanel {
                         egui::pos2(clip_rect.left() + fade_in_px, clip_rect.top()),
                         egui::pos2(clip_rect.left() + fade_in_px, clip_rect.bottom()),
                     ],
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80)),
+                    egui::Stroke::new(1.0_f32, crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 80)),
                 );
             }
 
@@ -7528,7 +7529,7 @@ impl TimelinePanel {
                     // frac=0 at interior (left), frac=1 at edge (right)
                     let frac = (s as f32 + 0.5) / num_gradient_strips as f32;
                     let alpha = (frac * frac * 100.0) as u8;
-                    let strip_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, alpha);
+                    let strip_color = crate::colour32::rgba(0, 0, 0, alpha);
                     let strip_x = fade_rect.left() + s as f32 * strip_w;
                     let strip_rect = egui::Rect::from_min_size(
                         egui::pos2(strip_x, fade_rect.top()),
@@ -7578,7 +7579,7 @@ impl TimelinePanel {
                         egui::pos2(fade_start_x, clip_rect.top()),
                         egui::pos2(fade_start_x, clip_rect.bottom()),
                     ],
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80)),
+                    egui::Stroke::new(1.0_f32, crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 80)),
                 );
             }
         }
@@ -7749,7 +7750,7 @@ impl TimelinePanel {
         clip_index: usize,
     ) {
         let filmstrip_tint = if is_being_dragged {
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140)
+            crate::colour32::rgba(255, 255, 255, 140)
         } else {
             egui::Color32::WHITE
         };
@@ -8009,7 +8010,7 @@ impl TimelinePanel {
                             tex.id(),
                             thumb_rect,
                             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 100),
+                            crate::colour32::rgba(255, 255, 255, 100),
                         );
                     }
                 }
@@ -9957,8 +9958,8 @@ impl TimelinePanel {
                         );
 
                         let mi = tt.marker_info;
-                        let ghost_fill = egui::Color32::from_rgba_unmultiplied(mi.r() / 2, mi.g() / 2, mi.b() / 2, 128);
-                        let ghost_border = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 180);
+                        let ghost_fill = crate::colour32::rgba(mi.r() / 2, mi.g() / 2, mi.b() / 2, 128);
+                        let ghost_border = crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 180);
                         ghost_painter.rect_filled(ghost_rect, 2.0, ghost_fill);
                         ghost_painter.rect_stroke(ghost_rect, 2.0, egui::Stroke::new(2.0_f32, ghost_border), egui::StrokeKind::Outside);
                         // The other clips of the selection, each on its own
@@ -10001,7 +10002,7 @@ impl TimelinePanel {
                                     tex.id(),
                                     ghost_rect,
                                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 128),
+                                    crate::colour32::rgba(255, 255, 255, 128),
                                 );
                             }
                         }
@@ -10011,7 +10012,7 @@ impl TimelinePanel {
                             let guide_top = self.frame_cache.tracks_start_y;
                             let guide_bottom = self.frame_cache.tracks_clip_bottom;
                             let mi = tt.marker_info;
-                            let guide_color = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 80);
+                            let guide_color = crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 80);
                             ghost_painter.line_segment(
                                 [egui::pos2(ghost_rect.left(), guide_top), egui::pos2(ghost_rect.left(), guide_bottom)],
                                 egui::Stroke::new(1.0_f32, guide_color),
@@ -10072,7 +10073,7 @@ impl TimelinePanel {
                             );
                             let acc = tt.accent;
                             painter.rect_stroke(drop_rect, 4.0,
-                                egui::Stroke::new(3.0_f32, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80)), egui::StrokeKind::Outside);
+                                egui::Stroke::new(3.0_f32, crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 80)), egui::StrokeKind::Outside);
                             painter.rect_stroke(drop_rect, 4.0,
                                 egui::Stroke::new(1.5_f32, acc), egui::StrokeKind::Outside);
                         }
@@ -10124,7 +10125,7 @@ impl TimelinePanel {
                                                 };
                                                 painter.add(egui::Shape::convex_polygon(
                                                     points,
-                                                    egui::Color32::from_rgba_unmultiplied(amber.r(), amber.g(), amber.b(), 180),
+                                                    crate::colour32::rgba(amber.r(), amber.g(), amber.b(), 180),
                                                     egui::Stroke::NONE,
                                                 ));
                                             }
@@ -10182,9 +10183,9 @@ impl TimelinePanel {
                                         if preview_rect.right() >= content_rect.left() && preview_rect.left() <= content_rect.right() {
                                             // 60% opacity fill
                                             painter.rect_filled(preview_rect, 2.0,
-                                                egui::Color32::from_rgba_unmultiplied(tt.marker_info.r() / 2, tt.marker_info.g() / 2, tt.marker_info.b() / 2, 153));
+                                                crate::colour32::rgba(tt.marker_info.r() / 2, tt.marker_info.g() / 2, tt.marker_info.b() / 2, 153));
                                             // Dashed amber border
-                                            let dash_color = egui::Color32::from_rgba_unmultiplied(amber.r(), amber.g(), amber.b(), 180);
+                                            let dash_color = crate::colour32::rgba(amber.r(), amber.g(), amber.b(), 180);
                                             let dash_len = 5.0_f32;
                                             let gap_len = 3.0_f32;
                                             // Top edge
@@ -10219,7 +10220,7 @@ impl TimelinePanel {
                                             );
                                             if dest_rect.right() >= content_rect.left() && dest_rect.left() <= content_rect.right() {
                                                 painter.rect_stroke(dest_rect, 2.0,
-                                                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(amber.r(), amber.g(), amber.b(), 77)), egui::StrokeKind::Outside);
+                                                    egui::Stroke::new(1.0_f32, crate::colour32::rgba(amber.r(), amber.g(), amber.b(), 77)), egui::StrokeKind::Outside);
                                             }
                                         }
 
@@ -10239,7 +10240,7 @@ impl TimelinePanel {
                                                     let end_y = (dy + 5.0).min(bottom_y);
                                                     painter.line_segment(
                                                         [egui::pos2(anchor_x, dy), egui::pos2(anchor_x, end_y)],
-                                                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(amber.r(), amber.g(), amber.b(), 120)),
+                                                        egui::Stroke::new(1.0_f32, crate::colour32::rgba(amber.r(), amber.g(), amber.b(), 120)),
                                                     );
                                                     dy += 8.0;
                                                 }
@@ -10307,8 +10308,8 @@ impl TimelinePanel {
                             egui::vec2(ghost_w, ghost_track_rect.height() - 4.0),
                         );
                         let mi = tt.marker_info;
-                        let ghost_fill = egui::Color32::from_rgba_unmultiplied(mi.r() / 2, mi.g() / 2, mi.b() / 2, 128);
-                        let ghost_border = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 180);
+                        let ghost_fill = crate::colour32::rgba(mi.r() / 2, mi.g() / 2, mi.b() / 2, 128);
+                        let ghost_border = crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 180);
                         ghost_painter.rect_filled(ghost_rect, 2.0, ghost_fill);
                         ghost_painter.rect_stroke(ghost_rect, 2.0, egui::Stroke::new(2.0_f32, ghost_border), egui::StrokeKind::Outside);
 
@@ -10323,7 +10324,7 @@ impl TimelinePanel {
                                     tex.id(),
                                     ghost_rect,
                                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 128),
+                                    crate::colour32::rgba(255, 255, 255, 128),
                                 );
                             }
                         }
@@ -10352,10 +10353,10 @@ impl TimelinePanel {
                         let guide_bottom = self.frame_cache.tracks_clip_bottom;
                         let guide_color = if snapped {
                             let a = tt.accent;
-                            egui::Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), 100) // amber when snapped
+                            crate::colour32::rgba(a.r(), a.g(), a.b(), 100) // amber when snapped
                         } else {
                             let mi = tt.marker_info;
-                            egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 80) // blue normally
+                            crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 80) // blue normally
                         };
                         // Left edge guide
                         ghost_painter.line_segment(
@@ -10402,7 +10403,7 @@ impl TimelinePanel {
                                         egui::vec2(90.0, 16.0),
                                     );
                                     let bp = tt.bg_panel;
-                                    painter.rect_filled(pill_rect, 4.0, egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220));
+                                    painter.rect_filled(pill_rect, 4.0, crate::colour32::rgba(bp.r(), bp.g(), bp.b(), 220));
                                     painter.rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0_f32, amber), egui::StrokeKind::Outside);
                                     painter.text(pill_rect.center(), egui::Align2::CENTER_CENTER,
                                         "\u{229E} Will connect", egui::FontId::monospace(10.0), amber);
@@ -10424,7 +10425,7 @@ impl TimelinePanel {
                                             let end_y = (dy + dash_len).min(bottom_y);
                                             painter.line_segment(
                                                 [egui::pos2(anchor_x, dy), egui::pos2(anchor_x, end_y)],
-                                                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(amber.r(), amber.g(), amber.b(), 160)),
+                                                egui::Stroke::new(1.0_f32, crate::colour32::rgba(amber.r(), amber.g(), amber.b(), 160)),
                                             );
                                             dy += dash_len + gap_len;
                                         }
@@ -10439,7 +10440,7 @@ impl TimelinePanel {
                                         egui::vec2(100.0, 16.0),
                                     );
                                     let bp = tt.bg_panel;
-                                    painter.rect_filled(pill_rect, 4.0, egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220));
+                                    painter.rect_filled(pill_rect, 4.0, crate::colour32::rgba(bp.r(), bp.g(), bp.b(), 220));
                                     painter.rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0_f32, warn_color), egui::StrokeKind::Outside);
                                     painter.text(pill_rect.center(), egui::Align2::CENTER_CENTER,
                                         "\u{229F} Will disconnect", egui::FontId::monospace(10.0), warn_color);
@@ -10466,7 +10467,7 @@ impl TimelinePanel {
                                                 let end_y = (dy + 5.0).min(bottom_y);
                                                 painter.line_segment(
                                                     [egui::pos2(anchor_x, dy), egui::pos2(anchor_x, end_y)],
-                                                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(warn_color.r(), warn_color.g(), warn_color.b(), 160)),
+                                                    egui::Stroke::new(1.0_f32, crate::colour32::rgba(warn_color.r(), warn_color.g(), warn_color.b(), 160)),
                                                 );
                                                 dy += 8.0;
                                             }
@@ -10840,7 +10841,7 @@ impl TimelinePanel {
                         let tt = theme();
                         let bp = tt.bg_panel;
                         let mi = tt.marker_info;
-                        painter.rect_filled(badge_rect, 4.0, egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220));
+                        painter.rect_filled(badge_rect, 4.0, crate::colour32::rgba(bp.r(), bp.g(), bp.b(), 220));
                         painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, mi), egui::StrokeKind::Outside);
                         painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER,
                             &badge_text, egui::FontId::monospace(10.0), mi);
@@ -10853,8 +10854,8 @@ impl TimelinePanel {
                         // mutation snapshot and lagged by one frame, which
                         // was an incidental side-effect of the &[Clip]
                         // parameter, not a deliberate visual choice).
-                        let highlight_color = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 50);
-                        let highlight_border = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 140);
+                        let highlight_color = crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 50);
+                        let highlight_border = crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 140);
                         let cids = [Some(slide.clip_id), slide.left_clip_id, slide.right_clip_id];
                         let highlight_rects: Vec<egui::Rect> = state.sequence().tracks.get(track_idx)
                             .map(|t| {
@@ -11000,7 +11001,7 @@ impl TimelinePanel {
                         let tt = theme();
                         let bp = tt.bg_panel;
                         let acc = tt.accent;
-                        painter.rect_filled(badge_rect, 4.0, egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220));
+                        painter.rect_filled(badge_rect, 4.0, crate::colour32::rgba(bp.r(), bp.g(), bp.b(), 220));
                         painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, acc), egui::StrokeKind::Outside);
                         painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER,
                             &badge_text, egui::FontId::monospace(10.0), acc);
@@ -11014,7 +11015,7 @@ impl TimelinePanel {
                             .and_then(|t| t.find_clip(slip.clip_id))
                             .map(|clip| Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height));
                         if let Some(cr) = overlay_rect {
-                            let overlay_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 40);
+                            let overlay_color = crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 40);
                             painter.rect_filled(cr, 2.0, overlay_color);
                         }
                     }
@@ -11485,7 +11486,7 @@ impl TimelinePanel {
         let a = tt.accent;
         let alpha = if hot { 235 } else if shown { 170 } else { 90 };
         let corner = if at_end { egui::CornerRadius { nw: 0, ne: 3, sw: 4, se: 0 } } else { egui::CornerRadius { nw: 3, ne: 0, sw: 0, se: 4 } };
-        painter.rect_filled(r, corner, egui::Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), alpha));
+        painter.rect_filled(r, corner, crate::colour32::rgba(a.r(), a.g(), a.b(), alpha));
         let s = egui::Stroke::new(1.0_f32, egui::Color32::WHITE);
         let (y, l, rt) = (r.center().y, r.left() + 2.5, r.right() - 2.5);
         painter.line_segment([egui::pos2(l, y), egui::pos2(rt, y)], s);
@@ -11500,7 +11501,7 @@ impl TimelinePanel {
     fn paint_hint(painter: &egui::Painter, at: egui::Pos2, align: egui::Align2, text: &str) {
         let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(10.0), egui::Color32::WHITE);
         let rect = align.anchor_size(at, galley.size()).expand2(egui::vec2(4.0, 1.5));
-        painter.rect_filled(rect, rect.height() / 2.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 190));
+        painter.rect_filled(rect, rect.height() / 2.0, crate::colour32::rgba(0, 0, 0, 190));
         painter.galley(rect.min + egui::vec2(4.0, 1.5), galley, egui::Color32::WHITE);
     }
 
@@ -11737,7 +11738,7 @@ impl TimelinePanel {
                     );
 
                     // Subtle colored tint over the clip being trimmed
-                    let tint_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 20);
+                    let tint_color = crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 20);
                     painter.rect_filled(cr, 2.0, tint_color);
                 }
             }
@@ -11759,7 +11760,7 @@ impl TimelinePanel {
                         0.0, roll_active_color,
                     );
                     // Subtle tint
-                    painter.rect_filled(cr_a, 2.0, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 15));
+                    painter.rect_filled(cr_a, 2.0, crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 15));
                 }
                 if let Some(clip_b) = clips.iter().find(|c| c.id == roll.clip_b_id) {
                     let cr_b = Self::clip_screen_rect(clip_b, content_rect, track_rect, zoom, scroll, track_height);
@@ -11770,7 +11771,7 @@ impl TimelinePanel {
                         ),
                         0.0, roll_active_color,
                     );
-                    painter.rect_filled(cr_b, 2.0, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 15));
+                    painter.rect_filled(cr_b, 2.0, crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 15));
                 }
             }
         }
@@ -11797,7 +11798,7 @@ impl TimelinePanel {
             if still {
                 let x = |t: Timecode| content_rect.left() + (t.to_secs_f64() * zoom as f64) as f32 - scroll;
                 let rect = egui::Rect::from_min_max(egui::pos2(x(start), track_rect.top() + 2.0), egui::pos2(x(end), track_rect.bottom() - 2.0));
-                painter.rect_filled(rect, 2.0, tt.accent.linear_multiply(0.15));
+                painter.rect_filled(rect, 2.0, tt.accent.lin_mul(0.15));
                 painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.5_f32, tt.accent), egui::StrokeKind::Outside);
             }
         }
@@ -12016,13 +12017,13 @@ impl TimelinePanel {
         let unity_y = map_spd_y(1.0);
         spd_painter.line_segment(
             [egui::pos2(clip_rect.left(), unity_y), egui::pos2(clip_rect.right(), unity_y)],
-            egui::Stroke::new(0.5_f32, egui::Color32::from_white_alpha(30)),
+            egui::Stroke::new(0.5_f32, crate::colour32::white(30)),
         );
 
         // Build polyline from evaluated speed curve
         let tt = theme();
         let spd_color = tt.marker_info;
-        let spd_fill_color = egui::Color32::from_rgba_unmultiplied(spd_color.r(), spd_color.g(), spd_color.b(), 25);
+        let spd_fill_color = crate::colour32::rgba(spd_color.r(), spd_color.g(), spd_color.b(), 25);
         let num_spd_pts = (clip_rect.width() as usize / 3).clamp(2, 120);
         let mut spd_points: Vec<egui::Pos2> = Vec::with_capacity(num_spd_pts);
         for i in 0..num_spd_pts {
@@ -12149,7 +12150,7 @@ impl TimelinePanel {
                 // Thin translucent vertical line spanning the full clip height —
                 // makes the marker position legible at any zoom level without
                 // obscuring the clip body.
-                let line_color = egui::Color32::from_rgba_unmultiplied(r, g, b, 180);
+                let line_color = crate::colour32::rgba(r, g, b, 180);
                 marker_painter.line_segment(
                     [egui::pos2(x, clip_rect.top()), egui::pos2(x, clip_rect.bottom())],
                     egui::Stroke::new(1.5_f32, line_color),
@@ -12201,7 +12202,7 @@ impl TimelinePanel {
 
         // Diagonal hatched stripes
         let acc = tt.accent;
-        let stripe_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 25);
+        let stripe_color = crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 25);
         let stripe_spacing = 8.0_f32;
         let clip_painter = painter.with_clip_rect(clip_rect);
         let mut sx = clip_rect.min.x - clip_rect.height();
@@ -12216,7 +12217,7 @@ impl TimelinePanel {
         painter.rect_stroke(
             clip_rect,
             3.0,
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80)), egui::StrokeKind::Outside,
+            egui::Stroke::new(1.0_f32, crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 80)), egui::StrokeKind::Outside,
         );
 
         // Duration label centered
@@ -12231,7 +12232,7 @@ impl TimelinePanel {
             egui::Align2::CENTER_CENTER,
             &label,
             egui::FontId::monospace(10.0),
-            egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 120),
+            crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 120),
         );
 
         // Gap clips ARE selectable — handle click (only inside visible content)
@@ -12607,7 +12608,7 @@ impl TimelinePanel {
         let sel_width = selection_border_width();
         let (fill, border_color, border_width) = if is_being_dragged {
             // Semi-transparent when being dragged so clips underneath are visible
-            let f = egui::Color32::from_rgba_unmultiplied(base_color.r(), base_color.g(), base_color.b(), 140);
+            let f = crate::colour32::rgba(base_color.r(), base_color.g(), base_color.b(), 140);
             (f, theme_colors.accent, 2.0)
         } else if is_selected || is_multi_selected {
             (bright_color, sel_color, sel_width)
@@ -12620,7 +12621,7 @@ impl TimelinePanel {
         // Dim disabled clips
         let (fill, border_color) = if is_disabled {
             let dim = |c: egui::Color32| {
-                egui::Color32::from_rgba_unmultiplied(
+                crate::colour32::rgba(
                     c.r() / 2, c.g() / 2, c.b() / 2, 160,
                 )
             };
@@ -12757,48 +12758,48 @@ impl TimelinePanel {
                 // Cyan/blue color scheme for video (distinct from audio amber)
                 let (vrb_line_color, vrb_line_color_dim, vrb_diamond_fill_sel, vrb_diamond_fill_norm) = match vrb_param {
                     klipp_core::VideoParam::Opacity => (
-                        egui::Color32::from_rgba_unmultiplied(80, 180, 255, 220),
-                        egui::Color32::from_rgba_unmultiplied(70, 160, 230, 140),
-                        egui::Color32::from_rgba_unmultiplied(90, 200, 255, 250),
-                        egui::Color32::from_rgba_unmultiplied(80, 180, 255, 200),
+                        crate::colour32::rgba(80, 180, 255, 220),
+                        crate::colour32::rgba(70, 160, 230, 140),
+                        crate::colour32::rgba(90, 200, 255, 250),
+                        crate::colour32::rgba(80, 180, 255, 200),
                     ),
                     klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => (
-                        egui::Color32::from_rgba_unmultiplied(100, 220, 200, 220),
-                        egui::Color32::from_rgba_unmultiplied(90, 200, 180, 140),
-                        egui::Color32::from_rgba_unmultiplied(110, 240, 220, 250),
-                        egui::Color32::from_rgba_unmultiplied(100, 220, 200, 200),
+                        crate::colour32::rgba(100, 220, 200, 220),
+                        crate::colour32::rgba(90, 200, 180, 140),
+                        crate::colour32::rgba(110, 240, 220, 250),
+                        crate::colour32::rgba(100, 220, 200, 200),
                     ),
                     klipp_core::VideoParam::Scale | klipp_core::VideoParam::ScaleY => (
-                        egui::Color32::from_rgba_unmultiplied(140, 160, 255, 220),
-                        egui::Color32::from_rgba_unmultiplied(120, 140, 230, 140),
-                        egui::Color32::from_rgba_unmultiplied(160, 180, 255, 250),
-                        egui::Color32::from_rgba_unmultiplied(140, 160, 255, 200),
+                        crate::colour32::rgba(140, 160, 255, 220),
+                        crate::colour32::rgba(120, 140, 230, 140),
+                        crate::colour32::rgba(160, 180, 255, 250),
+                        crate::colour32::rgba(140, 160, 255, 200),
                     ),
                     klipp_core::VideoParam::Rotation => (
-                        egui::Color32::from_rgba_unmultiplied(180, 130, 255, 220),
-                        egui::Color32::from_rgba_unmultiplied(160, 110, 230, 140),
-                        egui::Color32::from_rgba_unmultiplied(200, 150, 255, 250),
-                        egui::Color32::from_rgba_unmultiplied(180, 130, 255, 200),
+                        crate::colour32::rgba(180, 130, 255, 220),
+                        crate::colour32::rgba(160, 110, 230, 140),
+                        crate::colour32::rgba(200, 150, 255, 250),
+                        crate::colour32::rgba(180, 130, 255, 200),
                     ),
                     // Tilt is rotation out of the picture's plane: a warmer
                     // sibling of rotation's violet.
                     klipp_core::VideoParam::TiltX | klipp_core::VideoParam::TiltY => (
-                        egui::Color32::from_rgba_unmultiplied(230, 140, 210, 220),
-                        egui::Color32::from_rgba_unmultiplied(210, 120, 190, 140),
-                        egui::Color32::from_rgba_unmultiplied(245, 160, 225, 250),
-                        egui::Color32::from_rgba_unmultiplied(230, 140, 210, 200),
+                        crate::colour32::rgba(230, 140, 210, 220),
+                        crate::colour32::rgba(210, 120, 190, 140),
+                        crate::colour32::rgba(245, 160, 225, 250),
+                        crate::colour32::rgba(230, 140, 210, 200),
                     ),
                     // Matte feather/choke share a teal palette matching
                     // the COMPOSITING-section "M" badge so the user sees
                     // a consistent visual identity.
                     klipp_core::VideoParam::MatteFeather | klipp_core::VideoParam::MatteChoke => (
-                        egui::Color32::from_rgba_unmultiplied(40, 160, 180, 220),
-                        egui::Color32::from_rgba_unmultiplied(35, 140, 160, 140),
-                        egui::Color32::from_rgba_unmultiplied(50, 180, 200, 250),
-                        egui::Color32::from_rgba_unmultiplied(40, 160, 180, 200),
+                        crate::colour32::rgba(40, 160, 180, 220),
+                        crate::colour32::rgba(35, 140, 160, 140),
+                        crate::colour32::rgba(50, 180, 200, 250),
+                        crate::colour32::rgba(40, 160, 180, 200),
                     ),
                 };
-                let vrb_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
+                let vrb_shadow_color = crate::colour32::rgba(0, 0, 0, 150);
                 let vrb_diamond_fill = if is_selected || is_multi_selected { vrb_diamond_fill_sel } else { vrb_diamond_fill_norm };
                 let vrb_active_line_color = if is_selected || is_multi_selected { vrb_line_color } else { vrb_line_color_dim };
                 let vrb_line_width = if is_selected || is_multi_selected { 2.5_f32 } else { 2.0_f32 };
@@ -12825,15 +12826,15 @@ impl TimelinePanel {
                 let vrb_pill_rect = egui::Rect::from_min_size(vrb_pill_pos, egui::vec2(vrb_pill_w, vrb_pill_h));
                 if clip_rect.width() > 30.0 {
                     let vrb_pill_bg = match vrb_param {
-                        klipp_core::VideoParam::Opacity => egui::Color32::from_rgba_unmultiplied(80, 180, 255, 100),
-                        klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => egui::Color32::from_rgba_unmultiplied(100, 220, 200, 100),
-                        klipp_core::VideoParam::Scale | klipp_core::VideoParam::ScaleY => egui::Color32::from_rgba_unmultiplied(140, 160, 255, 100),
-                        klipp_core::VideoParam::Rotation => egui::Color32::from_rgba_unmultiplied(180, 130, 255, 100),
-                        klipp_core::VideoParam::TiltX | klipp_core::VideoParam::TiltY => egui::Color32::from_rgba_unmultiplied(230, 140, 210, 100),
+                        klipp_core::VideoParam::Opacity => crate::colour32::rgba(80, 180, 255, 100),
+                        klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => crate::colour32::rgba(100, 220, 200, 100),
+                        klipp_core::VideoParam::Scale | klipp_core::VideoParam::ScaleY => crate::colour32::rgba(140, 160, 255, 100),
+                        klipp_core::VideoParam::Rotation => crate::colour32::rgba(180, 130, 255, 100),
+                        klipp_core::VideoParam::TiltX | klipp_core::VideoParam::TiltY => crate::colour32::rgba(230, 140, 210, 100),
                         // Matte feather/choke share a teal tint matching the
                         // "M" badge on consumer clips, so the rubber band
                         // and the matte indicator agree visually.
-                        klipp_core::VideoParam::MatteFeather | klipp_core::VideoParam::MatteChoke => egui::Color32::from_rgba_unmultiplied(40, 160, 180, 100),
+                        klipp_core::VideoParam::MatteFeather | klipp_core::VideoParam::MatteChoke => crate::colour32::rgba(40, 160, 180, 100),
                     };
                     vrb_clip_painter.rect_filled(vrb_pill_rect, 4.0, vrb_pill_bg);
                     vrb_clip_painter.text(
@@ -12958,11 +12959,11 @@ impl TimelinePanel {
                             ];
                             vrb_clip_painter.add(egui::Shape::convex_polygon(
                                 outline_diamond,
-                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+                                crate::colour32::rgba(0, 0, 0, 200),
                                 egui::Stroke::NONE,
                             ));
                             let fill = if is_hovered {
-                                egui::Color32::from_rgba_unmultiplied(
+                                crate::colour32::rgba(
                                     vrb_diamond_fill.r().saturating_add(30),
                                     vrb_diamond_fill.g().saturating_add(30),
                                     vrb_diamond_fill.b().saturating_add(30),
@@ -12981,7 +12982,7 @@ impl TimelinePanel {
                             let stroke = if crate::key_selection::marked(state, vrb_clip_id, &crate::state::KeyframeParamKind::Video(vrb_param), kf.time_secs) {
                                 egui::Stroke::new(2.0_f32, egui::Color32::WHITE)
                             } else {
-                                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220))
+                                egui::Stroke::new(1.0_f32, crate::colour32::rgba(20, 20, 20, 220))
                             };
                             vrb_clip_painter.add(egui::Shape::convex_polygon(diamond, fill, stroke));
 
@@ -13012,7 +13013,7 @@ impl TimelinePanel {
                             if kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected) {
                                 let vrb_pixels_per_sec = if vrb_clip_dur_secs > 0.0 { clip_rect.width() / vrb_clip_dur_secs as f32 } else { 1.0 };
                                 let vrb_bz_value_scale = clip_rect.height() / vrb_param_range;
-                                let vrb_tangent_line_color = egui::Color32::from_rgba_unmultiplied(
+                                let vrb_tangent_line_color = crate::colour32::rgba(
                                     vrb_active_line_color.r(), vrb_active_line_color.g(), vrb_active_line_color.b(), 120,
                                 );
                                 let vrb_handle_radius = 4.0_f32;
@@ -13028,7 +13029,7 @@ impl TimelinePanel {
                                     egui::pos2(vrb_tout_x, vrb_tout_y),
                                     vrb_handle_radius,
                                     vrb_active_line_color,
-                                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                                    egui::Stroke::new(1.0_f32, crate::colour32::rgba(20, 20, 20, 200)),
                                 );
 
                                 // Tangent in handle (left)
@@ -13042,7 +13043,7 @@ impl TimelinePanel {
                                     egui::pos2(vrb_tin_x, vrb_tin_y),
                                     vrb_handle_radius,
                                     vrb_active_line_color,
-                                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                                    egui::Stroke::new(1.0_f32, crate::colour32::rgba(20, 20, 20, 200)),
                                 );
                             }
                         }
@@ -13412,10 +13413,10 @@ impl TimelinePanel {
         // goes 0..2 with ticks at 0, 0.5, 1.0 (unity), 1.5, 2.0. Pan goes
         // -1..1 with ticks at -1.0 (L), -0.5, 0 (C), 0.5, 1.0 (R).
         let palette = audio_curve_palette(param);
-        let grid_color = egui::Color32::from_rgba_unmultiplied(
+        let grid_color = crate::colour32::rgba(
             tt.text_dim.r(), tt.text_dim.g(), tt.text_dim.b(), 28,
         );
-        let unity_grid_color = egui::Color32::from_rgba_unmultiplied(
+        let unity_grid_color = crate::colour32::rgba(
             palette.ref_color.r(), palette.ref_color.g(), palette.ref_color.b(), 110,
         );
         let label_color = tt.text_dim;
@@ -13570,7 +13571,7 @@ impl TimelinePanel {
                 + state.playhead_smooth_secs as f32 * state.timeline_zoom
                 - state.timeline_scroll_x;
             if playhead_x >= lane_rect.left() && playhead_x <= lane_rect.right() {
-                let ph_color = egui::Color32::from_rgba_unmultiplied(
+                let ph_color = crate::colour32::rgba(
                     tt.accent.r(), tt.accent.g(), tt.accent.b(), 200,
                 );
                 lane_painter.line_segment(
@@ -14296,9 +14297,9 @@ impl TimelinePanel {
             if clip_rect.width() > 30.0 {
                 // Background: rubber band color at ~40% opacity
                 let pill_bg = match rb_param {
-                    klipp_core::AudioParam::Volume => egui::Color32::from_rgba_unmultiplied(255, 195, 50, 100),
-                    klipp_core::AudioParam::Pan => egui::Color32::from_rgba_unmultiplied(50, 195, 255, 100),
-                    klipp_core::AudioParam::Gain => egui::Color32::from_rgba_unmultiplied(50, 220, 100, 100),
+                    klipp_core::AudioParam::Volume => crate::colour32::rgba(255, 195, 50, 100),
+                    klipp_core::AudioParam::Pan => crate::colour32::rgba(50, 195, 255, 100),
+                    klipp_core::AudioParam::Gain => crate::colour32::rgba(50, 220, 100, 100),
                 };
                 clip_painter.rect_filled(pill_rect, 4.0, pill_bg);
                 clip_painter.text(
@@ -14754,12 +14755,12 @@ impl TimelinePanel {
         let line_color = crate::browser::audio_fx_tab::audio_effect_color_for_type(
             &kf_effect_type, &theme_ref,
         );
-        let line_color_dim = egui::Color32::from_rgba_unmultiplied(
+        let line_color_dim = crate::colour32::rgba(
             line_color.r(), line_color.g(), line_color.b(), 140,
         );
         let active_line_color = if is_selected || is_multi_selected { line_color } else { line_color_dim };
         let rb_line_width = if is_selected || is_multi_selected { 2.5_f32 } else { 2.0_f32 };
-        let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
+        let shadow_color = crate::colour32::rgba(0, 0, 0, 150);
         let rb_shadow_width = rb_line_width + 1.0_f32;
 
         let clip_painter = painter.with_clip_rect(clip_rect);
@@ -14786,7 +14787,7 @@ impl TimelinePanel {
             egui::vec2(pill_w, pill_h),
         );
         if clip_rect.width() > 30.0 {
-            let pill_bg = egui::Color32::from_rgba_unmultiplied(
+            let pill_bg = crate::colour32::rgba(
                 line_color.r(), line_color.g(), line_color.b(), 100,
             );
             clip_painter.rect_filled(pill_rect, 4.0, pill_bg);
@@ -14916,7 +14917,7 @@ impl TimelinePanel {
                 if kf.interpolation == klipp_core::Interpolation::Bezier
                     && (is_selected || is_multi_selected)
                 {
-                    let tangent_line = egui::Color32::from_rgba_unmultiplied(
+                    let tangent_line = crate::colour32::rgba(
                         line_color.r(), line_color.g(), line_color.b(), 120,
                     );
                     let handle_r = 4.0_f32;
@@ -14929,7 +14930,7 @@ impl TimelinePanel {
                     );
                     clip_painter.circle(
                         egui::pos2(tout_x, tout_y), handle_r, line_color,
-                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                        egui::Stroke::new(1.0_f32, crate::colour32::rgba(20, 20, 20, 200)),
                     );
                     // In handle (left)
                     let tin_x = cx + kf.tangent_in.0 as f32 * pixels_per_sec;
@@ -14940,7 +14941,7 @@ impl TimelinePanel {
                     );
                     clip_painter.circle(
                         egui::pos2(tin_x, tin_y), handle_r, line_color,
-                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                        egui::Stroke::new(1.0_f32, crate::colour32::rgba(20, 20, 20, 200)),
                     );
                 }
 
@@ -15236,7 +15237,7 @@ impl TimelinePanel {
         painter.rect_filled(
             pill_rect,
             4.0,
-            egui::Color32::from_rgba_unmultiplied(
+            crate::colour32::rgba(
                 theme_ref.text_dim.r(), theme_ref.text_dim.g(), theme_ref.text_dim.b(), 80,
             ),
         );
@@ -15275,7 +15276,7 @@ impl TimelinePanel {
             let handle_size = 6.0_f32;
             let tt = theme();
             let acc = tt.accent;
-            let handle_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 220);
+            let handle_color = crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 220);
             let handle_hover_color = egui::Color32::from_rgb(
                 acc.r().saturating_add(20), acc.g().saturating_add(40), acc.b().saturating_add(48));
 
@@ -15369,7 +15370,7 @@ impl TimelinePanel {
                     // Vertical line at current drag position
                     painter.line_segment(
                         [egui::pos2(boundary_x, clip_rect.top()), egui::pos2(boundary_x, clip_rect.bottom())],
-                        egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 160)),
+                        egui::Stroke::new(1.5_f32, crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 160)),
                     );
                     // Tooltip with duration
                     let frac = if dragging_fi {
@@ -15443,7 +15444,7 @@ impl TimelinePanel {
                         let s = 5.0_f32; // half-size of the X
                         let tt = theme();
                         let mi = tt.marker_info;
-                        let xf_color = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 140);
+                        let xf_color = crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 140);
                         // The X, and below it the two fades it stands for.
                         painter.line_segment(
                             [egui::pos2(boundary_x - s, cy - s), egui::pos2(boundary_x + s, cy + s)],
@@ -15464,7 +15465,7 @@ impl TimelinePanel {
                             egui::pos2(boundary_x - tri_w, top_y + tri_h),
                         ];
                         painter.add(egui::Shape::convex_polygon(
-                            tri_out, egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 80), egui::Stroke::NONE,
+                            tri_out, crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 80), egui::Stroke::NONE,
                         ));
                         // Right fade-in triangle (filled)
                         let tri_in = vec![
@@ -15473,7 +15474,7 @@ impl TimelinePanel {
                             egui::pos2(boundary_x + tri_w, top_y + tri_h),
                         ];
                         painter.add(egui::Shape::convex_polygon(
-                            tri_in, egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 80), egui::Stroke::NONE,
+                            tri_in, crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 80), egui::Stroke::NONE,
                         ));
                     }
                 }
@@ -15515,7 +15516,7 @@ impl TimelinePanel {
 
                             let tt = theme();
                             let acc = tt.accent;
-                            let line_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 160);
+                            let line_color = crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 160);
 
                             // Dashed vertical line
                             let dash_len = 5.0_f32;
@@ -15582,7 +15583,7 @@ impl TimelinePanel {
                         // Amber striped overlay
                         let tt = theme();
                         let acc = tt.accent;
-                        let stripe_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80);
+                        let stripe_color = crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 80);
                         let stripe_spacing = 6.0_f32;
                         let clip_painter = painter.with_clip_rect(overlap_rect);
                         let mut sx = overlap_rect.min.x - overlap_rect.height();
@@ -15760,9 +15761,9 @@ impl TimelinePanel {
         let font = egui::FontId::proportional(10.0);
         let text_color = tt.text_primary;
         let bp = tt.bg_deep;
-        let bg_color = egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220);
+        let bg_color = crate::colour32::rgba(bp.r(), bp.g(), bp.b(), 220);
         let acc = tt.accent;
-        let border_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 180);
+        let border_color = crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 180);
 
         // Measure text width for the panel
         let galley1 = painter.layout_no_wrap(line1.clone(), font.clone(), text_color);
@@ -16487,7 +16488,7 @@ impl TimelinePanel {
                                     egui::Align2::LEFT_BOTTOM,
                                     &tooltip,
                                     egui::FontId::proportional(10.0),
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                                    crate::colour32::rgba(255, 255, 255, 220),
                                 );
                             }
                         }
@@ -16590,7 +16591,7 @@ impl TimelinePanel {
                                     egui::Align2::LEFT_BOTTOM,
                                     &tooltip,
                                     egui::FontId::proportional(10.0),
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                                    crate::colour32::rgba(255, 255, 255, 220),
                                 );
                             }
                         }
@@ -16702,7 +16703,7 @@ impl TimelinePanel {
                                     egui::Align2::LEFT_BOTTOM,
                                     &tooltip,
                                     egui::FontId::proportional(10.0),
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                                    crate::colour32::rgba(255, 255, 255, 220),
                                 );
                             }
                         }
@@ -16842,7 +16843,7 @@ impl TimelinePanel {
                                 painter.rect_filled(
                                     bg_rect,
                                     3.0,
-                                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 210),
+                                    crate::colour32::rgba(0, 0, 0, 210),
                                 );
                                 painter.text(
                                     tooltip_pos,
@@ -16994,7 +16995,7 @@ impl TimelinePanel {
                 egui::Align2::LEFT_BOTTOM,
                 &tooltip,
                 egui::FontId::proportional(10.0),
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                crate::colour32::rgba(255, 255, 255, 220),
             );
             break;
         }

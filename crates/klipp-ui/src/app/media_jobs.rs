@@ -461,7 +461,7 @@ impl KlippApp {
             let pixels: Vec<egui::Color32> = result
                 .rgba
                 .chunks_exact(4)
-                .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
+                .map(|p| crate::colour32::rgba(p[0], p[1], p[2], p[3]))
                 .collect();
             let image = egui::ColorImage::new([result.width as usize, result.height as usize], pixels);
             let new_size = egui::vec2(result.width as f32, result.height as f32);
@@ -1472,7 +1472,7 @@ impl KlippApp {
                         let pixels: Vec<egui::Color32> = rgba
                             .chunks_exact(4)
                             .map(|p| {
-                                egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])
+                                crate::colour32::rgba(p[0], p[1], p[2], p[3])
                             })
                             .collect();
                         let image = egui::ColorImage::new([w, h], pixels);
@@ -1530,7 +1530,7 @@ impl KlippApp {
                                 .rgba
                                 .chunks_exact(4)
                                 .map(|p| {
-                                    egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])
+                                    crate::colour32::rgba(p[0], p[1], p[2], p[3])
                                 })
                                 .collect();
                             let image = egui::ColorImage::new([w, h_p], pixels);

@@ -4185,7 +4185,7 @@ impl PreferencesPanel {
         Self::section_header(ui, "OVERLAYS", theme);
         Self::setting_row(ui, "Grid colour", theme, |ui| {
             let gc = &mut prefs.viewer.grid_color;
-            let mut c = egui::Color32::from_rgba_unmultiplied(gc[0], gc[1], gc[2], gc[3]);
+            let mut c = crate::colour32::rgba(gc[0], gc[1], gc[2], gc[3]);
             if ui.colour_srgba(&mut c).changed() {
                 *gc = [c.r(), c.g(), c.b(), c.a()];
                 *dirty = true;

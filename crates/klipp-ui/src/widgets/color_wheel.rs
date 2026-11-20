@@ -139,7 +139,7 @@ pub fn color_wheel_spanned(
     }
 
     // ── Guide lines ──
-    let guide_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20);
+    let guide_color = crate::colour32::rgba(255, 255, 255, 20);
     let guide_stroke = egui::Stroke::new(0.5_f32, guide_color);
     let wc = wheel_rect.center();
     // Concentric circles at 33% and 66% radius
@@ -247,11 +247,11 @@ pub fn color_wheel_spanned(
     painter.circle_filled(
         egui::pos2(puck_x + shadow_off, puck_y + shadow_off),
         puck_r,
-        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 90),
+        crate::colour32::rgba(0, 0, 0, 90),
     );
     // Puck body
     painter.circle_filled(puck_center, puck_r, egui::Color32::WHITE);
-    painter.circle_stroke(puck_center, puck_r, egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140)));
+    painter.circle_stroke(puck_center, puck_r, egui::Stroke::new(1.0_f32, crate::colour32::rgba(0, 0, 0, 140)));
 
     // ── RGB readout ──
     let rgb_top = wheel_rect.max.y + spacing;
@@ -306,7 +306,7 @@ pub fn color_wheel_spanned(
         // most of the time, that is most of the time. Tinted faintly
         // instead, so the channels are identifiable without shouting.
         let border = if is_zero {
-            egui::Color32::from_rgba_unmultiplied(border_c.r(), border_c.g(), border_c.b(), 90)
+            crate::colour32::rgba(border_c.r(), border_c.g(), border_c.b(), 90)
         } else {
             border_c
         };

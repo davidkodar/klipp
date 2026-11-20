@@ -1567,7 +1567,7 @@ fn paint_mask_heatmap(
                 ),
                 egui::vec2(cell_w + 0.5, cell_h + 0.5),
             );
-            let color = egui::Color32::from_rgba_unmultiplied(
+            let color = crate::colour32::rgba(
                 tint.r(),
                 tint.g(),
                 tint.b(),

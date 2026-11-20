@@ -184,7 +184,7 @@ fn show_ofx_param(
                         _ => (1.0, 1.0, 1.0, 1.0),
                     },
                 };
-                let mut color = egui::Color32::from_rgba_unmultiplied(
+                let mut color = crate::colour32::rgba(
                     (r * 255.0) as u8, (g * 255.0) as u8,
                     (b * 255.0) as u8, (a * 255.0) as u8,
                 );

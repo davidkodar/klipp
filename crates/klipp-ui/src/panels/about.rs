@@ -217,7 +217,7 @@ fn hero(ui: &mut egui::Ui, theme: &KlippTheme, t: f64) -> bool {
 /// A low, warm light behind the icon: amber at the centre, gone at the edge.
 fn warmth(painter: &egui::Painter, centre: Pos2, strength: f32) {
     let mut mesh = egui::Mesh::default();
-    let inner = Color32::from_rgba_unmultiplied(AMBER.r(), AMBER.g(), AMBER.b(), (255.0 * strength) as u8);
+    let inner = crate::colour32::rgba(AMBER.r(), AMBER.g(), AMBER.b(), (255.0 * strength) as u8);
     mesh.colored_vertex(centre, inner);
     let n = 64;
     let (rx, ry) = (190.0, 120.0);
@@ -332,7 +332,7 @@ fn paint_piece(painter: &egui::Painter, piece: &Piece, sheen: Option<Sheen>, app
             for p in &slice {
                 let light = sheen.at(*p) * 0.62 * appear;
                 let c = piece.highlight;
-                mesh.colored_vertex(*p, Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (light * 255.0) as u8));
+                mesh.colored_vertex(*p, crate::colour32::rgba(c.r(), c.g(), c.b(), (light * 255.0) as u8));
             }
             for i in 1..slice.len() as u32 - 1 {
                 mesh.add_triangle(base, base + i, base + i + 1);

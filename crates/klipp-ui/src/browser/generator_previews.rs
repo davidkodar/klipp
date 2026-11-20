@@ -120,7 +120,7 @@ impl GeneratorPreviews {
             let pixels: Vec<egui::Color32> = done
                 .rgba
                 .chunks_exact(4)
-                .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
+                .map(|p| crate::colour32::rgba(p[0], p[1], p[2], p[3]))
                 .collect();
             let image = egui::ColorImage::new([PREVIEW_W as usize, PREVIEW_H as usize], pixels);
             let tex = crate::app::alloc_texture_logged(ctx, "generator_preview", image, egui::TextureOptions::LINEAR);

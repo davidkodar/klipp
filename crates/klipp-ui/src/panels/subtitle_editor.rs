@@ -176,7 +176,7 @@ fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
             } else if form.animated.is_some() {
                 ui.label("Spoken word");
                 let [r, g, b, a] = form.active_color;
-                let mut c = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
+                let mut c = crate::colour32::rgba(r, g, b, a);
                 if ui.colour_srgba(&mut c).changed() {
                     form.active_color = c.to_array();
                 }
@@ -385,16 +385,16 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                                 let is_selected = selected_clip == Some(row.clip_id);
                                 let row_frame = egui::Frame::NONE
                                     .fill(if is_active {
-                                        egui::Color32::from_rgba_unmultiplied(0xff, 0xdc, 0x32, 30)
+                                        crate::colour32::rgba(0xff, 0xdc, 0x32, 30)
                                     } else if is_selected {
-                                        egui::Color32::from_rgba_unmultiplied(0x40, 0x80, 0xff, 20)
+                                        crate::colour32::rgba(0x40, 0x80, 0xff, 20)
                                     } else {
                                         egui::Color32::TRANSPARENT
                                     })
                                     .inner_margin(egui::Margin::same(4))
                                     .stroke(egui::Stroke::new(
                                         1.0_f32,
-                                        egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 10),
+                                        crate::colour32::rgba(0xff, 0xff, 0xff, 10),
                                     ));
                                 row_frame.show(ui, |ui| {
                                     render_row(ui, row_counter, row, fps, state, &mut cmds);
@@ -463,11 +463,11 @@ fn render_track_header(
 ) {
     let collapsed = state.subtitle_editor.subtitle_track_collapsed.contains(&st.track_id);
     let hdr_frame = egui::Frame::NONE
-        .fill(egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 6))
+        .fill(crate::colour32::rgba(0xff, 0xff, 0xff, 6))
         .inner_margin(egui::Margin::symmetric(4, 3))
         .stroke(egui::Stroke::new(
             1.0_f32,
-            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 16),
+            crate::colour32::rgba(0xff, 0xff, 0xff, 16),
         ));
     hdr_frame.show(ui, |ui| {
         ui.horizontal(|ui| {

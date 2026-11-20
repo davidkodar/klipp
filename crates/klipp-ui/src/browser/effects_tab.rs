@@ -1,3 +1,4 @@
+use crate::colour32::Colour029;
 use crate::widgets::menu::MenuRows;
 use crate::browser::effect_registry::EffectSource;
 use crate::drag_drop::DragPayload;
@@ -507,14 +508,14 @@ pub fn show(
                                     ui.painter().rect_filled(
                                         star_rect,
                                         4.0,
-                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, bg_alpha),
+                                        crate::colour32::rgba(0, 0, 0, bg_alpha),
                                     );
                                 }
                                 let star_glyph = if is_fav { "\u{2605}" } else { "\u{2606}" };
                                 let star_color = if is_fav || star_resp.hovered() {
                                     egui::Color32::from_rgb(255, 215, 106)
                                 } else if render_grid {
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200)
+                                    crate::colour32::rgba(255, 255, 255, 200)
                                 } else {
                                     // List view: tint with the panel's
                                     // dim text colour so light themes
@@ -786,7 +787,7 @@ fn effect_card(
                 let a = angle + i as f32 * std::f32::consts::TAU / 8.0;
                 let alpha = (255.0 * (1.0 - i as f32 / 8.0)) as u8;
                 let dot = egui::pos2(center.x + a.cos() * 6.0, center.y + a.sin() * 6.0);
-                painter.circle_filled(dot, 1.5, egui::Color32::from_white_alpha(alpha));
+                painter.circle_filled(dot, 1.5, crate::colour32::white(alpha));
             }
             ui.ctx().request_repaint();
         }
@@ -803,7 +804,7 @@ fn effect_card(
                 egui::pos2(mid_x, preview_rect.min.y + 4.0),
                 egui::pos2(mid_x, preview_rect.max.y - 4.0),
             ],
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
+            egui::Stroke::new(1.0_f32, crate::colour32::rgba(255, 255, 255, 90)),
         );
     }
 
@@ -956,7 +957,7 @@ fn effect_list_row(
                 let a = t * 4.0 + i as f32 * std::f32::consts::TAU / 6.0;
                 let alpha = (255.0 * (1.0 - i as f32 / 6.0)) as u8;
                 let dot = egui::pos2(center.x + a.cos() * 4.0, center.y + a.sin() * 4.0);
-                painter.circle_filled(dot, 1.0, egui::Color32::from_white_alpha(alpha));
+                painter.circle_filled(dot, 1.0, crate::colour32::white(alpha));
             }
             ui.ctx().request_repaint();
         }
@@ -1477,8 +1478,8 @@ fn paint_thumb_badge(
     let font = egui::FontId::proportional(10.0);
     let label_color = match kind {
         ThumbBadgeKind::Gpu => theme.text_on_accent,
-        ThumbBadgeKind::Cpu => egui::Color32::from_rgba_unmultiplied(255, 255, 255, 230),
-        ThumbBadgeKind::Source => egui::Color32::from_rgba_unmultiplied(255, 255, 255, 230),
+        ThumbBadgeKind::Cpu => crate::colour32::rgba(255, 255, 255, 230),
+        ThumbBadgeKind::Source => crate::colour32::rgba(255, 255, 255, 230),
     };
     let galley = painter.layout_no_wrap(label.to_uppercase(), font, label_color);
     let pad_x = 6.0;
@@ -1489,14 +1490,14 @@ fn paint_thumb_badge(
         egui::vec2(w, h),
     );
     let bg = match kind {
-        ThumbBadgeKind::Gpu => egui::Color32::from_rgba_unmultiplied(
+        ThumbBadgeKind::Gpu => crate::colour32::rgba(
             theme.marker_success.r(),
             theme.marker_success.g(),
             theme.marker_success.b(),
             220,
         ),
-        ThumbBadgeKind::Cpu => egui::Color32::from_rgba_unmultiplied(0, 0, 0, 165),
-        ThumbBadgeKind::Source => egui::Color32::from_rgba_unmultiplied(0, 0, 0, 165),
+        ThumbBadgeKind::Cpu => crate::colour32::rgba(0, 0, 0, 165),
+        ThumbBadgeKind::Source => crate::colour32::rgba(0, 0, 0, 165),
     };
     painter.rect_filled(rect, 2.0, bg);
     // Hairline highlight to lift the badge off arbitrary thumbnail
@@ -1506,7 +1507,7 @@ fn paint_thumb_badge(
         3.0,
         egui::Stroke::new(
             1.0_f32,
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24),
+            crate::colour32::rgba(255, 255, 255, 24),
         ), egui::StrokeKind::Outside,
     );
     let text_pos = egui::pos2(rect.min.x + pad_x, rect.center().y - galley.size().y * 0.5);
@@ -1615,7 +1616,7 @@ fn paint_effect_preview(
     theme: &KlippTheme,
 ) {
     let cat_color = category_color(fx.category, theme);
-    let dim = cat_color.linear_multiply(0.3);
+    let dim = cat_color.lin_mul(0.3);
 
     match fx.category {
         EffectCategory::Blur => {
@@ -1628,7 +1629,7 @@ fn paint_effect_preview(
                         egui::vec2(rect.width(), rect.height() / 5.0 - 1.0),
                     ),
                     0.0,
-                    cat_color.linear_multiply(alpha as f32 / 255.0),
+                    cat_color.lin_mul(alpha as f32 / 255.0),
                 );
             }
         }
@@ -1638,7 +1639,7 @@ fn paint_effect_preview(
                 egui::pos2(rect.center().x, rect.min.y),
                 egui::vec2(rect.width() / 2.0, rect.height()),
             );
-            painter.rect_filled(half, 0.0, cat_color.linear_multiply(0.2));
+            painter.rect_filled(half, 0.0, cat_color.lin_mul(0.2));
         }
         EffectCategory::Keying => {
             painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0x0a, 0x30, 0x0a));
@@ -1651,7 +1652,7 @@ fn paint_effect_preview(
             painter.circle_filled(
                 rect.center(),
                 rect.height() * 0.3,
-                cat_color.linear_multiply(0.4),
+                cat_color.lin_mul(0.4),
             );
         }
         EffectCategory::Distort => {
@@ -1660,7 +1661,7 @@ fn paint_effect_preview(
                 let x = rect.min.x + (i as f32 / 5.0) * rect.width();
                 painter.line_segment(
                     [egui::pos2(x, rect.min.y), egui::pos2(x + 10.0, rect.max.y)],
-                    egui::Stroke::new(1.0_f32, cat_color.linear_multiply(0.3)),
+                    egui::Stroke::new(1.0_f32, cat_color.lin_mul(0.3)),
                 );
             }
         }
@@ -1676,8 +1677,8 @@ fn paint_effect_preview(
             let cy = rect.center().y;
             let w = rect.width();
             let h = rect.height();
-            let accent = cat_color.linear_multiply(0.7);
-            let dim_line = cat_color.linear_multiply(0.25);
+            let accent = cat_color.lin_mul(0.7);
+            let dim_line = cat_color.lin_mul(0.25);
 
             match type_id {
                 "eq" => {
@@ -1721,7 +1722,7 @@ fn paint_effect_preview(
                     }
                     // Threshold marker
                     let tx = plot.min.x + 0.5 * plot.width();
-                    painter.line_segment([egui::pos2(tx, plot.min.y), egui::pos2(tx, plot.max.y)], egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_unmultiplied(255, 180, 60, 80)));
+                    painter.line_segment([egui::pos2(tx, plot.min.y), egui::pos2(tx, plot.max.y)], egui::Stroke::new(0.5_f32, crate::colour32::rgba(255, 180, 60, 80)));
                 }
                 "limiter" => {
                     // Limiter: hard ceiling line with clipped waveform
@@ -1762,7 +1763,7 @@ fn paint_effect_preview(
                         let noise = ((t * 80.0).sin() * (t * 130.0).cos()) * envelope;
                         let bar_h = noise.abs() * h * 0.4;
                         let alpha = (envelope * 200.0).min(255.0) as u8;
-                        let color = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), alpha);
+                        let color = crate::colour32::rgba(accent.r(), accent.g(), accent.b(), alpha);
                         painter.line_segment([egui::pos2(x, cy - bar_h), egui::pos2(x, cy + bar_h)], egui::Stroke::new(1.5_f32, color));
                     }
                 }
@@ -1772,7 +1773,7 @@ fn paint_effect_preview(
                         let offset = echo as f32 * 0.22;
                         let amp = 0.8_f32.powi(echo);
                         let alpha = (amp * 220.0) as u8;
-                        let color = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), alpha);
+                        let color = crate::colour32::rgba(accent.r(), accent.g(), accent.b(), alpha);
                         let ex = rect.min.x + (0.1 + offset) * w;
                         let bar_w = w * 0.08;
                         for i in 0..8 {
@@ -1789,7 +1790,7 @@ fn paint_effect_preview(
                         let phase = layer as f32 * 0.8;
                         let offset_y = (layer as f32 - 1.0) * 3.0;
                         let alpha = 180 - layer * 40;
-                        let color = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), alpha as u8);
+                        let color = crate::colour32::rgba(accent.r(), accent.g(), accent.b(), alpha as u8);
                         let n = 40;
                         let points: Vec<egui::Pos2> = (0..=n).map(|i| {
                             let t = i as f32 / n as f32;
@@ -1822,7 +1823,7 @@ fn paint_effect_preview(
                         egui::pos2(rect.min.x + 0.4 * w, rect.min.y),
                         egui::pos2(rect.min.x + 0.7 * w, rect.max.y),
                     );
-                    painter.rect_filled(zone, 0.0, egui::Color32::from_rgba_unmultiplied(220, 80, 60, 20));
+                    painter.rect_filled(zone, 0.0, crate::colour32::rgba(220, 80, 60, 20));
                 }
                 "normalize" => {
                     // Normalize: small waveform scaled up to fill
@@ -1832,7 +1833,7 @@ fn paint_effect_preview(
                         let t = i as f32 / (n as f32 / 2.0);
                         let x = rect.min.x + t * w * 0.45;
                         let amp = (t * 10.0 * std::f32::consts::PI).sin() * 0.15;
-                        painter.line_segment([egui::pos2(x, cy - amp * h), egui::pos2(x, cy + amp * h)], egui::Stroke::new(1.0_f32, dim_line.linear_multiply(1.5)));
+                        painter.line_segment([egui::pos2(x, cy - amp * h), egui::pos2(x, cy + amp * h)], egui::Stroke::new(1.0_f32, dim_line.lin_mul(1.5)));
                     }
                     // Arrow
                     painter.line_segment([egui::pos2(cx - 4.0, cy), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(200, 200, 200)));
@@ -1869,7 +1870,7 @@ fn paint_effect_preview(
                         let x = rect.min.x + t * w * 0.45;
                         let signal = (t * 8.0 * std::f32::consts::PI).sin() * 0.25;
                         let noise = ((t * 50.0).sin() * (t * 73.0).cos()) * 0.12;
-                        painter.line_segment([egui::pos2(x, cy - (signal + noise) * h), egui::pos2(x, cy + (signal + noise).abs() * h * 0.3)], egui::Stroke::new(1.0_f32, dim_line.linear_multiply(1.5)));
+                        painter.line_segment([egui::pos2(x, cy - (signal + noise) * h), egui::pos2(x, cy + (signal + noise).abs() * h * 0.3)], egui::Stroke::new(1.0_f32, dim_line.lin_mul(1.5)));
                     }
                     // Arrow
                     painter.line_segment([egui::pos2(cx - 4.0, cy), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(200, 200, 200)));

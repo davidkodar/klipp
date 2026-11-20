@@ -141,6 +141,7 @@ pub mod hardware;
 pub mod ui_util;
 pub mod viewer_lut;
 pub mod widgets;
+pub mod colour32;
 
 pub use app::KlippApp;
 pub use prefs::Preferences;

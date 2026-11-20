@@ -823,7 +823,7 @@ fn title_list_row(
     let hovered = resp.hovered();
 
     if is_selected {
-        let bg = egui::Color32::from_rgba_unmultiplied(
+        let bg = crate::colour32::rgba(
             theme.accent.r(),
             theme.accent.g(),
             theme.accent.b(),
@@ -909,7 +909,7 @@ fn paint_preview_canvas(
                     painter.rect_filled(
                         s,
                         egui::CornerRadius::ZERO,
-                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 30),
+                        crate::colour32::rgba(0, 0, 0, 30),
                     );
                 }
                 x += stripe_w;
@@ -920,7 +920,7 @@ fn paint_preview_canvas(
             painter.rect_filled(rect, rounding, egui::Color32::from_rgb(0x2c, 0x5e, 0x3a));
             // Dotted grid — chroma-screen reference.
             let step = 8.0;
-            let dot = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24);
+            let dot = crate::colour32::rgba(255, 255, 255, 24);
             let mut y = rect.min.y + step * 0.5;
             while y < rect.max.y {
                 let mut x = rect.min.x + step * 0.5;

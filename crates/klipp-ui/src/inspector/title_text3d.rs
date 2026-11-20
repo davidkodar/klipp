@@ -4,6 +4,7 @@
 //! colours fold under Details. The numbers key at the playhead through
 //! the title layer keyframe commands, as `text3d.*`.
 
+use crate::colour32::Colour029;
 use crate::widgets::colour_field::ColourField;
 use klipp_core::text3d::{Bevel, BevelProfile, Text3d, LOOKS};
 use klipp_core::{AppCommand, ClipId};
@@ -153,8 +154,8 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: ClipId, target: Opti
         // The colours: the face its own or the text's, the walls, the
         // bevel its own or the face's.
         let swatch = |ui: &mut egui::Ui, c: [u8; 4]| -> Option<[u8; 4]> {
-            let mut col = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            ui.colour_srgba(&mut col).changed().then(|| col.to_srgba_unmultiplied())
+            let mut col = crate::colour32::rgba(c[0], c[1], c[2], c[3]);
+            ui.colour_srgba(&mut col).changed().then(|| col.unmul())
         };
         ui.horizontal(|ui| {
             let mut own = base.face_color.is_some();

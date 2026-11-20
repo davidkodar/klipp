@@ -849,11 +849,11 @@ fn paint_synthetic_title_thumb(
     // template stores e.g. 72 px which would dwarf the thumbnail; we
     // map it down by a fixed factor and clamp the result.
     let font_size = (data.font_size() / 7.0).clamp(8.0, 18.0);
-    let color = egui::Color32::from_rgba_unmultiplied(
+    let color = crate::colour32::rgba(
         data.color()[0], data.color()[1], data.color()[2], data.color()[3],
     );
     if let Some(ref shadow) = data.shadow() {
-        let sc = egui::Color32::from_rgba_unmultiplied(
+        let sc = crate::colour32::rgba(
             shadow.color[0], shadow.color[1], shadow.color[2], shadow.color[3],
         );
         painter.text(
@@ -916,7 +916,7 @@ fn paint_asset_instance_count(
     painter.rect_filled(
         pill_rect,
         2.0,
-        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+        crate::colour32::rgba(0, 0, 0, 200),
     );
     painter.text(
         pill_rect.center(),

@@ -2772,7 +2772,7 @@ fn show_title_quick_style_subsection(
             ("P", [180, 80, 220, 255]),
         ];
         for (label, c) in preset_colors {
-            let btn_color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+            let btn_color = crate::colour32::rgba(c[0], c[1], c[2], c[3]);
             let resp = ui.add(
                 egui::Button::new(egui::RichText::new(*label).size(10.0).color(
                     if c[0] as u16 + c[1] as u16 + c[2] as u16 > 400 {

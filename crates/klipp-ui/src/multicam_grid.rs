@@ -453,7 +453,7 @@ pub fn show(ui: &mut egui::Ui, rect: egui::Rect, runtime: &GridRuntime, active: 
         let stroke = if is_active {
             egui::Stroke::new(4.0_f32, theme.accent)
         } else if resp.hovered() {
-            egui::Stroke::new(2.0_f32, egui::Color32::from_white_alpha(180))
+            egui::Stroke::new(2.0_f32, crate::colour32::white(180))
         } else {
             egui::Stroke::NONE
         };

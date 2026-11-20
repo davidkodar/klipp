@@ -3,6 +3,7 @@
 //! choice is a chip rendered by the real title engine on the clip's
 //! own text, so what is picked is what will play.
 
+use crate::colour32::Colour029;
 use crate::widgets::colour_field::ColourField;
 use crate::browser::title_previews::TitlePreviews;
 use crate::theme::KlippTheme;
@@ -809,9 +810,9 @@ pub fn template_fields(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_cor
             V::Colour(c) => {
                 ui.horizontal(|ui| {
                     ui.label(field.label.as_str());
-                    let mut col = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+                    let mut col = crate::colour32::rgba(c[0], c[1], c[2], c[3]);
                     if ui.colour_srgba(&mut col).changed() {
-                        set(V::Colour(col.to_srgba_unmultiplied()), true);
+                        set(V::Colour(col.unmul()), true);
                     }
                 });
             }
@@ -1035,12 +1036,12 @@ fn show_loops(
                         changed |= ui.add(crate::widgets::number_field(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
                     }
                     TitleLoop::ColorBlend { color_a, color_b, rate_hz } => {
-                        let mut a = egui::Color32::from_rgba_unmultiplied(color_a[0], color_a[1], color_a[2], color_a[3]);
+                        let mut a = crate::colour32::rgba(color_a[0], color_a[1], color_a[2], color_a[3]);
                         if ui.colour_srgba(&mut a).changed() {
                             *color_a = a.to_array();
                             changed = true;
                         }
-                        let mut b = egui::Color32::from_rgba_unmultiplied(color_b[0], color_b[1], color_b[2], color_b[3]);
+                        let mut b = crate::colour32::rgba(color_b[0], color_b[1], color_b[2], color_b[3]);
                         if ui.colour_srgba(&mut b).changed() {
                             *color_b = b.to_array();
                             changed = true;
@@ -1270,7 +1271,7 @@ fn show_edge_fade(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::Cl
 // ─── Style card ──────────────────────────────────────────────────────
 
 fn to_c32(c: [u8; 4]) -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+    crate::colour32::rgba(c[0], c[1], c[2], c[3])
 }
 
 /// The style card: presets as chips, then fill, gradient, stroke, shadow

@@ -6,6 +6,7 @@
 //! than two are left. A drag, of a handle or of a number, is one undo
 //! step; every other edit is one of its own.
 
+use crate::colour32::Colour029;
 use crate::widgets::colour_field::ColourField;
 use klipp_core::fill_gradient::{GradientKind, GradientRamp, GradientStop, MAX_GRADIENT_STOPS};
 use klipp_core::{AppCommand, ClipId};
@@ -87,7 +88,7 @@ pub(super) fn show(
         let (a, b) = (s as f32 / SEGMENTS as f32, (s + 1) as f32 / SEGMENTS as f32);
         let c = ramp.at((a + b) * 0.5);
         let r = egui::Rect::from_min_max(egui::pos2(bar.left() + a * bar.width(), bar.top()), egui::pos2(bar.left() + b * bar.width(), bar.bottom()));
-        painter.rect_filled(r, 0.0, egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]));
+        painter.rect_filled(r, 0.0, crate::colour32::rgba(c[0], c[1], c[2], c[3]));
     }
     painter.rect_stroke(bar, 2.0, egui::Stroke::new(1.0_f32, egui::Color32::from_gray(90)), egui::StrokeKind::Outside);
     for i in 0..stops.len() {
@@ -113,7 +114,7 @@ pub(super) fn show(
         let tip = egui::pos2(x, handles.top());
         let points = vec![tip, egui::pos2(x - 5.0, handles.bottom()), egui::pos2(x + 5.0, handles.bottom())];
         let edge = if i == selected { egui::Color32::WHITE } else { egui::Color32::from_gray(110) };
-        ui.painter().add(egui::Shape::convex_polygon(points, egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 255), egui::Stroke::new(1.5_f32, edge)));
+        ui.painter().add(egui::Shape::convex_polygon(points, crate::colour32::rgba(c[0], c[1], c[2], 255), egui::Stroke::new(1.5_f32, edge)));
     }
     if bar_resp.clicked() && stops.len() < MAX_GRADIENT_STOPS {
         if let Some(pos) = bar_resp.interact_pointer_pos() {
@@ -130,7 +131,7 @@ pub(super) fn show(
         let lo = if selected == 0 { 0.0 } else { stops[selected - 1].position };
         let hi = stops.get(selected + 1).map_or(1.0, |s| s.position);
         let stop = &mut stops[selected];
-        let mut c = egui::Color32::from_rgba_unmultiplied(stop.color[0], stop.color[1], stop.color[2], stop.color[3]);
+        let mut c = crate::colour32::rgba(stop.color[0], stop.color[1], stop.color[2], stop.color[3]);
         let picked = ui.colour_srgba(&mut c).changed();
         let stop_keys = keys.as_ref().map(|k| k.keys.get(selected).cloned().unwrap_or_default());
         let toggled = match (&keys, &stop_keys) {
@@ -150,11 +151,11 @@ pub(super) fn show(
                     object_id: k.object_id,
                     param_key: klipp_core::title_effect_keys::gradient_stop_key(selected),
                     time_secs: k.time_secs,
-                    color: (!(toggled && at_key)).then_some(c.to_srgba_unmultiplied()),
+                    color: (!(toggled && at_key)).then_some(c.unmul()),
                 });
             }
             _ if picked => {
-                stop.color = c.to_srgba_unmultiplied();
+                stop.color = c.unmul();
                 changed = true;
             }
             _ => {}

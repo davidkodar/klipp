@@ -1689,7 +1689,7 @@ impl LaunchScreen {
             ui.painter().rect_filled(
                 rect.shrink(1.0),
                 rounding,
-                egui::Color32::from_rgba_unmultiplied(220, 220, 228, 8),
+                crate::colour32::rgba(220, 220, 228, 8),
             );
         }
 
@@ -2478,7 +2478,7 @@ fn image_from_png(data: &[u8]) -> Result<egui::ColorImage, String> {
             .collect(),
         png::ColorType::Rgba => bytes
             .chunks_exact(4)
-            .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+            .map(|c| crate::colour32::rgba(c[0], c[1], c[2], c[3]))
             .collect(),
         _ => return Err("Unsupported PNG colour type".into()),
     };
