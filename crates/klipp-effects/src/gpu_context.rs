@@ -67,6 +67,17 @@ fn instance_unlocked() -> wgpu::Instance {
 /// The features a device asks for to time the GPU's work (#3207): both
 /// timestamp features where the adapter has them, none where it hasn't,
 /// so a device is never refused for want of them.
+/// How the device suballocates memory: in 8 to 64 MB blocks, so a large
+/// buffer (a 4K frame is 133 MB) gets memory of its own and gives it back
+/// when it goes. wgpu 22's allocator did that for anything over 32 MB;
+/// wgpu 29's packs everything into 128 to 256 MB blocks by default and
+/// keeps emptied blocks, so a nested scene took 256 MB a level and an
+/// engine left ~500 MB behind after it quit. Klipp and Veylvik share one
+/// card, so memory given back matters more than the allocator's speed.
+pub fn memory_hints() -> wgpu::MemoryHints {
+    wgpu::MemoryHints::MemoryUsage
+}
+
 pub fn timing_features(adapter: &wgpu::Adapter) -> wgpu::Features {
     if adapter.features().contains(crate::gpu::timing::FEATURES) {
         crate::gpu::timing::FEATURES
@@ -173,6 +184,7 @@ impl GpuContext {
                 label: Some("klipp-shared"),
                 required_features: timing_features(&adapter),
                 required_limits: device_limits(&adapter),
+                memory_hints: memory_hints(),
                 ..Default::default()
             },
         ))

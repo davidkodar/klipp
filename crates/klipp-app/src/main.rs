@@ -616,7 +616,7 @@ fn main() -> Result<()> {
                     // track's GPU work (#3207); never asked of one without.
                     required_features: klipp_effects::gpu_context::timing_features(adapter),
                     required_limits: klipp_effects::gpu_context::device_limits(adapter),
-                    memory_hints: eframe::egui_wgpu::wgpu::MemoryHints::default(),
+                    memory_hints: klipp_effects::gpu_context::memory_hints(),
                     ..Default::default()
                 }),
                 ..eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle()
