@@ -1664,7 +1664,7 @@ fn wipe_clip_buttons(ui: &mut egui::Ui, neighbours: (Option<klipp_core::ClipId>,
         (AFTER, klipp_core::WipeClip::Next, "Wipe against the clip after this one, graded", neighbours.1),
     ] {
         let lit = that.is_some() && that == wiping;
-        if ui.add_enabled(that.is_some(), egui::Button::new(label).small().selected(lit)).on_hover_text(hover).clicked() {
+        if crate::widgets::selected_button(ui, egui::Button::new(label).small(), lit, |ui, b| ui.add_enabled(that.is_some(), b)).on_hover_text(hover).clicked() {
             cmds.push(AppCommand::WipeAgainstClip { target: (!lit).then_some(target) });
         }
     }

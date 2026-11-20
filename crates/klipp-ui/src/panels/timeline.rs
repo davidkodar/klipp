@@ -9137,7 +9137,8 @@ impl TimelinePanel {
                             for flag in klipp_timeline::GradeFlag::ALL {
                                 let [r, g, b] = flag.rgb();
                                 let text = if flag.is_none() { flag.label().to_string() } else { format!("\u{2691} {}", flag.label()) };
-                                let row = ui.add(egui::Button::new(egui::RichText::new(text).color(if flag.is_none() { ui.visuals().text_color() } else { egui::Color32::from_rgb(r, g, b) })).selected(clip.grade_flag == flag));
+                                let colour = if flag.is_none() { ui.visuals().text_color() } else { egui::Color32::from_rgb(r, g, b) };
+                                let row = crate::widgets::selected_button(ui, egui::Button::new(egui::RichText::new(text).color(colour)), clip.grade_flag == flag, |ui, b| ui.add(b));
                                 if row.clicked() {
                                     cmds.push(AppCommand::SetClipGradeFlags { clip_ids: targets.clone(), flag });
                                     ui.close_kind(egui::UiKind::Menu);

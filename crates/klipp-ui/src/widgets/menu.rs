@@ -68,7 +68,7 @@ pub fn menu_item(ui: &mut egui::Ui, label: &str, key: &str) -> egui::Response {
 /// A menu row for one of a set of choices, shown selected while it is the
 /// one in force.
 pub fn menu_choice(ui: &mut egui::Ui, label: &str, key: &str, current: bool) -> egui::Response {
-    ui.add(egui::Button::new(label).shortcut_text(key).selected(current))
+    crate::widgets::selected_button(ui, egui::Button::new(label).shortcut_text(key), current, |ui, b| ui.add(b))
 }
 
 /// A menu row for something on or off: a check in the slot while it is

@@ -15,7 +15,7 @@
 use egui::ecolor::{Color32, Hsva, HsvaGamma, Rgba};
 use egui::epaint::{Mesh, Shape, Stroke, StrokeKind};
 use egui::{
-    lerp, pos2, remap_clamp, vec2, Id, Painter, Popup, PopupCloseBehavior, Rect,
+    lerp, pos2, remap_clamp, vec2, Align2, Id, RectAlign, Painter, Popup, PopupCloseBehavior, Rect,
     Response, Sense, Ui, Vec2, Widget as _, WidgetInfo, WidgetType,
 };
 
@@ -82,8 +82,11 @@ fn edit(ui: &mut Ui, value: &mut [u8; 4], alpha: bool) -> Response {
         button = button.on_hover_text("Click to edit color");
     }
     let mut changed = false;
-    Popup::menu(&button)
+    // A plain popup, not a menu: a menu's style takes the frames off the
+    // channel boxes. It opens below and right of the swatch, as before.
+    Popup::from_toggle_button_response(&button)
         .id(popup_id)
+        .align(RectAlign { parent: Align2::RIGHT_BOTTOM, child: Align2::LEFT_TOP })
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.spacing_mut().slider_width = SLIDER_WIDTH;

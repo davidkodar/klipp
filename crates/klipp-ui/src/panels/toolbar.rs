@@ -69,7 +69,7 @@ impl ToolbarPanel {
             let rect = egui::Rect::from_min_size(egui::pos2(rx, cy - 14.0), egui::vec2(92.0, 28.0));
             // "Nodes", the name the Colour page uses for the same graphs, lit while
             // the dock is open (#1726).
-            if ui.put(rect, egui::Button::new("Nodes").selected(state.graph_dock_open)).on_hover_text("The clip's effects and grade as connected nodes").clicked() {
+            if crate::widgets::selected_button(ui, egui::Button::new("Nodes"), state.graph_dock_open, |ui, b| ui.put(rect, b)).on_hover_text("The clip's effects and grade as connected nodes").clicked() {
                 cmds.push(AppCommand::ToggleGraphDock);
             }
         }

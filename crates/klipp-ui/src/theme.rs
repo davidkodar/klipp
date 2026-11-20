@@ -537,6 +537,10 @@ impl KlippTheme {
         visuals.warn_fg_color = self.marker_warning;
         visuals.hyperlink_color = self.accent;
 
+        // Round slider handles, as Klipp's always were: egui 0.34's default
+        // became a narrow rectangle.
+        visuals.handle_shape = egui::style::HandleShape::Circle;
+
         visuals.window_stroke = egui::Stroke::new(1.0_f32, self.border);
         visuals.window_shadow = egui::Shadow::NONE;
 

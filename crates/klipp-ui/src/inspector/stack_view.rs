@@ -728,8 +728,7 @@ fn key_colour_picker(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, cl
     let armed = state.eyedropper_mode == crate::state::EyedropperMode::KeyColour && state.key_colour_pick.as_ref().is_some_and(|(c, at)| *c == clip.id && at == addr);
     let tint = if armed { theme.accent } else { theme.overlay(160) };
     let text = if armed { "Click the colour in the viewer" } else { "Pick Key Colour" };
-    let pick = ui
-        .add(egui::Button::image_and_text(crate::icons::Icon::Eyedropper.image(12.0).tint(tint), egui::RichText::new(text).size(11.0)).selected(armed))
+    let pick = crate::widgets::selected_button(ui, egui::Button::image_and_text(crate::icons::Icon::Eyedropper.image(12.0).tint(tint), egui::RichText::new(text).size(11.0)), armed, |ui, b| ui.add(b))
         .on_hover_text("Click the colour to key out in the viewer. It is read from the picture the key receives, before it is keyed out (Esc cancels)");
     if pick.clicked() {
         cmds.push(AppCommand::PickKeyColour { clip_id: clip.id, at: addr.clone() });

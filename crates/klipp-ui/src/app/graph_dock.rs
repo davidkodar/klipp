@@ -137,7 +137,7 @@ fn dock_header(ui: &mut egui::Ui, rect: egui::Rect, in_grade: bool, has_grade: b
         if ui.selectable_label(!in_grade, "Picture").clicked() {
             pick = Some(DockPick::Picture);
         }
-        if ui.add_enabled(has_grade, egui::Button::new("Grade").selected(in_grade)).clicked() {
+        if crate::widgets::selected_button(ui, egui::Button::new("Grade"), in_grade, |ui, b| ui.add_enabled(has_grade, b)).clicked() {
             pick = Some(DockPick::Grade);
         }
         // Space, not a separator: a separator takes the row's whole

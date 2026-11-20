@@ -202,7 +202,7 @@ fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &Kli
                 let text = egui::RichText::new("RIPPLE")
                     .font(egui::FontId::monospace(crate::theme::type_scale::CAPTION))
                     .color(if state.ripple_enabled { theme.accent } else { theme.text_dim });
-                let resp = ui.add(egui::Button::new(text).selected(state.ripple_enabled).min_size(egui::vec2(0.0, crate::theme::control::COMPACT)));
+                let resp = crate::widgets::selected_button(ui, egui::Button::new(text).min_size(egui::vec2(0.0, crate::theme::control::COMPACT)), state.ripple_enabled, |ui, b| ui.add(b));
                 styled_tooltip(&resp, theme, ripple_tip(state.ripple_enabled), None);
                 if resp.clicked() {
                     cmds.push(AppCommand::SetRippleEnabled(!state.ripple_enabled));
@@ -317,7 +317,7 @@ fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &Kli
                 let text = egui::RichText::new("LINKED")
                     .font(egui::FontId::monospace(crate::theme::type_scale::CAPTION))
                     .color(if state.linked_selection { theme.accent } else { theme.text_dim });
-                let resp = ui.add(egui::Button::new(text).selected(state.linked_selection).min_size(egui::vec2(0.0, crate::theme::control::COMPACT)));
+                let resp = crate::widgets::selected_button(ui, egui::Button::new(text).min_size(egui::vec2(0.0, crate::theme::control::COMPACT)), state.linked_selection, |ui, b| ui.add(b));
                 let tip = if state.linked_selection {
                     "Linked: picture and sound trim and move together. Click to work on each alone; Alt while trimming does it for one trim."
                 } else {

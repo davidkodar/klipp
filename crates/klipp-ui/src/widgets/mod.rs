@@ -364,3 +364,20 @@ mod number_field_tests {
         assert!(found.is_empty(), "{found:?}");
     }
 }
+
+/// A toggle button, `selected` drawn as Klipp's always were: the accent
+/// outline, square corners and the widget's own text colour over the
+/// selection fill. egui 0.34 draws a selected button with its usual
+/// outline and accent text instead. `add` places the button (`ui.add`,
+/// `ui.add_enabled`, `ui.put`) so each caller keeps its own placement.
+pub fn selected_button<'a, R>(ui: &mut egui::Ui, button: egui::Button<'a>, selected: bool, add: impl FnOnce(&mut egui::Ui, egui::Button<'a>) -> R) -> R {
+    if !selected {
+        return add(ui, button.selected(false));
+    }
+    let accent = ui.visuals().selection.stroke;
+    let text = ui.visuals().widgets.inactive.fg_stroke;
+    ui.visuals_mut().selection.stroke = text;
+    let out = add(ui, button.selected(true).stroke(accent).corner_radius(0));
+    ui.visuals_mut().selection.stroke = accent;
+    out
+}
