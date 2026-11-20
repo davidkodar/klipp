@@ -15,7 +15,7 @@ impl KlippApp {
         // An audition's takes playing in their slot (#3209): ←/→ step
         // through them, Enter puts the one playing in, Esc leaves; these
         // keys are the preview's, not their bindings', while it runs.
-        if self.state.take_preview.is_some() && !ctx.wants_keyboard_input() {
+        if self.state.take_preview.is_some() && !ctx.egui_wants_keyboard_input() {
             let mut cmds = Vec::new();
             for (key, cmd) in [
                 (egui::Key::ArrowLeft, AppCommand::StepTakePreview { by: -1 }),
@@ -50,7 +50,7 @@ impl KlippApp {
         // Skip single-key shortcuts when ANY text edit widget has focus (search bars,
         // title text editor, timecode entry, rename fields, etc.).
         // Ctrl+ shortcuts still work (standard convention: Ctrl combos always fire).
-        let text_editing = ctx.wants_keyboard_input() || self.state.editing_timecode || self.state.viewer_text_edit;
+        let text_editing = ctx.egui_wants_keyboard_input() || self.state.editing_timecode || self.state.viewer_text_edit;
         let scope = key_scope(&self.state, text_editing);
         match scope {
             KeyScope::Nothing => return cmds,
@@ -62,12 +62,12 @@ impl KlippApp {
         }
         // Before/After is looked at straight after a value is typed or a node
         // is touched, where the single keys are held: only typing text keeps it.
-        if toggles_before_after(ctx.wants_keyboard_input(), self.state.editing_timecode || self.state.viewer_text_edit)
+        if toggles_before_after(ctx.egui_wants_keyboard_input(), self.state.editing_timecode || self.state.viewer_text_edit)
             && ctx.input(|i| self.key_bindings.is_action_pressed("toggle_before_after", i))
         {
             cmds.push(AppCommand::ToggleBeforeAfter);
         }
-        self.shortcuts_ctrl_global(ctx, ctx.wants_keyboard_input(), &mut cmds);
+        self.shortcuts_ctrl_global(ctx, ctx.egui_wants_keyboard_input(), &mut cmds);
         match scope {
             KeyScope::CtrlOnly | KeyScope::Nothing | KeyScope::AppOnly => return cmds,
             KeyScope::GradeCanvas => {

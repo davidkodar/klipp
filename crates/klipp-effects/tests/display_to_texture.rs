@@ -40,10 +40,10 @@ fn read_texture(gpu: &GpuEffectsPipeline, tex: &wgpu::Texture) -> Vec<u8> {
     });
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     enc.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-        wgpu::ImageCopyBuffer {
+        wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo {
             buffer: &staging,
-            layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(pitch), rows_per_image: Some(H) },
+            layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(pitch), rows_per_image: Some(H) },
         },
         wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 },
     );
@@ -51,7 +51,7 @@ fn read_texture(gpu: &GpuEffectsPipeline, tex: &wgpu::Texture) -> Vec<u8> {
     let slice = staging.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-    device.poll(wgpu::Maintain::Wait);
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
     rx.recv().unwrap().unwrap();
     let padded = slice.get_mapped_range().to_vec();
     staging.unmap();

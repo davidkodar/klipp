@@ -36,13 +36,13 @@ fn make_pipeline(device: &wgpu::Device, label: &str, source: &str, bindings: u32
         })
         .collect();
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(label), entries: &entries });
-    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: &[&layout], push_constant_ranges: &[] });
+    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(source.into()) });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some(label),
         layout: Some(&pl),
         module: &module,
-        entry_point: "main",
+        entry_point: Some("main"),
         compilation_options: Default::default(),
         cache: None,
     });
@@ -54,13 +54,13 @@ impl MaskMixGpu {
         let (layout, pipeline) = make_pipeline(device, "mask_mix", SHADER_MASK_MIX, 5, 4, 3);
         let (window_layout, window_pipeline) = make_pipeline(device, "mask_mix_window", SHADER_MASK_MIX_WINDOW, 6, 4, 3);
         let on = |layout: &wgpu::BindGroupLayout, label: &str, source: &str| {
-            let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: &[layout], push_constant_ranges: &[] });
+            let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: &[Some(layout)], immediate_size: 0 });
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(source.into()) });
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pl),
                 module: &module,
-                entry_point: "main",
+                entry_point: Some("main"),
                 compilation_options: Default::default(),
                 cache: None,
             })

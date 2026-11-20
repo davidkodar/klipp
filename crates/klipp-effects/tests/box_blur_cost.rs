@@ -24,7 +24,7 @@ fn median_ms(gpu: &mut GpuEffectsPipeline, fx: &[E], w: u32, h: u32) -> f64 {
         gpu.begin_chain();
         let ran = gpu.chain_run_effects(fx, true, w, h);
         gpu.submit_chain();
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
         assert!(ran.complete, "{fx:?}");
         if n >= 8 {
             ms.push(start.elapsed().as_secs_f64() * 1000.0);

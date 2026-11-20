@@ -604,15 +604,22 @@ fn main() -> Result<()> {
         // the engine makes itself, the adapter's largest buffers (#2341).
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             present_mode: ui_present_mode(),
-            // The engine's APIs (#2990): Vulkan, GL only without it.
-            supported_backends: klipp_effects::gpu_context::backends(),
-            device_descriptor: std::sync::Arc::new(|adapter| eframe::egui_wgpu::wgpu::DeviceDescriptor {
-                label: Some("egui wgpu device"),
-                // Timestamps where the adapter has them, to time each
-                // track's GPU work (#3207); never asked of one without.
-                required_features: klipp_effects::gpu_context::timing_features(adapter),
-                required_limits: klipp_effects::gpu_context::device_limits(adapter),
-                memory_hints: eframe::egui_wgpu::wgpu::MemoryHints::default(),
+            wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(eframe::egui_wgpu::WgpuSetupCreateNew {
+                // The engine's APIs (#2990): Vulkan, GL only without it.
+                instance_descriptor: eframe::egui_wgpu::wgpu::InstanceDescriptor {
+                    backends: klipp_effects::gpu_context::backends(),
+                    ..eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle().instance_descriptor
+                },
+                device_descriptor: std::sync::Arc::new(|adapter| eframe::egui_wgpu::wgpu::DeviceDescriptor {
+                    label: Some("egui wgpu device"),
+                    // Timestamps where the adapter has them, to time each
+                    // track's GPU work (#3207); never asked of one without.
+                    required_features: klipp_effects::gpu_context::timing_features(adapter),
+                    required_limits: klipp_effects::gpu_context::device_limits(adapter),
+                    memory_hints: klipp_effects::gpu_context::memory_hints(),
+                    ..Default::default()
+                }),
+                ..eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle()
             }),
             ..Default::default()
         },
@@ -691,7 +698,7 @@ fn main() -> Result<()> {
             // texture and reads nothing back. This used to deadlock on
             // wgpu 22: a readback's `device.poll(Wait)` never returned
             // while the UI kept the queue busy. Every readback now spins
-            // on `Maintain::Poll` (`poll_until_mapped`), which the
+            // on `PollType::Poll` (`poll_until_mapped`), which the
             // `shared_device_pressure` test holds under a thread that
             // submits without pause. `KLIPP_SHARED_GPU_DEVICE=0` is the
             // hatch back to two devices.
@@ -699,8 +706,10 @@ fn main() -> Result<()> {
             if want_shared {
                 if let Some(rs) = cc.wgpu_render_state.as_ref() {
                     let ctx = klipp_effects::gpu_context::GpuContext::from_existing(
-                        std::sync::Arc::clone(&rs.device),
-                        std::sync::Arc::clone(&rs.queue),
+                        // A wgpu 29 device and queue are handles: the clones
+                        // are eframe's own device and queue.
+                        std::sync::Arc::new(rs.device.clone()),
+                        std::sync::Arc::new(rs.queue.clone()),
                     )
                     .with_adapter_info(rs.adapter.get_info());
                     match klipp_effects::gpu_context::GpuContext::install_shared(ctx) {

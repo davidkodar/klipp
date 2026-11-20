@@ -300,7 +300,7 @@ fn title_styles_4k_timing() {
                 )
                 .expect("resident frame");
                 let p = r.executor().gpu_pipeline_or_init().unwrap();
-                let _ = p.device().poll(wgpu::Maintain::Wait);
+                let _ = p.device().poll(wgpu::PollType::wait_indefinitely());
                 if frame > 0 {
                     samples.push(start.elapsed().as_secs_f64() * 1000.0);
                 }

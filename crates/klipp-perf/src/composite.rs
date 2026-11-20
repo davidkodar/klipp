@@ -104,7 +104,7 @@ pub(crate) fn decoded_on_gpu(ctx: &GpuContext, bytes: Arc<Vec<u8>>) -> Make {
         mapped_at_creation: false,
     }));
     ctx.queue.write_buffer(&buffer, 0, &bytes);
-    ctx.device.poll(wgpu::Maintain::Poll);
+    let _ = ctx.device.poll(wgpu::PollType::Poll);
     let on: Arc<dyn klipp_compose::GpuPixels> = Arc::new(OnGpu { buffer, bytes });
     Box::new(move || SourcePixels::Gpu(Arc::clone(&on)))
 }
@@ -215,7 +215,7 @@ fn run(name: &str, cpu_only: bool, budget_ms: f64, build: impl Fn(Option<&GpuCon
                 std::hint::black_box(bytes.map(|b| b.len()));
                 if gpu_wait {
                     if let Some(ctx) = ctx {
-                        ctx.device().poll(wgpu::Maintain::Wait);
+                        let _ = ctx.device().poll(wgpu::PollType::wait_indefinitely());
                     }
                 }
                 return;
@@ -414,7 +414,7 @@ fn terminal_card_busy(name: &str, (w, h): (u32, u32), cpu_only: bool) -> Scenari
         let cpu = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = Instant::now();
         if let Some(ctx) = ctx {
-            ctx.device().poll(wgpu::Maintain::Wait);
+            let _ = ctx.device().poll(wgpu::PollType::wait_indefinitely());
         }
         let gpu = t1.elapsed().as_secs_f64() * 1000.0;
         drop(scope);

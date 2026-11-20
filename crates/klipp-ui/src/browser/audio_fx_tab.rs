@@ -238,7 +238,7 @@ pub fn show(
 
     // ── Sidebar ─────────────────────────────────────────────────────
     if !folded {
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
             ui.set_min_size(sidebar_rect.size());
             ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
             ui.painter().vline(
@@ -282,7 +282,7 @@ pub fn show(
     }
 
     // ── Right pane ──────────────────────────────────────────────────
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
         ui.set_min_size(content_rect.size());
 
         ui.add_space(8.0);
@@ -317,8 +317,8 @@ pub fn show(
         ui.add_space(8.0);
 
         // ── Search bar ──
-        egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 super::browser_search_field(ui, theme, search_query, "Search audio effects\u{2026}", state);
             });
@@ -355,8 +355,8 @@ pub fn show(
             .filter(|e| matches!(e.source, EffectSource::Clap(_)))
             .count();
 
-        egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     // The chips fit beside the eye toggle, not under it
@@ -544,7 +544,7 @@ pub fn show(
                             } else {
                                 favorite_effects.push(entry.name.clone());
                             }
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     });
                 }
@@ -633,14 +633,14 @@ fn audition_player(
         *audition_anchor_at = None;
         *audition_anchor_secs = duration_secs;
     }
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_raised)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
-        .rounding(4.0)
+        .corner_radius(4.0)
         // 11 inside the 1 px outline, which the frame adds to its size:
         // at 12 it came out a pixel wider than the panel (#2602).
-        .inner_margin(egui::Margin::symmetric(11.0, 10.0))
-        .outer_margin(egui::Margin::symmetric(8.0, 0.0))
+        .inner_margin(egui::Margin::symmetric(11, 10))
+        .outer_margin(egui::Margin::symmetric(8, 0))
         .show(ui, |ui| {
             // Header row: AUDITION label + Source selector.
             //
@@ -813,13 +813,13 @@ fn audition_player(
                 let painter = ui.painter();
                 painter.rect_filled(
                     wave_rect,
-                    egui::Rounding::same(4.0),
+                    egui::CornerRadius::same(4),
                     theme.bg_panel,
                 );
                 painter.rect_stroke(
                     wave_rect,
-                    egui::Rounding::same(4.0),
-                    egui::Stroke::new(1.0_f32, theme.border),
+                    egui::CornerRadius::same(4),
+                    egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside,
                 );
                 let bar_color = egui::Color32::from_rgb(0x3a, 0x8c, 0x6e);
 
@@ -1033,7 +1033,7 @@ fn audition_player(
                     let painter = ui.painter();
                     painter.rect_filled(
                         track_rect,
-                        egui::Rounding::same(2.0),
+                        egui::CornerRadius::same(2),
                         theme.bg_panel,
                     );
                     // 1.0 sits at ~66% of the slider width (range
@@ -1048,7 +1048,7 @@ fn audition_player(
                     );
                     painter.rect_filled(
                         fill_rect,
-                        egui::Rounding::same(2.0),
+                        egui::CornerRadius::same(2),
                         theme.accent,
                     );
                     // Knob
@@ -1104,7 +1104,7 @@ fn audition_player(
                     let painter = ui.painter();
                     painter.rect_filled(
                         vu_rect,
-                        egui::Rounding::same(2.0),
+                        egui::CornerRadius::same(2),
                         theme.bg_panel,
                     );
                     let level: f32 = if *playing {
@@ -1147,7 +1147,7 @@ fn audition_player(
                         };
                         painter.rect_filled(
                             lvl_rect,
-                            egui::Rounding::same(2.0),
+                            egui::CornerRadius::same(2),
                             colour,
                         );
                     }
@@ -1200,7 +1200,7 @@ fn audition_source_pill(
     ui.painter().rect_stroke(
         rect,
         12.0,
-        egui::Stroke::new(1.0_f32, theme.border),
+        egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside,
     );
     ui.painter().galley(
         egui::pos2(
@@ -1217,7 +1217,7 @@ fn audition_source_pill(
         egui::vec2(caret_size, caret_size),
     );
     let img = Icon::CaretDown.image(caret_size).tint(theme.text_dim);
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new().max_rect(caret_rect),
         |ui| {
             ui.add(img);
@@ -1237,7 +1237,7 @@ fn audition_source_pill(
     } else {
         resp_for_hover.on_hover_text("Pick audition source")
     };
-    egui::popup::popup_below_widget(
+    egui::popup_below_widget(
         ui,
         popup_id,
         &resp,
@@ -1355,13 +1355,13 @@ fn eye_toggle_button(ui: &mut egui::Ui, theme: &KlippTheme, hide_unsupported: &m
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
 
     let icon = if *hide_unsupported { Icon::EyeSlash } else { Icon::Eye };
     let icon_size = 13.0;
     let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(icon_size, icon_size));
     let img = icon.image(icon_size).tint(fg);
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new().max_rect(icon_rect),
         |ui| {
             ui.add(img);
@@ -1424,7 +1424,7 @@ fn sidebar_row(
             egui::vec2(icon_size, icon_size),
         );
         let img = icon.image(icon_size).tint(icon_tint);
-        ui.allocate_new_ui(
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(icon_rect),
             |ui| {
                 ui.add(img);
@@ -1483,7 +1483,7 @@ fn sidebar_section_header(
             egui::vec2(icon_size, icon_size),
         );
         let img = icon.image(icon_size).tint(theme.text_dim);
-        ui.allocate_new_ui(
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(icon_rect),
             |ui| {
                 ui.add(img);
@@ -1548,7 +1548,7 @@ fn result_strip(
         egui::pos2(rect.max.x - dropdown_w - 8.0, rect.min.y + 1.0),
         egui::pos2(rect.max.x - 8.0, rect.max.y - 1.0),
     );
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new().max_rect(dropdown_rect),
         |ui| {
             ui.style_mut().visuals.widgets.inactive.weak_bg_fill =
@@ -1669,7 +1669,7 @@ fn audio_fx_row(
         // taller than the unselected rows next to it.
         const HIGHLIGHT_HEIGHT: f32 = 40.0; // ~icon-tile + 4px padding
         const HIGHLIGHT_INSET_X: f32 = 8.0;
-        let bg = egui::Color32::from_rgba_unmultiplied(
+        let bg = crate::colour32::rgba(
             theme.accent.r(),
             theme.accent.g(),
             theme.accent.b(),
@@ -1686,13 +1686,13 @@ fn audio_fx_row(
             ),
         );
         ui.painter()
-            .rect_filled(inner, egui::Rounding::same(4.0), bg);
+            .rect_filled(inner, egui::CornerRadius::same(4), bg);
         let stripe_rect = egui::Rect::from_min_size(
             inner.min,
             egui::vec2(2.0, inner.height()),
         );
         ui.painter()
-            .rect_filled(stripe_rect, egui::Rounding::same(1.0), theme.accent);
+            .rect_filled(stripe_rect, egui::CornerRadius::same(1), theme.accent);
     }
 
     // Reserve play button slot at left (painted by caller).
@@ -1717,11 +1717,11 @@ fn audio_fx_row(
         color.b(),
         90,
     );
-    ui.painter().rect_filled(tile_rect, egui::Rounding::same(4.0), icon_bg);
+    ui.painter().rect_filled(tile_rect, egui::CornerRadius::same(4), icon_bg);
     ui.painter().rect_stroke(
         tile_rect,
-        egui::Rounding::same(4.0),
-        egui::Stroke::new(1.0_f32, icon_border),
+        egui::CornerRadius::same(4),
+        egui::Stroke::new(1.0_f32, icon_border), egui::StrokeKind::Outside,
     );
     let glyph = category_glyph_icon(entry.category);
     let glyph_size = 18.0;
@@ -1730,7 +1730,7 @@ fn audio_fx_row(
         egui::vec2(glyph_size, glyph_size),
     );
     let img = glyph.image(glyph_size).tint(color);
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new().max_rect(glyph_rect),
         |ui| {
             ui.add(img);

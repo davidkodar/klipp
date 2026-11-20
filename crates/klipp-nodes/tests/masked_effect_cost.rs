@@ -189,11 +189,11 @@ fn masked_effect_gpu_time_at_4k() {
         let mut ms = Vec::new();
         for i in 0..23 {
             assert!(ex.prime_chain_from_linear(&f, w, h), "seeded");
-            let _ = device.poll(wgpu::Maintain::Wait);
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
             ex.request_output_on_gpu();
             let t = std::time::Instant::now();
             ex.execute_linear(&[], &g, w, h, 0.5, 12, None, None).unwrap();
-            let _ = device.poll(wgpu::Maintain::Wait);
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
             if i >= 3 {
                 ms.push(t.elapsed().as_secs_f64() * 1000.0);
             }

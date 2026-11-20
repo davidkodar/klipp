@@ -67,7 +67,9 @@ fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Cl
     let revealed_id = egui::Id::new("stack_view_revealed");
     let reveal = selected.filter(|a| ui.data(|d| d.get_temp::<NodePath>(revealed_id)).as_ref() != Some(*a));
     ui.data_mut(|d| match selected {
-        Some(a) => d.insert_temp(revealed_id, a.clone()),
+        Some(a) => {
+            d.insert_temp(revealed_id, a.clone());
+        }
         None => d.remove::<NodePath>(revealed_id),
     });
     // A placed recipe's own controls first: what it was made to be set by,
@@ -88,7 +90,7 @@ fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Cl
                     }
                 });
                 if selected == Some(&row.addr) {
-                    ui.painter().rect_stroke(card.response.rect.expand(2.0), 3.0, egui::Stroke::new(1.0_f32, theme.accent));
+                    ui.painter().rect_stroke(card.response.rect.expand(2.0), 3.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
                     if reveal == Some(&row.addr) {
                         card.response.scroll_to_me(Some(egui::Align::Center));
                     }
@@ -157,7 +159,7 @@ fn recipe_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &
     let mut known: Vec<klipp_timeline::composition_template::CompositionTemplate> = state.composition_templates.recipes().cloned().collect();
     known.extend(klipp_timeline::composition_template::builtin_recipes());
     for (i, card) in recipe_cards_of(graph, &known).into_iter().enumerate() {
-        egui::Frame::none().stroke(egui::Stroke::new(1.0_f32, theme.border)).rounding(3.0).inner_margin(6.0).show(ui, |ui| {
+        egui::Frame::NONE.stroke(egui::Stroke::new(1.0_f32, theme.border)).corner_radius(3.0).inner_margin(6.0).show(ui, |ui| {
             ui.label(egui::RichText::new(format!("Recipe \u{00B7} {}", card.name)).size(12.0).color(theme.text_primary));
             if card.controls.is_empty() && card.others.is_empty() {
                 ui.label(egui::RichText::new("Its controls aren't known here: its nodes are set on their own cards.").size(10.0).color(theme.text_dim));
@@ -216,7 +218,7 @@ fn selected_matte(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, graph: &Gr
         drawn
     });
     if card.inner {
-        ui.painter().rect_stroke(card.response.rect.expand(2.0), 3.0, egui::Stroke::new(1.0_f32, theme.accent));
+        ui.painter().rect_stroke(card.response.rect.expand(2.0), 3.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
         ui.add_space(4.0);
     }
 }
@@ -254,7 +256,7 @@ fn placement_controls(ui: &mut egui::Ui, clip: &Clip, view: &StackView, row: &Ro
         egui::ComboBox::from_id_salt(("placement_mode", clip.id.0))
             .selected_text(if auto { "Auto" } else { "Fixed" })
             .show_ui(ui, |ui| {
-                let r = ui.add_enabled(auto || refusal.is_none(), egui::SelectableLabel::new(auto, "Auto"));
+                let r = ui.add_enabled(auto || refusal.is_none(), egui::Button::selectable(auto, "Auto"));
                 let r = match refusal.filter(|_| !auto) {
                     Some(why) => r.on_disabled_hover_text(why),
                     None => r.on_hover_text("Placed before the first effect drawn outside the picture"),
@@ -420,7 +422,7 @@ fn add_menu(ui: &mut egui::Ui, state: &AppState, clip: &Clip, view: &StackView, 
             for t in types {
                 if ui.button(t.desc.name).clicked() {
                     cmds.extend(add_to_selection(state, clip, &after, t));
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
         });
@@ -726,8 +728,7 @@ fn key_colour_picker(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, cl
     let armed = state.eyedropper_mode == crate::state::EyedropperMode::KeyColour && state.key_colour_pick.as_ref().is_some_and(|(c, at)| *c == clip.id && at == addr);
     let tint = if armed { theme.accent } else { theme.overlay(160) };
     let text = if armed { "Click the colour in the viewer" } else { "Pick Key Colour" };
-    let pick = ui
-        .add(egui::Button::image_and_text(crate::icons::Icon::Eyedropper.image(12.0).tint(tint), egui::RichText::new(text).size(11.0)).selected(armed))
+    let pick = crate::widgets::selected_button(ui, egui::Button::image_and_text(crate::icons::Icon::Eyedropper.image(12.0).tint(tint), egui::RichText::new(text).size(11.0)), armed, |ui, b| ui.add(b))
         .on_hover_text("Click the colour to key out in the viewer. It is read from the picture the key receives, before it is keyed out (Esc cancels)");
     if pick.clicked() {
         cmds.push(AppCommand::PickKeyColour { clip_id: clip.id, at: addr.clone() });

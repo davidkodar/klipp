@@ -157,8 +157,8 @@ impl GpuText3d {
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("3D title"),
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("3D title"),
@@ -169,7 +169,7 @@ impl GpuText3d {
             layout: Some(&pl),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vertex",
+                entry_point: Some("vertex"),
                 compilation_options: Default::default(),
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: 32,
@@ -179,7 +179,7 @@ impl GpuText3d {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fragment",
+                entry_point: Some("fragment"),
                 compilation_options: Default::default(),
                 targets: &[
                     Some(wgpu::ColorTargetState {
@@ -200,13 +200,13 @@ impl GpuText3d {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
             multisample: Default::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let resolve_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -237,8 +237,8 @@ impl GpuText3d {
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("3D title resolve"),
-            bind_group_layouts: &[&resolve_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&resolve_layout)],
+            immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("3D title resolve"),
@@ -248,7 +248,7 @@ impl GpuText3d {
             label: Some("3D title resolve"),
             layout: Some(&pl),
             module: &shader,
-            entry_point: "resolve",
+            entry_point: Some("resolve"),
             compilation_options: Default::default(),
             cache: None,
         });
@@ -474,7 +474,7 @@ impl GpuText3d {
             .any(|v| !v.is_finite())
             || pose_bytes.is_empty()
             || pose_bytes.len() as u64
-                > u64::from(self.device.limits().max_storage_buffer_binding_size)
+                > self.device.limits().max_storage_buffer_binding_size
         {
             return None;
         }
@@ -565,6 +565,7 @@ impl GpuText3d {
                 color_attachments: &[
                     Some(wgpu::RenderPassColorAttachment {
                         view: &targets.color,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -573,6 +574,7 @@ impl GpuText3d {
                     }),
                     Some(wgpu::RenderPassColorAttachment {
                         view: &targets.metal,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -590,6 +592,7 @@ impl GpuText3d {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bg, &[]);

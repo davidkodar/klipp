@@ -3,6 +3,8 @@
 //! choice is a chip rendered by the real title engine on the clip's
 //! own text, so what is picked is what will play.
 
+use crate::colour32::Colour029;
+use crate::widgets::colour_field::ColourField;
 use crate::browser::title_previews::TitlePreviews;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -292,7 +294,7 @@ fn chip(
     } else {
         egui::Stroke::new(1.0_f32, theme.border)
     };
-    painter.rect_stroke(pic, rounding, stroke);
+    painter.rect_stroke(pic, rounding, stroke, egui::StrokeKind::Outside);
     if let Some(l) = spec.label {
         let color = if spec.selected { theme.text_primary } else { theme.text_secondary };
         painter.text(
@@ -481,11 +483,11 @@ fn inline_picker(
     // The chip under the pointer last frame, kept while the pointer moves
     // across the gaps between chips so the preview does not jump back.
     let hovered: Option<usize> = ui.memory(|m| m.data.get_temp(hovered_id)).flatten();
-    let frame = egui::Frame::none()
+    let frame = egui::Frame::NONE
         .fill(theme.bg_panel_alt)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
-        .rounding(crate::theme::radius::PANEL)
-        .inner_margin(egui::Margin::same(8.0))
+        .corner_radius(crate::theme::radius::PANEL)
+        .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             // The picture with its name beside it: the same height either
             // way, so the chips below never move under the pointer.
@@ -808,9 +810,9 @@ pub fn template_fields(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_cor
             V::Colour(c) => {
                 ui.horizontal(|ui| {
                     ui.label(field.label.as_str());
-                    let mut col = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-                    if ui.color_edit_button_srgba(&mut col).changed() {
-                        set(V::Colour(col.to_srgba_unmultiplied()), true);
+                    let mut col = crate::colour32::rgba(c[0], c[1], c[2], c[3]);
+                    if ui.colour_srgba(&mut col).changed() {
+                        set(V::Colour(col.unmul()), true);
                     }
                 });
             }
@@ -1034,13 +1036,13 @@ fn show_loops(
                         changed |= ui.add(crate::widgets::number_field(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
                     }
                     TitleLoop::ColorBlend { color_a, color_b, rate_hz } => {
-                        let mut a = egui::Color32::from_rgba_unmultiplied(color_a[0], color_a[1], color_a[2], color_a[3]);
-                        if ui.color_edit_button_srgba(&mut a).changed() {
+                        let mut a = crate::colour32::rgba(color_a[0], color_a[1], color_a[2], color_a[3]);
+                        if ui.colour_srgba(&mut a).changed() {
                             *color_a = a.to_array();
                             changed = true;
                         }
-                        let mut b = egui::Color32::from_rgba_unmultiplied(color_b[0], color_b[1], color_b[2], color_b[3]);
-                        if ui.color_edit_button_srgba(&mut b).changed() {
+                        let mut b = crate::colour32::rgba(color_b[0], color_b[1], color_b[2], color_b[3]);
+                        if ui.colour_srgba(&mut b).changed() {
                             *color_b = b.to_array();
                             changed = true;
                         }
@@ -1269,7 +1271,7 @@ fn show_edge_fade(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::Cl
 // ─── Style card ──────────────────────────────────────────────────────
 
 fn to_c32(c: [u8; 4]) -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+    crate::colour32::rgba(c[0], c[1], c[2], c[3])
 }
 
 /// The style card: presets as chips, then fill, gradient, stroke, shadow
@@ -1329,7 +1331,7 @@ pub fn show_style_card(
 fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId, tb: &TextBox, fx: &LayerFx, cmds: &mut Vec<AppCommand>) {
     rail_row(ui, theme, "Fill", |ui| {
         let mut col = to_c32(tb.color);
-        if ui.color_edit_button_srgba(&mut col).changed() {
+        if ui.colour_srgba(&mut col).changed() {
             cmds.push(AppCommand::UpdateTitleData {
                 clip_id,
                 text: tb.text.clone(),
@@ -1351,12 +1353,12 @@ fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId
         }
         if on {
             let mut b = to_c32(bottom);
-            if ui.color_edit_button_srgba(&mut b).on_hover_text("Bottom").changed() {
+            if ui.colour_srgba(&mut b).on_hover_text("Bottom").changed() {
                 bottom = b.to_array();
                 send = true;
             }
             let mut t = to_c32(top);
-            if ui.color_edit_button_srgba(&mut t).on_hover_text("Top").changed() {
+            if ui.colour_srgba(&mut t).on_hover_text("Top").changed() {
                 top = t.to_array();
                 send = true;
             }
@@ -1380,7 +1382,7 @@ fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId
                 on = true;
             }
             let mut c = to_c32(color);
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 color = c.to_array();
                 send = true;
                 on = true;
@@ -1413,7 +1415,7 @@ fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId
                 on = true;
             }
             let mut c = to_c32(color);
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 color = c.to_array();
                 send = true;
                 on = true;
@@ -1442,7 +1444,7 @@ fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId
                 on = true;
             }
             let mut c = to_c32(color);
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 color = c.to_array();
                 send = true;
                 on = true;
@@ -1600,14 +1602,7 @@ mod gallery_tests {
                 });
             },
         );
-        let texts = out
-            .shapes
-            .iter()
-            .filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-                _ => None,
-            })
-            .collect();
+        let texts = crate::screen_texts::screen_texts(&out.shapes);
         (texts, picked)
     }
 
@@ -1649,14 +1644,7 @@ mod gallery_tests {
                     });
                 },
             );
-            let texts: Vec<(String, egui::Pos2)> = out
-                .shapes
-                .iter()
-                .filter_map(|s| match &s.shape {
-                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-                    _ => None,
-                })
-                .collect();
+            let texts: Vec<(String, egui::Pos2)> = crate::screen_texts::screen_texts(&out.shapes);
             (texts, picked)
         };
         let is_open = || ctx.memory(|m| m.data.get_temp::<Option<egui::Id>>(egui::Id::new("title_open_picker"))).flatten() == Some(id);
@@ -1697,13 +1685,7 @@ mod gallery_tests {
                     });
                 },
             );
-            out.shapes
-                .iter()
-                .filter_map(|s| match &s.shape {
-                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-                    _ => None,
-                })
-                .collect()
+            crate::screen_texts::screen_texts(&out.shapes)
         };
         let find = |texts: &[(String, egui::Pos2)], prefix: &str| texts.iter().find(|(t, _)| t.starts_with(prefix)).map(|(_, p)| *p);
         let texts = run(Vec::new(), &mut slot);

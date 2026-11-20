@@ -61,7 +61,7 @@ fn gpu_frame_from(bytes: &[u8]) -> Option<std::sync::Arc<GpuFrame>> {
         mapped_at_creation: false,
     }));
     ctx.queue.write_buffer(&buf, 0, bytes);
-    ctx.device.poll(wgpu::Maintain::Wait);
+    let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
     Some(std::sync::Arc::new(GpuFrame::new(
         ctx.device(),
         ctx.queue(),

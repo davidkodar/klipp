@@ -60,7 +60,7 @@ fn u8_to_linear_gpu_matches_cpu_exactly() {
         mapped_at_creation: false,
     });
     ctx.queue.write_buffer(&input_buf, 0, &bytes);
-    ctx.device.poll(wgpu::Maintain::Poll);
+    let _ = ctx.device.poll(wgpu::PollType::Poll);
 
     // Bridge into buf_a (linear f32), then download for comparison.
     assert!(
@@ -101,7 +101,7 @@ fn every_code_decodes_as_on_the_cpu() {
         mapped_at_creation: false,
     });
     ctx.queue.write_buffer(&input_buf, 0, &bytes);
-    ctx.device.poll(wgpu::Maintain::Poll);
+    let _ = ctx.device.poll(wgpu::PollType::Poll);
     assert!(pipeline.bridge_u8_to_linear_into_chain(&input_buf, 256, 1), "bridge call must succeed");
     let gpu_linear = pipeline.download_chain_output_linear(true, 256);
     let off: Vec<_> = gpu_linear.iter().zip(&cpu_linear).enumerate().filter(|(_, (g, c))| g.to_bits() != c.to_bits()).map(|(i, (g, c))| (i, *g, *c)).collect();

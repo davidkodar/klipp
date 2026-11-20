@@ -1831,7 +1831,7 @@ mod upscale_tests {
         queue.submit([enc.finish()]);
         let (tx, rx) = std::sync::mpsc::channel();
         staging.slice(..).map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
         rx.recv().unwrap().unwrap();
         let out = bytemuck_floats(&staging.slice(..).get_mapped_range());
         staging.unmap();

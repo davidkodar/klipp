@@ -50,10 +50,10 @@ pub(crate) fn show(ctx: &egui::Context, theme: &KlippTheme, status: &Status<'_>)
         action = AboutAction::Close;
     }
     let t = seconds_open(ctx);
-    let frame = egui::Frame::window(&ctx.style())
+    let frame = egui::Frame::window(&ctx.global_style())
         .fill(theme.bg_panel)
         .stroke(Stroke::new(1.0_f32, theme.border))
-        .rounding(ROUND)
+        .corner_radius(ROUND)
         .inner_margin(0.0);
     crate::widgets::window("About Klipp")
         .title_bar(false)
@@ -157,7 +157,7 @@ fn hero(ui: &mut egui::Ui, theme: &KlippTheme, t: f64) -> bool {
     let rect = Rect::from_min_size(ui.cursor().min, vec2(WIDTH, HERO));
     let painter = ui.painter_at(rect);
     let dark = ui.visuals().dark_mode;
-    painter.rect_filled(rect, egui::Rounding { nw: ROUND, ne: ROUND, sw: 0.0, se: 0.0 }, theme.bg_deep);
+    painter.rect_filled(rect, egui::CornerRadius { nw: ROUND as u8, ne: ROUND as u8, sw: 0, se: 0 }, theme.bg_deep);
     painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0_f32, theme.border));
 
     let appear = ease_out(t / 0.45);
@@ -217,7 +217,7 @@ fn hero(ui: &mut egui::Ui, theme: &KlippTheme, t: f64) -> bool {
 /// A low, warm light behind the icon: amber at the centre, gone at the edge.
 fn warmth(painter: &egui::Painter, centre: Pos2, strength: f32) {
     let mut mesh = egui::Mesh::default();
-    let inner = Color32::from_rgba_unmultiplied(AMBER.r(), AMBER.g(), AMBER.b(), (255.0 * strength) as u8);
+    let inner = crate::colour32::rgba(AMBER.r(), AMBER.g(), AMBER.b(), (255.0 * strength) as u8);
     mesh.colored_vertex(centre, inner);
     let n = 64;
     let (rx, ry) = (190.0, 120.0);
@@ -332,7 +332,7 @@ fn paint_piece(painter: &egui::Painter, piece: &Piece, sheen: Option<Sheen>, app
             for p in &slice {
                 let light = sheen.at(*p) * 0.62 * appear;
                 let c = piece.highlight;
-                mesh.colored_vertex(*p, Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (light * 255.0) as u8));
+                mesh.colored_vertex(*p, crate::colour32::rgba(c.r(), c.g(), c.b(), (light * 255.0) as u8));
             }
             for i in 1..slice.len() as u32 - 1 {
                 mesh.add_triangle(base, base + i, base + i + 1);
@@ -393,7 +393,7 @@ const LABEL_W: f32 = 68.0;
 fn body(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<AboutAction> {
     let mut action = None;
     let build = klipp_core::build_info::get();
-    egui::Frame::none().inner_margin(egui::Margin { left: 32.0, right: 32.0, top: 22.0, bottom: 24.0 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 32, right: 32, top: 22, bottom: 24 }).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
         let row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
             ui.horizontal(|ui| {
@@ -453,7 +453,7 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<Ab
             let primary = egui::Button::new(egui::RichText::new("Check for updates…").size(13.0).color(TILE).strong())
                 .fill(AMBER)
                 .stroke(Stroke::NONE)
-                .rounding(7.0)
+                .corner_radius(7.0)
                 .min_size(vec2(0.0, 32.0));
             // Shown in a Flatpak too: there it answers with how the
             // software store updates Klipp, so the button is never a dead end.
@@ -463,7 +463,7 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<Ab
             let secondary = egui::Button::new(egui::RichText::new("Report an issue").size(13.0).color(theme.text_primary))
                 .fill(theme.bg_raised)
                 .stroke(Stroke::new(1.0_f32, theme.border))
-                .rounding(7.0)
+                .corner_radius(7.0)
                 .min_size(vec2(0.0, 32.0));
             if ui.add(secondary).clicked() {
                 open(ISSUES);
@@ -497,11 +497,11 @@ fn status_row(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Opt
     }
     let mut action = None;
     ui.add_space(14.0);
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_deep)
         .stroke(Stroke::new(1.0_f32, theme.border))
-        .rounding(8.0)
-        .inner_margin(egui::Margin { left: 12.0, right: 14.0, top: 11.0, bottom: 11.0 })
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin { left: 12, right: 14, top: 11, bottom: 11 })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing = vec2(10.0, 0.0);
@@ -628,7 +628,7 @@ fn status_text(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Op
                     let button = egui::Button::new(egui::RichText::new("Install update…").size(12.5).color(TILE).strong())
                         .fill(AMBER)
                         .stroke(Stroke::NONE)
-                        .rounding(6.0)
+                        .corner_radius(6.0)
                         .min_size(vec2(0.0, 28.0));
                     if ui.add(button).clicked() {
                         action = Some(AboutAction::Install);
@@ -657,11 +657,11 @@ fn commands(ui: &mut egui::Ui, theme: &KlippTheme, line: &str) {
     let id = ui.id().with("about_copied");
     let now = ui.input(|i| i.time);
     let copied = ui.data(|d| d.get_temp::<f64>(id)).is_some_and(|at| now - at < COPIED_FOR);
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_panel)
         .stroke(Stroke::new(1.0_f32, theme.border))
-        .rounding(6.0)
-        .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -702,6 +702,7 @@ fn open(url: &str) {
 /// Drive a dialog in a test: the text it drew, and clicks on it.
 #[cfg(test)]
 pub(crate) mod probe {
+
     /// Each text drawn, with where it was drawn.
     pub(crate) fn texts(out: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
         fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
@@ -738,6 +739,12 @@ pub(crate) mod probe {
 
 #[cfg(test)]
 mod tests {
+    /// The text a frame put on the clipboard (egui 0.34 says it as an
+    /// output command rather than a field).
+    fn copied(out: &egui::FullOutput) -> String {
+        out.platform_output.commands.iter().rev().find_map(|c| match c { egui::OutputCommand::CopyText(t) => Some(t.clone()), _ => None }).unwrap_or_default()
+    }
+
     use super::*;
 
     /// The K starts whole, is fully cut once the slip is over, and the
@@ -871,7 +878,7 @@ mod tests {
         }
         let ctx = egui::Context::default();
         let out = probe::click(&ctx, "Copy", |ctx| { let _ = show(ctx, &theme, &Status::Store { asked: true }); });
-        assert_eq!(out.platform_output.copied_text, "flatpak update io.github.davidkodar.Klipp");
+        assert_eq!(copied(&out), "flatpak update io.github.davidkodar.Klipp");
     }
 
     /// Each place the check can be in draws as a row in About: nothing
@@ -936,7 +943,7 @@ mod tests {
         let status = available(Install::Steps(steps));
         let ctx = egui::Context::default();
         let out = probe::click(&ctx, "Copy", |ctx| { let _ = show(ctx, &theme, &status); });
-        assert_eq!(out.platform_output.copied_text, steps.line());
+        assert_eq!(copied(&out), steps.line());
         let out = ctx.run(egui::RawInput::default(), |ctx| { let _ = show(ctx, &theme, &status); });
         assert!(probe::texts(&out).iter().any(|(t, _)| t == "Copied"), "says so");
     }

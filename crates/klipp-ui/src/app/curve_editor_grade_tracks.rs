@@ -185,6 +185,13 @@ fn a_keyed_grade_parameter_is_a_curve_editor_track() {
     run.click_text("Corrector: Exposure").unwrap();
     let before = run.picture();
     let at = run.panel.screen_at(1.0, 0.5).expect("the graph is drawn");
+    // A moment's pause first, as a hand takes: egui counts clicks within
+    // 0.6 s as a triple-click, and since 0.34 only clicks at one spot as
+    // one double-click, so the click a moment ago elsewhere made this
+    // pair a triple-click, where 0.29 had read its first click as a double.
+    for _ in 0..16 {
+        run.frame(Vec::new());
+    }
     for _ in 0..2 {
         run.click(at, egui::PointerButton::Primary);
     }

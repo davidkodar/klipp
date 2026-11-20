@@ -323,7 +323,7 @@ fn gpu_mask_mix_matches_the_independent_oracle() {
                 let (tx, rx) = std::sync::mpsc::channel();
                 read.slice(..)
                     .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
-                device.poll(wgpu::Maintain::Wait);
+                let _ = device.poll(wgpu::PollType::wait_indefinitely());
                 rx.recv_timeout(std::time::Duration::from_secs(30))
                     .unwrap()
                     .unwrap();
@@ -386,6 +386,6 @@ fn gpu_mask_mix_matches_the_independent_oracle() {
     assert!(accepted > 1);
     assert_eq!(gpu.submit_count(), before);
     queue.submit(Some(encoder.finish()));
-    device.poll(wgpu::Maintain::Wait);
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
     gpu.submit_chain();
 }

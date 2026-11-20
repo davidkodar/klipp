@@ -338,7 +338,7 @@ impl Ink {
         let r = egui::Rect::from_center_size(at, egui::vec2(7.0, 7.0));
         painter.rect_filled(r.expand(1.5), 1.0, self.under);
         painter.rect_filled(r, 1.0, if selected { self.selected } else { self.point });
-        painter.rect_stroke(r, 1.0, egui::Stroke::new(1.0_f32, self.line));
+        painter.rect_stroke(r, 1.0, egui::Stroke::new(1.0_f32, self.line), egui::StrokeKind::Outside);
     }
 
     fn handle_end(&self, painter: &egui::Painter, at: egui::Pos2) {
@@ -782,7 +782,7 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
     if let Some(Gesture::Marquee { start, now, .. }) = &edit.gesture {
         let r = egui::Rect::from_two_pos(plain.screen(*start), plain.screen(*now));
         painter.rect_filled(r, 0.0, ink.edited.gamma_multiply(0.12));
-        painter.rect_stroke(r, 0.0, egui::Stroke::new(1.0_f32, ink.edited));
+        painter.rect_stroke(r, 0.0, egui::Stroke::new(1.0_f32, ink.edited), egui::StrokeKind::Outside);
     }
     // What a click does now.
     let hint = if !edit.pen.is_empty() {

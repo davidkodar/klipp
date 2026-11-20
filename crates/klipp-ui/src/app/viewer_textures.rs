@@ -50,9 +50,9 @@ impl KlippApp {
                                 let fh = frame.height as usize;
                                 if frame.rgba.len() == fw * fh * 4 {
                                     let pixels: Vec<egui::Color32> = frame.rgba.chunks_exact(4)
-                                        .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
+                                        .map(|p| crate::colour32::rgba(p[0], p[1], p[2], p[3]))
                                         .collect();
-                                    let image = egui::ColorImage { size: [fw, fh], pixels };
+                                    let image = egui::ColorImage::new([fw, fh], pixels);
                                     // Upload as viewer texture — bilinear upscale handles the rest.
                                     // Must go through upload_texture_deferred: a size change on
                                     // viewer.video_texture (e.g. 720p thumbnail → 1080p frame)
@@ -315,10 +315,7 @@ impl KlippApp {
         self.viewer.lut_source_bytes = self.viewer.lut_pass.is_some().then(|| (rgba_bytes.clone(), w as u32, h as u32));
 
         let t_texture = std::time::Instant::now();
-        let image = egui::ColorImage {
-            size: [w, h],
-            pixels,
-        };
+        let image = egui::ColorImage::new([w, h], pixels);
 
         // Reuse existing texture handle when dimensions match; fall
         // through to a fresh alloc + deferred-drop when the frame
@@ -558,10 +555,7 @@ impl KlippApp {
             let source = {
                 let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.gpu_output.as_ref().map(|t| {
-                    let view = t.create_view(&wgpu::TextureViewDescriptor {
-                        format: Some(klipp_engine::texture::GPU_VIEWER_SAMPLE_FORMAT),
-                        ..Default::default()
-                    });
+                    let view = klipp_engine::texture::gpu_viewer_sample_view(t);
                     (view, (t.width(), t.height()))
                 })
             };
@@ -626,10 +620,7 @@ impl KlippApp {
         // encodes it for the screen. A plain view encoded the picture a
         // second time, so playback looked washed out beside the paused
         // frame and the export (#455).
-        let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(klipp_engine::texture::GPU_VIEWER_SAMPLE_FORMAT),
-            ..Default::default()
-        });
+        let view = klipp_engine::texture::gpu_viewer_sample_view(&texture);
 
         let mut renderer = render_state.renderer.write();
         // Order matters here. egui-wgpu's `register_native_texture`
@@ -737,7 +728,7 @@ mod empty_texture_tests {
         let ctx = egui::Context::default();
         let mut slot = None;
         let mut drops = Vec::new();
-        let image = |w: usize, h: usize| egui::ColorImage { size: [w, h], pixels: vec![egui::Color32::BLACK; w * h] };
+        let image = |w: usize, h: usize| egui::ColorImage::new([w, h], vec![egui::Color32::BLACK; w * h]);
         upload_texture_deferred(&ctx, &mut slot, &mut drops, "t", image(4, 2), egui::TextureOptions::LINEAR);
         assert!(slot.is_some());
         let before = ctx.tex_manager().read().allocated().count();

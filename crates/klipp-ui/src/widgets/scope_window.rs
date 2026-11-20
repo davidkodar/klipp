@@ -1,3 +1,4 @@
+use crate::colour32::Colour029;
 use crate::widgets::menu::SubmenuRows;
 use crate::state::{
     PaneConfig, PaneScopeSettings, ScopeOptions, ScopeLayout, ScopeScale,
@@ -204,12 +205,12 @@ pub fn show_scope_window(
         .order(egui::Order::Middle)
         .default_pos([100.0, 60.0])
         .show(ctx, |ui| {
-            let panel_frame = egui::Frame::none()
+            let panel_frame = egui::Frame::NONE
                 .fill(theme.bg_panel_alt)
                 .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
-                .rounding(4.0)
+                .corner_radius(4.0)
                 .inner_margin(0.0)
-                .shadow(egui::Shadow { offset: egui::vec2(0.0, 2.0), blur: 12.0, spread: 0.0, color: egui::Color32::from_black_alpha(100) });
+                .shadow(egui::Shadow { offset: [0, 2], blur: 12, spread: 0, color: egui::Color32::from_black_alpha(100) });
 
             panel_frame.show(ui, |ui| {
                 egui::Resize::default()
@@ -333,7 +334,7 @@ pub fn draw_pane_grid(
             // pane's own true-black interior (matching the scope
             // texture and the main-dock paint path).
             ui.painter().rect_stroke(pane_rect, 0.0,
-                egui::Stroke::new(0.5_f32, egui::Color32::BLACK));
+                egui::Stroke::new(0.5_f32, egui::Color32::BLACK), egui::StrokeKind::Outside);
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
             draw_pane(&mut child, pane_idx, state, scope_options, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis);
         }
@@ -452,12 +453,12 @@ fn draw_pane(
             );
             let is_active = current_ch == *ch;
             if is_active {
-                p.rect_filled(pill_rect, 2.0, color.linear_multiply(0.25));
+                p.rect_filled(pill_rect, 2.0, color.lin_mul(0.25));
             }
             p.text(
                 pill_rect.center(), egui::Align2::CENTER_CENTER,
                 ch.label(), egui::FontId::monospace(8.0),
-                if is_active { *color } else { color.linear_multiply(0.4) },
+                if is_active { *color } else { color.lin_mul(0.4) },
             );
             if ui.allocate_rect(pill_rect, egui::Sense::click()).clicked() {
                 state.panes[pane_idx].settings.waveform_channel = *ch;
@@ -772,7 +773,7 @@ fn render_pane_scope(
                 let graticule = pane.settings.show_graticule;
 
                 // 1. Range rings at 25 / 50 / 75 %.
-                let inner_ring_color = egui::Color32::from_rgba_unmultiplied(
+                let inner_ring_color = crate::colour32::rgba(
                     label_color.r(), label_color.g(), label_color.b(), 40,
                 );
                 for frac in [0.25_f32, 0.50, 0.75] {
@@ -792,7 +793,7 @@ fn render_pane_scope(
                     let a1 = ((i + 1) as f32) / (segments as f32) * std::f32::consts::TAU;
                     let hue = (a0 / std::f32::consts::TAU).fract();
                     let (rh, gh, bh) = super::scopes::hue_to_rgb(hue);
-                    let seg_color = egui::Color32::from_rgba_unmultiplied(
+                    let seg_color = crate::colour32::rgba(
                         (rh * 255.0) as u8,
                         (gh * 255.0) as u8,
                         (bh * 255.0) as u8,
@@ -804,7 +805,7 @@ fn render_pane_scope(
                 }
 
                 // 3. Centre crosshair.
-                let cross_color = egui::Color32::from_rgba_unmultiplied(
+                let cross_color = crate::colour32::rgba(
                     label_color.r(), label_color.g(), label_color.b(), 30,
                 );
                 painter.line_segment(
@@ -819,7 +820,7 @@ fn render_pane_scope(
                 // 4. Skin-tone line at the preferred angle + "I" label,
                 // and the NTSC I/Q axes when asked for.
                 if pane.settings.show_iq_lines {
-                    let iq_color = egui::Color32::from_rgba_unmultiplied(
+                    let iq_color = crate::colour32::rgba(
                         label_color.r(), label_color.g(), label_color.b(), 70,
                     );
                     for angle in [123.0_f32, 33.0] {
@@ -849,7 +850,7 @@ fn render_pane_scope(
                 );
 
                 // 5. Target boxes + labels at the six chroma points.
-                let target_color = egui::Color32::from_rgba_unmultiplied(
+                let target_color = crate::colour32::rgba(
                     label_color.r(), label_color.g(), label_color.b(), 180,
                 );
                 let box_half = 4.0;
@@ -866,7 +867,7 @@ fn render_pane_scope(
                     painter.rect_stroke(
                         rect,
                         0.0,
-                        egui::Stroke::new(1.0_f32, target_color),
+                        egui::Stroke::new(1.0_f32, target_color), egui::StrokeKind::Outside,
                     );
                     let mag = (cb * cb + cr * cr).sqrt().max(0.001);
                     let ux = cb / mag;
@@ -886,7 +887,7 @@ fn render_pane_scope(
                 // is baked into the source texture).
                 let rings = crate::state::compute_saturation_rings(&pane.settings, side);
                 let ring_alpha = crate::state::graticule_alpha(pane.settings.vectorscope_graticule_brightness);
-                let ring_color = egui::Color32::from_rgba_unmultiplied(
+                let ring_color = crate::colour32::rgba(
                     theme.accent.r(), theme.accent.g(), theme.accent.b(), (ring_alpha * 80.0) as u8,
                 );
                 for ring in &rings {
@@ -913,10 +914,10 @@ fn render_pane_scope(
             // ~10 s of rolling window. Five tick labels along the
             // bottom: -10s, -8s, -5s, -2s, now.
             let label_font = egui::FontId::monospace(9.0);
-            let label_color = egui::Color32::from_rgba_unmultiplied(
+            let label_color = crate::colour32::rgba(
                 theme.accent.r(), theme.accent.g(), theme.accent.b(), 200,
             );
-            let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180);
+            let shadow_color = crate::colour32::rgba(0, 0, 0, 180);
             let bottom_pad = 2.0;
             let ticks: &[(f32, &str)] = &[
                 (0.00, "-10s"),
@@ -1003,7 +1004,7 @@ fn render_pane_scope(
             // Reference level lines (amber dashed)
             if pane.settings.show_reference_levels {
                 let lines = crate::state::compute_reference_lines(&pane.settings, r.height());
-                let amber_ref = egui::Color32::from_rgba_unmultiplied(
+                let amber_ref = crate::colour32::rgba(
                     theme.accent.r(), theme.accent.g(), theme.accent.b(), 140,
                 );
                 for line in &lines {
@@ -1049,7 +1050,7 @@ pub fn draw_scope_cursor_indicator(
     histogram_display: klipp_core::HistogramDisplayMode,
 ) {
     let cursor_color = egui::Color32::from_rgb(0xff, 0xff, 0xff);
-    let outline_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200);
+    let outline_color = crate::colour32::rgba(0, 0, 0, 200);
     let amber = egui::Color32::from_rgb(0xf5, 0xb4, 0x3c);
     let radius = 5.0;
 
@@ -1088,7 +1089,7 @@ pub fn draw_scope_cursor_indicator(
             let y = cy - cur.cr * r_radius * 2.0 * vectorscope_zoom;
             draw_dot(painter, egui::pos2(x, y));
             // Crosshair
-            let ch_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 120);
+            let ch_color = crate::colour32::rgba(255, 255, 255, 120);
             painter.line_segment([egui::pos2(x - 10.0, y), egui::pos2(x + 10.0, y)], egui::Stroke::new(0.5_f32, ch_color));
             painter.line_segment([egui::pos2(x, y - 10.0), egui::pos2(x, y + 10.0)], egui::Stroke::new(0.5_f32, ch_color));
         }
@@ -1274,7 +1275,7 @@ fn draw_waveform_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeW
                 egui::RichText::new(ch.label()).size(11.0)
                     .color(if is_sel { *color } else { theme.text_dim })
             ).min_size(egui::vec2(30.0, 20.0))
-             .fill(if is_sel { color.linear_multiply(0.2) } else { theme.bg_panel });
+             .fill(if is_sel { color.lin_mul(0.2) } else { theme.bg_panel });
             if ui.add(btn).clicked() {
                 s.waveform_channel = *ch;
             }
@@ -1457,14 +1458,14 @@ fn draw_dot_menu(
                             for pane in &mut state.panes {
                                 pane.settings.scale = *val;
                             }
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     ui.separator();
                     let legal_prefix = if state.show_legal_range { "\u{2022} " } else { "   " };
                     if ui.button(format!("{legal_prefix}Show legal range (64\u{2013}940)")).clicked() {
                         state.show_legal_range = !state.show_legal_range;
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 });
 
@@ -1474,7 +1475,7 @@ fn draw_dot_menu(
                         let prefix = if state.vectorscope_scale == val { "\u{2022} " } else { "   " };
                         if ui.button(format!("{prefix}{}", val.label())).clicked() {
                             state.vectorscope_scale = val;
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });
@@ -1500,7 +1501,7 @@ fn draw_dot_menu(
                 ui.menu_rows("Ratio", |ui| {
                     for (label, _) in [("Equal (1:1)", 0), ("Wide (2:1)", 1), ("Tall (1:2)", 2)] {
                         if ui.button(label).clicked() {
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });
@@ -1519,7 +1520,7 @@ fn draw_dot_menu(
                             for pane in &mut state.panes {
                                 pane.settings.quality = *val;
                             }
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });

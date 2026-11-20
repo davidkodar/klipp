@@ -344,7 +344,7 @@ pub fn show_key_menu(ui: &mut egui::Ui, state: &mut AppState, cmds: &mut Vec<App
         .order(egui::Order::Foreground)
         .interactable(true)
         .show(ui.ctx(), |ui| {
-            egui::Frame::menu(ui.style()).inner_margin(egui::Margin::same(4.0)).show(ui, |ui| {
+            egui::Frame::menu(ui.style()).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
                 ui.set_min_width(150.0);
                 ui.label(egui::RichText::new(format!("{} key at {:.3} s", menu.key.param.label(), menu.key.time_secs)).size(10.0).weak());
                 ui.separator();

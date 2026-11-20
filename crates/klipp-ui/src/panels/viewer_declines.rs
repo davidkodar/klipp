@@ -56,7 +56,7 @@ pub fn draw_chips(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme, rect:
         let response = ui.interact(chip, ui.id().with(("frame_decline", n)), egui::Sense::click());
         let fill = if response.hovered() { theme.bg_hover } else { theme.bg_raised };
         ui.painter().rect_filled(chip, 3.0, fill);
-        ui.painter().rect_stroke(chip, 3.0, egui::Stroke::new(1.0_f32, theme.marker_warning));
+        ui.painter().rect_stroke(chip, 3.0, egui::Stroke::new(1.0_f32, theme.marker_warning), egui::StrokeKind::Outside);
         ui.painter().galley(chip.min + pad, galley, theme.text_primary);
         let Some(decline) = decline else { continue };
         let response = response.on_hover_text(&decline.why);
@@ -101,7 +101,7 @@ mod tests {
             let (state, panel) = (&mut self.state, &mut self.panel);
             let mut cmds = Vec::new();
             let out = self.ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     cmds = panel.show(ui, state, &theme, &crate::keybindings::KeyBindings::default());
                 });
             });

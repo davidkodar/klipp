@@ -235,7 +235,7 @@ fn draw_handle_timecode(
     painter.rect_filled(
         pill_rect,
         2.0,
-        egui::Color32::from_rgba_unmultiplied(20, 20, 24, 220),
+        crate::colour32::rgba(20, 20, 24, 220),
     );
 
     painter.text(
@@ -286,7 +286,7 @@ fn draw_collapsed_handle(
     painter.rect_filled(
         pill_rect,
         2.0,
-        egui::Color32::from_rgba_unmultiplied(20, 20, 24, 220),
+        crate::colour32::rgba(20, 20, 24, 220),
     );
     painter.text(
         egui::pos2(cx, label_y),
@@ -381,7 +381,7 @@ pub fn draw_snap_line(
     let c = theme.accent;
     painter.line_segment(
         [egui::pos2(x, top), egui::pos2(x, bottom)],
-        egui::Stroke::new(6.0_f32, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 50)),
+        egui::Stroke::new(6.0_f32, crate::colour32::rgba(c.r(), c.g(), c.b(), 50)),
     );
     // Timecode pill label
     let label = format_handle_timecode(secs, tc);
@@ -395,7 +395,7 @@ pub fn draw_snap_line(
         egui::pos2(label_pos.x - 2.0, label_pos.y - 1.0),
         egui::vec2(galley.size().x + 4.0, galley.size().y + 2.0),
     );
-    painter.rect_filled(pill_rect, 2.0, egui::Color32::from_rgba_unmultiplied(20, 20, 24, 220));
+    painter.rect_filled(pill_rect, 2.0, crate::colour32::rgba(20, 20, 24, 220));
     painter.text(
         label_pos,
         egui::Align2::LEFT_TOP,

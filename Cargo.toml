@@ -158,12 +158,12 @@ chrono = { version = "0.4", features = ["serde"] }
 glam = { version = "0.27", features = ["serde"] }
 
 # UI
-egui = "0.29"
-eframe = { version = "0.29", features = ["wgpu", "glow"] }
-egui_extras = { version = "0.29", features = ["svg"] }
+egui = "=0.34.1"
+eframe = { version = "=0.34.1", features = ["wgpu", "glow"] }
+egui_extras = { version = "=0.34.1", features = ["svg"] }
 
 # GPU
-wgpu = "22"
+wgpu = "=29.0.4"
 
 # Audio
 cpal = "0.15"
@@ -310,11 +310,7 @@ inherits = "release"
 debug = true           # Keep debug info for profiling with perf/tracy
 strip = false
 
-# egui-wgpu 0.29.1 with textures freed after the frame's submit instead
-# of before it (see vendor/egui-wgpu/KLIPP-PATCH.md). Upstream's order
-# aborted the app whenever a texture was freed in the frame it was drawn.
 [patch.crates-io]
-egui-wgpu = { path = "vendor/egui-wgpu" }
 # winit 0.30.13 with the Wayland frame-callback wait bounded at 100 ms (see
 # vendor/winit/KLIPP-PATCH.md). Unbounded, Hyprland's once-a-second callbacks
 # on an idle desktop left the app painting once a second under input.
@@ -323,11 +319,6 @@ winit = { path = "vendor/winit" }
 # vendor/smithay-clipboard/KLIPP-PATCH.md). Mutter sends a client's drags and
 # its clipboard to one data device, the newest, which is the clipboard's.
 smithay-clipboard = { path = "vendor/smithay-clipboard" }
-# wgpu-core 22.1.0 with the queue's write paths taking the snatch lock before
-# `pending_writes`, as `queue_submit` does (see vendor/wgpu-core/KLIPP-PATCH.md).
-# The other order deadlocked the engine, a decoder and the UI on the shared
-# device: playback froze at a cut under an overlay.
-wgpu-core = { path = "vendor/wgpu-core" }
 # livi 0.7.5 and lilv 0.2.4 with their C strings typed `c_char` rather than
 # `i8` (see vendor/livi/KLIPP-PATCH.md, vendor/lilv/KLIPP-PATCH.md).
 # Upstream's `i8` is `c_char` only on x86, so the LV2 host would not build

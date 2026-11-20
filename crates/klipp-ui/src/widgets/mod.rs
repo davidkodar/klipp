@@ -1,5 +1,6 @@
 pub mod color_slider;
 pub mod color_wheel;
+pub mod colour_field;
 pub mod curves_editor;
 pub mod easing_curve;
 pub mod grade_drag;
@@ -30,7 +31,7 @@ pub mod wordmark;
 /// never sits over the menus (#3428). `egui` would otherwise open it at the
 /// window's top left.
 pub fn below_menu_bar(ctx: &egui::Context) -> egui::Rect {
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     screen.with_min_y(screen.min.y + crate::panels::toolbar::MENU_BAR_HEIGHT)
 }
 
@@ -104,7 +105,21 @@ mod below_menus_tests {
 /// pressed: "120" is one edit, one undo step and one picture, not 1, 12 and
 /// 120. Dragging it still changes the value as it goes.
 pub fn number_field<N: egui::emath::Numeric>(value: &mut N) -> NumberField<'_> {
-    NumberField { inner: egui::DragValue::new(value).update_while_editing(false), range: None, clamps: true, suffix: String::new(), parser: None }
+    // `DragValue::new`, with the value read through a probe that keeps the
+    // first and last value the field saw this frame (see `Widget::ui`).
+    let seen = std::rc::Rc::new(std::cell::Cell::new((None::<f64>, None::<f64>)));
+    let probe = seen.clone();
+    let inner = egui::DragValue::from_get_set(move |v: Option<f64>| {
+        if let Some(v) = v {
+            *value = N::from_f64(v);
+        }
+        let now = value.to_f64();
+        let (first, _) = probe.get();
+        probe.set((first.or(Some(now)), Some(now)));
+        now
+    });
+    let inner = if N::INTEGRAL { inner.max_decimals(0).range(N::MIN..=N::MAX).speed(0.25) } else { inner };
+    NumberField { inner: inner.update_while_editing(false), range: None, clamps: true, suffix: String::new(), parser: None, seen }
 }
 
 /// [`number_field`]'s field: a `DragValue` as built, which also says so
@@ -117,6 +132,8 @@ pub struct NumberField<'a> {
     clamps: bool,
     suffix: String,
     parser: Option<Box<dyn 'a + Fn(&str) -> Option<f64>>>,
+    /// The first and last value the field read this frame.
+    seen: std::rc::Rc<std::cell::Cell<(Option<f64>, Option<f64>)>>,
 }
 
 impl<'a> NumberField<'a> {
@@ -145,7 +162,7 @@ impl<'a> NumberField<'a> {
         self
     }
     pub fn prefix(mut self, prefix: impl ToString) -> Self {
-        self.inner = self.inner.prefix(prefix);
+        self.inner = self.inner.prefix(prefix.to_string());
         self
     }
     pub fn suffix(mut self, suffix: impl ToString) -> Self {
@@ -203,7 +220,7 @@ pub fn past_range_note(typed: f64, lo: f64, hi: f64, suffix: &str) -> Option<Str
 
 impl egui::Widget for NumberField<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let NumberField { inner, range, clamps, suffix, parser } = self;
+        let NumberField { inner, range, clamps, suffix, parser, seen: values } = self;
         // What was typed, before it is held to the range.
         let typed = std::rc::Rc::new(std::cell::Cell::new(None::<f64>));
         let seen = typed.clone();
@@ -215,7 +232,14 @@ impl egui::Widget for NumberField<'_> {
             seen.set(v);
             v
         });
-        let response = ui.add(inner);
+        let mut response = ui.add(inner);
+        // Changed means the value changed, as in egui 0.29, which set
+        // `changed` from the value alone. egui 0.34 keeps the typing box's
+        // own flag too, so each keystroke read as an edit: typing 120 made
+        // four undo steps, three of them of the value as it was.
+        if let (Some(first), Some(last)) = values.get() {
+            response.flags.set(egui::response::Flags::CHANGED, first != last);
+        }
         let note_id = response.id.with("past_range");
         let now = ui.input(|i| i.time);
         if response.lost_focus() && clamps {
@@ -339,4 +363,21 @@ mod number_field_tests {
         scan(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut found);
         assert!(found.is_empty(), "{found:?}");
     }
+}
+
+/// A toggle button, `selected` drawn as Klipp's always were: the accent
+/// outline, square corners and the widget's own text colour over the
+/// selection fill. egui 0.34 draws a selected button with its usual
+/// outline and accent text instead. `add` places the button (`ui.add`,
+/// `ui.add_enabled`, `ui.put`) so each caller keeps its own placement.
+pub fn selected_button<'a, R>(ui: &mut egui::Ui, button: egui::Button<'a>, selected: bool, add: impl FnOnce(&mut egui::Ui, egui::Button<'a>) -> R) -> R {
+    if !selected {
+        return add(ui, button.selected(false));
+    }
+    let accent = ui.visuals().selection.stroke;
+    let text = ui.visuals().widgets.inactive.fg_stroke;
+    ui.visuals_mut().selection.stroke = text;
+    let out = add(ui, button.selected(true).stroke(accent).corner_radius(0));
+    ui.visuals_mut().selection.stroke = accent;
+    out
 }

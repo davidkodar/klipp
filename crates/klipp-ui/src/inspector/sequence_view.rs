@@ -55,7 +55,7 @@ pub fn show(ui: &mut Ui, theme: &KlippTheme, state: &AppState, cmds: &mut Vec<Ap
             let label = crate::panels::viewer::view_channel_label;
             let font = egui::FontId::proportional(12.0);
             let pad = ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x;
-            let wide: f32 = ui.fonts(|f| klipp_core::ViewChannel::ALL.iter().map(|c| f.layout_no_wrap(label(*c).to_owned(), font.clone(), egui::Color32::WHITE).size().x + pad).sum());
+            let wide: f32 = ui.fonts_mut(|f| klipp_core::ViewChannel::ALL.iter().map(|c| f.layout_no_wrap(label(*c).to_owned(), font.clone(), egui::Color32::WHITE).size().x + pad).sum());
             let mut chosen = state.view_channel;
             if wide <= ui.available_width() {
                 for channel in klipp_core::ViewChannel::ALL {
@@ -97,11 +97,11 @@ pub fn show(ui: &mut Ui, theme: &KlippTheme, state: &AppState, cmds: &mut Vec<Ap
 /// The sequence's name, its format on one line, and its settings.
 fn header(ui: &mut Ui, theme: &KlippTheme, state: &AppState, cmds: &mut Vec<AppCommand>) {
     let seq = state.sequence();
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_panel_alt)
-        .rounding(6.0)
-        .inner_margin(egui::Margin::symmetric(14.0, 12.0))
-        .outer_margin(egui::Margin::symmetric(10.0, 8.0))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(14, 12))
+        .outer_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new(&seq.name).size(15.0).strong().color(theme.text_primary));

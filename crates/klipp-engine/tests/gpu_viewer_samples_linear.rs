@@ -6,7 +6,7 @@
 //! too bright beside the paused frame and the export (#455). Skips
 //! without a GPU.
 
-use klipp_engine::texture::{FrameBuffer, GPU_VIEWER_SAMPLE_FORMAT};
+use klipp_engine::texture::{gpu_viewer_sample_view, FrameBuffer};
 
 /// Read texel (0,0) of `view` in a compute pass, as the fragment shader
 /// would sample it.
@@ -24,7 +24,7 @@ fn load(device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureView) ->
         label: None,
         layout: None,
         module: &shader,
-        entry_point: "main",
+        entry_point: Some("main"),
         compilation_options: Default::default(),
         cache: None,
     });
@@ -58,7 +58,7 @@ fn load(device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureView) ->
     enc.copy_buffer_to_buffer(&out, 0, &read, 0, 16);
     queue.submit([enc.finish()]);
     read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    device.poll(wgpu::Maintain::Wait);
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
     let v: Vec<f32> = bytemuck::cast_slice(&read.slice(..).get_mapped_range()).to_vec();
     [v[0], v[1], v[2], v[3]]
 }
@@ -76,10 +76,10 @@ fn the_viewer_texture_samples_as_the_linear_light_it_encodes() {
     queue.write_texture(
         tex.as_image_copy(),
         &[128u8, 128, 128, 255].repeat(16),
-        wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(16), rows_per_image: Some(4) },
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(16), rows_per_image: Some(4) },
         wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
     );
-    let view = tex.create_view(&wgpu::TextureViewDescriptor { format: Some(GPU_VIEWER_SAMPLE_FORMAT), ..Default::default() });
+    let view = gpu_viewer_sample_view(&tex);
     let got = load(&device, &queue, &view);
     let want = klipp_color::transfer::srgb_to_linear(128.0 / 255.0);
     for c in 0..3 {
@@ -107,7 +107,7 @@ fn the_frame_on_screen_reads_back_from_the_viewer_texture() {
     queue.write_texture(
         tex.as_image_copy(),
         &bytes,
-        wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
         wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
     );
     fb.note_gpu_frame();

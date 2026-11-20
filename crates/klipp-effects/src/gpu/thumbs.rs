@@ -64,14 +64,14 @@ impl ChainThumbs {
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("chain_thumb"),
-            bind_group_layouts: &[&gpu.pipelines.bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&gpu.pipelines.bind_group_layout)],
+            immediate_size: 0,
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("chain_thumb"),
             layout: Some(&layout),
             module: &module,
-            entry_point: "main",
+            entry_point: Some("main"),
             compilation_options: Default::default(),
             cache: None,
         });

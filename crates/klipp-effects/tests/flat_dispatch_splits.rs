@@ -197,7 +197,7 @@ fn a_frame_past_the_limit_is_drawn_to_its_last_pixel() {
     assert!((w * h).div_ceil(256) > 65_535);
     let bytes = u64::from(w * h) * 16;
     let limits = g.device().limits();
-    if u64::from(limits.max_storage_buffer_binding_size) < bytes || limits.max_buffer_size < bytes {
+    if limits.max_storage_buffer_binding_size < bytes || limits.max_buffer_size < bytes {
         eprintln!("skipped: the adapter binds {} MiB, a {w}×{h} frame is {} MiB", limits.max_storage_buffer_binding_size >> 20, bytes >> 20);
         return;
     }

@@ -62,7 +62,7 @@ fn gpu_curve(ctx: &klipp_effects::gpu_context::GpuContext, transfer: u32, codes:
         source: wgpu::ShaderSource::Wgsl(src.into()),
     });
     let pipeline = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: None, layout: None, module: &module, entry_point: "main",
+        label: None, layout: None, module: &module, entry_point: Some("main"),
         compilation_options: Default::default(), cache: None,
     });
     let n = codes.len() as u64;

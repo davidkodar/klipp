@@ -154,7 +154,7 @@ pub fn picker(
     }
     if mem.open {
         let sample = sample.lines().next().map(str::trim).filter(|s| !s.is_empty());
-        egui::Frame::none().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0_f32, theme.border)).rounding(4.0).inner_margin(egui::Margin::same(6.0)).show(ui, |ui| {
+        egui::Frame::NONE.fill(theme.bg_panel).stroke(egui::Stroke::new(1.0_f32, theme.border)).corner_radius(4.0).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
             let search = ui.add(egui::TextEdit::singleline(&mut mem.search).hint_text("Search fonts\u{2026}").desired_width(f32::INFINITY));
             if field.clicked() {
                 search.request_focus();
@@ -172,7 +172,7 @@ pub fn picker(
                             let (star_rect, star) = ui.allocate_exact_size(egui::vec2(18.0, PREVIEW_H as f32), egui::Sense::click());
                             let star = star.on_hover_text(if starred { "Unstar" } else { "Star: shown first" });
                             let icon_rect = egui::Rect::from_center_size(star_rect.center(), egui::vec2(14.0, 14.0));
-                            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| {
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(icon_rect), |ui| {
                                 ui.add(Icon::Star.image(14.0).tint(if starred { theme.accent } else { theme.text_dim }));
                             });
                             if star.clicked() {
@@ -183,7 +183,7 @@ pub fn picker(
                                 ui.painter().rect_filled(row.rect, 3.0, theme.bg_hover);
                             }
                             if family == current {
-                                ui.painter().rect_stroke(row.rect, 3.0, egui::Stroke::new(1.0_f32, theme.accent));
+                                ui.painter().rect_stroke(row.rect, 3.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
                             }
                             // The family in its own face; its name small
                             // beside it, and alone until the preview comes.
@@ -232,7 +232,7 @@ pub fn picker(
                         let fetching = crate::missing_fonts::fetching(&family.name);
                         let eye = eye.on_hover_text(if fetching { "Fetching\u{2026}" } else { "Preview: fetch this font to see the title\u{2019}s words in it" });
                         let icon_rect = egui::Rect::from_center_size(eye_rect.center(), egui::vec2(14.0, 14.0));
-                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(icon_rect), |ui| {
                             ui.add(Icon::Eye.image(14.0).tint(if fetching { theme.accent } else { theme.text_dim }));
                         });
                         if eye.clicked() && !fetching {

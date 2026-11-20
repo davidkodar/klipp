@@ -50,7 +50,7 @@ pub fn show(
     );
 
     // ── Sidebar ─────────────────────────────────────────────────────
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
         ui.set_min_size(sidebar_rect.size());
         ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
         ui.painter().vline(
@@ -109,14 +109,14 @@ pub fn show(
     });
 
     // ── Right pane ──────────────────────────────────────────────────
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
         ui.set_min_size(content_rect.size());
 
         ui.add_space(8.0);
 
         // Search bar
-        egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 super::browser_search_field(ui, theme, search_query, "Search generators\u{2026}", state);
             });
@@ -124,8 +124,8 @@ pub fn show(
 
         // Filter row: Animated only + view toggle. Every generator is
         // built in, so there is no source to filter by.
-        egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     animated_only_pill(ui, theme, animated_only);
@@ -432,7 +432,7 @@ fn generator_list_row(
     );
 
     if is_selected {
-        ui.painter().rect_stroke(rect, crate::theme::radius::PANEL, egui::Stroke::new(1.5_f32, theme.accent));
+        ui.painter().rect_stroke(rect, crate::theme::radius::PANEL, egui::Stroke::new(1.5_f32, theme.accent), egui::StrokeKind::Outside);
     }
 
     resp
@@ -487,7 +487,7 @@ fn gen_sidebar_row(
             egui::vec2(icon_size, icon_size),
         );
         let img = icon.image(icon_size).tint(icon_tint);
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
     }
 
     let label_galley = ui.painter().layout_no_wrap(
@@ -549,7 +549,7 @@ fn gen_general_row(
         egui::vec2(icon_size, icon_size),
     );
     let img = icon.image(icon_size).tint(theme.text_dim);
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
+    ui.scope_builder(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
         egui::FontId::proportional(11.0),
@@ -610,7 +610,7 @@ fn gen_section_header(
             egui::vec2(icon_size, icon_size),
         );
         let img = icon.image(icon_size).tint(theme.text_dim);
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
     }
     ui.painter().text(
         egui::pos2(label_x, rect.center().y),
@@ -651,13 +651,13 @@ fn animated_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) 
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
     let icon_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
         egui::vec2(icon_size, icon_size),
     );
     let img = Icon::Lightning.image(icon_size).tint(fg);
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
+    ui.scope_builder(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
     ui.painter().text(
         egui::pos2(rect.min.x + pad_x + icon_size + gap, rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -689,11 +689,11 @@ fn view_mode_button(
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
     let size = 13.0;
     let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
     let img = icon.image(size).tint(fg);
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
+    ui.scope_builder(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
     let _ = resp.clone().on_hover_text(tooltip);
     if resp.clicked() {
         *current = target;
@@ -720,7 +720,7 @@ fn gen_result_strip(
         egui::pos2(rect.max.x - dropdown_w - 8.0, rect.min.y + 1.0),
         egui::pos2(rect.max.x - 8.0, rect.max.y - 1.0),
     );
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(dropdown_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(dropdown_rect), |ui| {
         ui.style_mut().visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
         ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
         let label = format!("Sort: {}", sort_mode.label());
@@ -749,7 +749,7 @@ mod result_strip_tests {
             let mut sort = EffectSort::NameAsc;
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 200.0))), ..Default::default() };
             let out = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| gen_result_strip(ui, &theme, 16, &mut sort));
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| gen_result_strip(ui, &theme, 16, &mut sort));
             });
             let rects: Vec<(String, egui::Rect)> = out.shapes.iter().filter_map(|s| match &s.shape {
                 egui::Shape::Text(t) => Some((t.galley.text().to_string(), egui::Rect::from_min_size(t.pos, t.galley.size()))),

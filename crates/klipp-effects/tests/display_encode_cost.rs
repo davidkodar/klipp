@@ -44,13 +44,13 @@ fn measure_4k_display_encode() {
         view_formats: &[],
     });
     assert!(gpu.copy_linear_into_chain(&input, W, H));
-    device.poll(wgpu::Maintain::Wait);
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
     let mut samples = Vec::new();
     for n in 0..60 {
         let start = std::time::Instant::now();
         let none = gpu.encode_chain_to_display(true, W, H, None, false, None, Some(&target), false).expect("the encode ran");
         assert!(none.is_none());
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
         if n >= 10 {
             samples.push(start.elapsed().as_secs_f64() * 1000.0);
         }

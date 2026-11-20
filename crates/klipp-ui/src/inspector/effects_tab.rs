@@ -1,3 +1,4 @@
+use crate::widgets::colour_field::ColourField;
 use crate::icons::Icon;
 use crate::theme::KlippTheme;
 use crate::state::AppState;
@@ -13,7 +14,7 @@ pub fn show_empty(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppComma
         // Centered + icon in a rounded square
         let icon_size = 40.0;
         let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(icon_size, icon_size), egui::Sense::hover());
-        ui.painter().rect(icon_rect, 8.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border));
+        ui.painter().rect(icon_rect, 8.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
         ui.painter().text(
             icon_rect.center(), egui::Align2::CENTER_CENTER,
             "+", egui::FontId::proportional(16.0), theme.text_dim,
@@ -60,14 +61,14 @@ pub fn show_empty(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppComma
                 egui::Button::new(job)
                     .fill(theme.bg_raised)
                     .stroke(egui::Stroke::new(1.0_f32, theme.border))
-                    .rounding(4.0),
+                    .corner_radius(4.0),
             ).clicked() {
                 cmds.push(AppCommand::ShowEffectsBrowser);
             }
 
             // "E" shortcut badge
             let (badge_rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
-            ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5_f32, theme.border));
+            ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
             ui.painter().text(
                 badge_rect.center(), egui::Align2::CENTER_CENTER,
                 "E", egui::FontId::monospace(10.0), theme.text_dim,
@@ -183,11 +184,11 @@ fn show_ofx_param(
                         _ => (1.0, 1.0, 1.0, 1.0),
                     },
                 };
-                let mut color = egui::Color32::from_rgba_unmultiplied(
+                let mut color = crate::colour32::rgba(
                     (r * 255.0) as u8, (g * 255.0) as u8,
                     (b * 255.0) as u8, (a * 255.0) as u8,
                 );
-                if ui.color_edit_button_srgba(&mut color).changed() {
+                if ui.colour_srgba(&mut color).changed() {
                     cmds.push(AppCommand::SetEffectParam {
                         clip_id,
                         effect_index,
@@ -212,7 +213,7 @@ fn show_ofx_param(
                 let mut color = egui::Color32::from_rgb(
                     (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8,
                 );
-                if ui.color_edit_button_srgba(&mut color).changed() {
+                if ui.colour_srgba(&mut color).changed() {
                     cmds.push(AppCommand::SetEffectParam {
                         clip_id,
                         effect_index,
@@ -715,7 +716,7 @@ pub(crate) fn stabilization_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: 
                     let p = ui.painter_at(rect);
                     // Background
                     p.rect_filled(rect, 2.0, theme.bg_deep);
-                    p.rect_stroke(rect, 2.0, egui::Stroke::new(0.5_f32, theme.border));
+                    p.rect_stroke(rect, 2.0, egui::Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
 
                     // Y range covers both lines with small padding.
                     let mut lo = f32::INFINITY;
@@ -854,7 +855,7 @@ pub(crate) fn frei0r_body(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppStat
                         (rgb[1].clamp(0.0, 1.0) * 255.0) as u8,
                         (rgb[2].clamp(0.0, 1.0) * 255.0) as u8,
                     ];
-                    if ui.color_edit_button_srgb(&mut color).changed() {
+                    if ui.colour_srgb(&mut color).changed() {
                         rgb[0] = color[0] as f32 / 255.0;
                         rgb[1] = color[1] as f32 / 255.0;
                         rgb[2] = color[2] as f32 / 255.0;
@@ -912,7 +913,7 @@ pub(crate) fn show_ofx_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppS
         (card_bg.g() as u16).saturating_sub(8) as u8,
         (card_bg.b() as u16).saturating_sub(8) as u8,
     );
-    let card_rounding = 6.0;
+    let card_rounding: f32 = 6.0;
     let header_h = 32.0;
     let badge_gray = theme.text_dim;
     // ── OFX effects ──
@@ -938,12 +939,12 @@ pub(crate) fn show_ofx_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppS
         );
 
         let header_rounding = if is_open {
-            egui::Rounding { nw: card_rounding, ne: card_rounding, sw: 0.0, se: 0.0 }
+            egui::CornerRadius { nw: card_rounding.round() as u8, ne: card_rounding.round() as u8, sw: 0, se: 0 }
         } else {
-            egui::Rounding::same(card_rounding)
+            egui::CornerRadius::from(card_rounding)
         };
         ui.painter().rect_filled(header_rect, header_rounding, card_header_bg);
-        ui.painter().rect_stroke(header_rect.shrink(0.25), header_rounding, egui::Stroke::new(0.5_f32, theme.border));
+        ui.painter().rect_stroke(header_rect.shrink(0.25), header_rounding, egui::Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
 
         // Collapse caret (SVG icon)
         let caret_x = header_rect.min.x + pad;
@@ -974,7 +975,7 @@ pub(crate) fn show_ofx_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppS
             egui::pos2(badge_x, header_rect.center().y - badge_h / 2.0),
             egui::vec2(badge_w, badge_h),
         );
-        ui.painter().rect_stroke(badge_rect, badge_h / 2.0, egui::Stroke::new(0.8_f32, badge_gray));
+        ui.painter().rect_stroke(badge_rect, badge_h / 2.0, egui::Stroke::new(0.8_f32, badge_gray), egui::StrokeKind::Outside);
         ui.painter().text(
             badge_rect.center(), egui::Align2::CENTER_CENTER,
             badge_text, badge_font, badge_gray,
@@ -1065,11 +1066,11 @@ pub(crate) fn show_ofx_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppS
 
         // ── Card body ──
         if is_open {
-            let body_frame = egui::Frame::none()
+            let body_frame = egui::Frame::NONE
                 .fill(card_bg)
                 .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                .rounding(egui::Rounding { nw: 0.0, ne: 0.0, sw: card_rounding, se: card_rounding })
-                .inner_margin(egui::Margin { left: pad, right: pad, top: 8.0, bottom: 8.0 });
+                .corner_radius(egui::CornerRadius { nw: 0, ne: 0, sw: card_rounding.round() as u8, se: card_rounding.round() as u8 })
+                .inner_margin(egui::Margin { left: pad as i8, right: pad as i8, top: 8, bottom: 8 });
             body_frame.show(ui, |ui: &mut egui::Ui| {
                 // When disabled, dim and lock the params — mirrors the
                 // builtin path for consistency.
@@ -1149,8 +1150,8 @@ pub(crate) fn show_ofx_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppS
         if header_resp.dragged_by(egui::PointerButton::Primary) {
             ui.painter().rect_stroke(
                 header_rect,
-                if is_open { egui::Rounding { nw: card_rounding, ne: card_rounding, sw: 0.0, se: 0.0 } } else { egui::Rounding::same(card_rounding) },
-                egui::Stroke::new(2.0_f32, theme.accent),
+                if is_open { egui::CornerRadius { nw: card_rounding.round() as u8, ne: card_rounding.round() as u8, sw: 0, se: 0 } } else { egui::CornerRadius::from(card_rounding) },
+                egui::Stroke::new(2.0_f32, theme.accent), egui::StrokeKind::Outside,
             );
             let drag_dy = header_resp.drag_delta().y;
             let total_drag: f32 = ui.ctx().data_mut(|d| {

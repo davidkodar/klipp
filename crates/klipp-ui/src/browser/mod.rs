@@ -60,7 +60,7 @@ pub(crate) fn row_fit(label_x: f32, row_right: f32, label_w: f32, count_w: f32) 
 pub(crate) fn elided_galley(ui: &egui::Ui, text: &str, font: egui::FontId, color: egui::Color32, max_w: f32) -> Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
     job.wrap = egui::text::TextWrapping { max_width: max_w.max(1.0), max_rows: 1, break_anywhere: true, overflow_character: Some('\u{2026}') };
-    ui.fonts(|f| f.layout_job(job))
+    ui.fonts_mut(|f| f.layout_job(job))
 }
 
 /// One category a folded sidebar offers.
@@ -75,7 +75,7 @@ pub(crate) struct CategoryChoice<T> {
 pub(crate) fn category_dropdown<T: PartialEq + Copy>(ui: &mut egui::Ui, id_salt: &str, choices: &[CategoryChoice<T>], active: &mut T) {
     let name = |c: &CategoryChoice<T>| format!("{}  {}", c.label, c.count);
     let current = choices.iter().find(|c| c.cat == *active).map(name).unwrap_or_default();
-    egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
         // A little short of the row: the button's outline is drawn outside
         // the width asked for, and laid the panel out wider than it is.
         egui::ComboBox::from_id_salt(id_salt).width(ui.available_width() - 4.0).truncate().selected_text(current).show_ui(ui, |ui| {
@@ -150,7 +150,7 @@ pub(crate) fn source_chips<T: Copy + PartialEq>(
     let total_w = chips_width(&label_w, &count_w, pad, fit);
     let (outer_rect, _) = ui.allocate_exact_size(egui::vec2(total_w, outer_h), egui::Sense::hover());
     ui.painter().rect_filled(outer_rect, 4.0, theme.bg_panel);
-    ui.painter().rect_stroke(outer_rect, 5.0, egui::Stroke::new(1.0_f32, theme.border));
+    ui.painter().rect_stroke(outer_rect, 5.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
     let mut x = outer_rect.min.x + pad;
     for (i, (variant, label, count)) in segments.iter().enumerate() {
         let seg_w = chip_width(label_w[i], count_w[i], fit);
@@ -188,11 +188,11 @@ pub fn browser_search_field(
     placeholder: &str,
     state: &mut AppState,
 ) {
-    let framed = egui::Frame::none()
+    let framed = egui::Frame::NONE
         .fill(theme.bg_raised)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(9.0, 5.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(9, 5))
         .show(ui, |ui| ui.horizontal(|ui| {
             // A search kept from another tab is seen and cleared here
             // (#2599): a × while there is text. The text keeps its keys.
@@ -203,7 +203,7 @@ pub fn browser_search_field(
             let clear_w = if query.is_empty() {
                 0.0
             } else {
-                let glyph = ui.fonts(|f| f.layout_no_wrap("\u{00d7}".into(), egui::FontId::proportional(13.0), theme.text_dim).size().x);
+                let glyph = ui.fonts_mut(|f| f.layout_no_wrap("\u{00d7}".into(), egui::FontId::proportional(13.0), theme.text_dim).size().x);
                 glyph + ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x
             };
             let search = egui::TextEdit::singleline(query)
@@ -211,7 +211,7 @@ pub fn browser_search_field(
                 .desired_width(ui.available_width() - 4.0 - clear_w)
                 .font(egui::FontId::proportional(12.0))
                 .text_color(theme.text_primary)
-                .frame(false);
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2)));
             let resp = ui.add(search);
             if !query.is_empty() && ui.add(egui::Button::new(clear).frame(false)).on_hover_text("Clear the search").clicked() {
                 query.clear();
@@ -230,12 +230,12 @@ pub fn browser_search_field(
                 ui.painter().rect_stroke(
                     frame_rect.expand(2.0),
                     7.0,
-                    egui::Stroke::new(3.0_f32, theme.accent_subtle),
+                    egui::Stroke::new(3.0_f32, theme.accent_subtle), egui::StrokeKind::Outside,
                 );
                 ui.painter().rect_stroke(
                     frame_rect,
                     5.0,
-                    egui::Stroke::new(1.0_f32, theme.accent),
+                    egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside,
                 );
             }
             (resp.id, resp.rect)
@@ -1478,7 +1478,7 @@ impl BrowserPanel {
 
         // ── Tab bar ──
         let tab_rect = ui.available_rect_before_wrap();
-        ui.allocate_new_ui(
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
                 tab_rect.min,
                 egui::vec2(tab_rect.width(), 30.0),
@@ -1537,7 +1537,7 @@ impl BrowserPanel {
                         // Lay out icon + label horizontally inside the tab
                         // rect using a fresh child UI. Centred vertically;
                         // egui handles the gap so they can't overlap.
-                        ui.allocate_new_ui(
+                        ui.scope_builder(
                             egui::UiBuilder::new().max_rect(tab_rect),
                             |ui| {
                                 ui.with_layout(
@@ -1840,14 +1840,14 @@ impl BrowserPanel {
             );
 
             // Left pane: FILES browser (source → import flow is left-to-right)
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(left_rect), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
                 ui.set_clip_rect(left_rect);
                 let file_cmds = self.show_files_tab(ui, state, theme, Some((files_pinned, active_tab)));
                 cmds.extend(file_cmds);
             });
 
             // Divider (draggable)
-            let divider_resp = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(divider_rect), |ui| {
+            let divider_resp = ui.scope_builder(egui::UiBuilder::new().max_rect(divider_rect), |ui| {
                 let (rect, resp) = ui.allocate_exact_size(
                     divider_rect.size(),
                     egui::Sense::click_and_drag(),
@@ -1868,7 +1868,7 @@ impl BrowserPanel {
             let _ = divider_resp;
 
             // Right pane: current tab content (Media or Library)
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(right_rect), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect), |ui| {
                 ui.set_clip_rect(right_rect);
 
                 // Per-pane search bar (split view only). Visually anchors
@@ -1891,7 +1891,7 @@ impl BrowserPanel {
                         // AND-combined across categories, OR-combined
                         // within the colour-label bitmask.
                         // Inset like the pool's items below them.
-                        egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+                        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
                             self.render_media_filter_toolbar(ui, theme, state);
                             media_pool_buttons(ui, &mut cmds);
                         });
@@ -1935,7 +1935,7 @@ impl BrowserPanel {
                     // visible when Files is pinned, which is poor
                     // discoverability.
                     // Inset like the pool's items below them.
-                    egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+                    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
                         self.render_media_filter_toolbar(ui, theme, state);
                         media_pool_buttons(ui, &mut cmds);
                     });
@@ -2127,12 +2127,9 @@ impl BrowserPanel {
             }
             let pixels: Vec<egui::Color32> = result.rgba
                 .chunks_exact(4)
-                .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                .map(|c| crate::colour32::rgba(c[0], c[1], c[2], c[3]))
                 .collect();
-            let image = egui::ColorImage {
-                size: [result.width as usize, result.height as usize],
-                pixels,
-            };
+            let image = egui::ColorImage::new([result.width as usize, result.height as usize], pixels);
             let name = format!("file_thumb_{}", result.path.display());
             let tex = crate::app::alloc_texture_logged(ctx, &name, image, egui::TextureOptions::LINEAR);
             if let Some(old) = self.file_thumb_textures.insert(result.path, tex) {
@@ -2199,12 +2196,9 @@ impl BrowserPanel {
             if !result.rgba.is_empty() && result.width > 0 && result.height > 0 {
                 let pixels: Vec<egui::Color32> = result.rgba
                     .chunks_exact(4)
-                    .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                    .map(|c| crate::colour32::rgba(c[0], c[1], c[2], c[3]))
                     .collect();
-                let image = egui::ColorImage {
-                    size: [result.width as usize, result.height as usize],
-                    pixels,
-                };
+                let image = egui::ColorImage::new([result.width as usize, result.height as usize], pixels);
                 let tex = crate::app::alloc_texture_logged(
                     ctx,
                     "file_skim_frame",
@@ -2277,13 +2271,10 @@ impl BrowserPanel {
                         let pixels: Vec<egui::Color32> = rgba
                             .chunks_exact(4)
                             .map(|c| {
-                                egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+                                crate::colour32::rgba(c[0], c[1], c[2], c[3])
                             })
                             .collect();
-                        let image = egui::ColorImage {
-                            size: [w as usize, h as usize],
-                            pixels,
-                        };
+                        let image = egui::ColorImage::new([w as usize, h as usize], pixels);
                         {
                             let name = format!("filmstrip_{}_{}", result.path.display(), i);
                             crate::app::alloc_texture_logged(ctx, &name, image, egui::TextureOptions::LINEAR)
@@ -2582,7 +2573,7 @@ impl BrowserPanel {
                 can_go_up,
                 egui::Button::new(
                     egui::RichText::new("<").size(12.0).color(if can_go_up { theme.text_primary } else { theme.text_dim })
-                ).fill(theme.bg_raised).rounding(2.0).min_size(egui::vec2(24.0, 20.0)),
+                ).fill(theme.bg_raised).corner_radius(2.0).min_size(egui::vec2(24.0, 20.0)),
             )
             .on_hover_text("Go up one directory");
             if back_resp.clicked() {
@@ -2595,7 +2586,7 @@ impl BrowserPanel {
             let home_resp = ui.add(
                 egui::Button::new(
                     egui::RichText::new("~").size(12.0).color(theme.text_primary)
-                ).fill(theme.bg_raised).rounding(2.0).min_size(egui::vec2(24.0, 20.0)),
+                ).fill(theme.bg_raised).corner_radius(2.0).min_size(egui::vec2(24.0, 20.0)),
             )
             .on_hover_text("Go to home directory");
             if home_resp.clicked() {
@@ -2623,7 +2614,7 @@ impl BrowserPanel {
                 } else {
                     (theme.bg_raised, theme.border)
                 };
-                ui.painter().rect(rect, 3.0, bg, egui::Stroke::new(0.5_f32, border));
+                ui.painter().rect(rect, 3.0, bg, egui::Stroke::new(0.5_f32, border), egui::StrokeKind::Outside);
                 let gw = glyph_w(size);
                 let gh = gw * 9.0 / 16.0;
                 let glyph_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(gw, gh));
@@ -2666,7 +2657,7 @@ impl BrowserPanel {
                     )
                     .fill(bg)
                     .stroke(egui::Stroke::new(0.5_f32, border_color))
-                    .rounding(2.0)
+                    .corner_radius(2.0)
                     .min_size(egui::vec2(22.0, 20.0)),
                 )
                 .on_hover_text(if is_active {
@@ -2701,7 +2692,7 @@ impl BrowserPanel {
                         egui::Button::image(Icon::PushPin.image(12.0).tint(pin_color))
                             .min_size(egui::vec2(22.0, 20.0))
                             .fill(if is_pinned { theme.accent } else { theme.bg_raised })
-                            .rounding(2.0),
+                            .corner_radius(2.0),
                     )
                     .on_hover_text(if is_pinned {
                         "Unpin Files panel (return to single tab)"
@@ -2767,7 +2758,7 @@ impl BrowserPanel {
                         )
                         .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                         .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
-                        .rounding(2.0),
+                        .corner_radius(2.0),
                     )
                     .on_hover_text(path.to_string_lossy().to_string());
                     if btn.clicked() {
@@ -2789,7 +2780,7 @@ impl BrowserPanel {
                     )
                     .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                     .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
-                    .rounding(2.0),
+                    .corner_radius(2.0),
                 )
                 .on_hover_text("Recently imported files");
                 if btn.clicked() {
@@ -2800,7 +2791,7 @@ impl BrowserPanel {
                         state.recent_files_snapshot.clear();
                         self.files_entries.clear();
                         pending_clear_recents = true;
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }));
             }
@@ -2828,7 +2819,7 @@ impl BrowserPanel {
                     )
                     .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                     .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
-                    .rounding(2.0),
+                    .corner_radius(2.0),
                 )
                 .on_hover_text(path.to_string_lossy().to_string());
                 if btn.clicked() {
@@ -2837,7 +2828,7 @@ impl BrowserPanel {
                 btn.context_menu_rows(|ui| menu_body(ui, |ui| {
                     if menu_item(ui, "Remove from Favorites", "").clicked() {
                         pending_unpin = Some(path.clone());
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }));
             }
@@ -2878,7 +2869,7 @@ impl BrowserPanel {
                     )
                     .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                     .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
-                    .rounding(2.0),
+                    .corner_radius(2.0),
                 )
                 .on_hover_text(path.to_string_lossy().to_string());
                 if btn.clicked() {
@@ -3033,7 +3024,7 @@ impl BrowserPanel {
         // Mutates `self.files_selected` + `self.files_selection_anchor`
         // immediately, and stashes `scroll_to_index` so the row loop can call
         // `scroll_to_rect` for the new selection on the same frame.
-        let text_edit_active = ui.ctx().wants_keyboard_input();
+        let text_edit_active = ui.ctx().egui_wants_keyboard_input();
         if text_edit_active {
             self.files_panel_focused = false;
             // Reset type-ahead so the buffer doesn't carry over from a
@@ -3497,7 +3488,7 @@ impl BrowserPanel {
                             let tint = if active_idx == Some(i) {
                                 egui::Color32::WHITE
                             } else {
-                                egui::Color32::from_rgba_unmultiplied(180, 180, 180, 255)
+                                crate::colour32::rgba(180, 180, 180, 255)
                             };
                             ui.painter().image(
                                 tex.id(),
@@ -3523,7 +3514,7 @@ impl BrowserPanel {
                             ui.painter().rect_stroke(
                                 active_rect,
                                 0.0,
-                                egui::Stroke::new(1.5_f32, theme.accent),
+                                egui::Stroke::new(1.5_f32, theme.accent), egui::StrokeKind::Outside,
                             );
 
                             // Large preview popup — shows the active tile
@@ -3540,7 +3531,7 @@ impl BrowserPanel {
                             );
                             // Clamp to screen bounds so the popup doesn't
                             // go off-screen at the top or sides.
-                            let screen = ui.ctx().screen_rect();
+                            let screen = ui.ctx().content_rect();
                             let clamped_x = preview_pos.x
                                 .max(screen.min.x + 4.0)
                                 .min(screen.max.x - preview_w - 4.0);
@@ -3563,7 +3554,7 @@ impl BrowserPanel {
                                         preview_rect,
                                         4.0,
                                         theme.bg_void,
-                                        egui::Stroke::new(1.0_f32, theme.accent),
+                                        egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside,
                                     );
                                     ui.painter().image(
                                         tex.id(),
@@ -3580,7 +3571,7 @@ impl BrowserPanel {
                                         egui::Align2::RIGHT_BOTTOM,
                                         format!("{}/{}", idx + 1, tiles.len()),
                                         egui::FontId::proportional(10.0),
-                                        egui::Color32::from_rgba_unmultiplied(220, 220, 220, 200),
+                                        crate::colour32::rgba(220, 220, 220, 200),
                                     );
                                 });
                         }
@@ -4019,14 +4010,14 @@ impl BrowserPanel {
                         };
                         if menu_item(ui, &label, "").clicked() {
                             import_request = Some((target_paths.clone(), None));
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if !bins_snapshot.is_empty() {
                             ui.menu_rows("Add to Bin", |ui| menu_body(ui, |ui| {
                                 for bin_name in &bins_snapshot {
                                     if menu_item(ui, bin_name, "").clicked() {
                                         import_request = Some((target_paths.clone(), Some(bin_name.clone())));
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                 }
                             }));
@@ -4044,7 +4035,7 @@ impl BrowserPanel {
                         };
                         if menu_item(ui, &src_label, "").clicked() {
                             pending_open_in_source = Some(target_paths.clone());
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         ui.separator();
                     }
@@ -4062,14 +4053,14 @@ impl BrowserPanel {
                             menu_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| menu_path.clone())
                         };
                         let _ = crate::ui_util::open_external(&target);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
 
                     // ── Open with Default Application (only for files) ──
                     if !menu_is_dir
                         && menu_item(ui, "Open with Default Application", "").clicked() {
                             let _ = crate::ui_util::open_external(&menu_path);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
 
                     // ── Pin / Unpin Favorites (directories only) ──
@@ -4081,7 +4072,7 @@ impl BrowserPanel {
                         };
                         if menu_item(ui, pin_label, "").clicked() {
                             pending_pin_toggle = Some(menu_path.clone());
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
 
@@ -4098,7 +4089,7 @@ impl BrowserPanel {
                                 };
                                 if menu_item(ui, &label, "").clicked() {
                                     pending_set_rating = Some((vec![menu_path.clone()], r));
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                         }));
@@ -4106,8 +4097,8 @@ impl BrowserPanel {
 
                     // ── Copy file path ──
                     if menu_item(ui, "Copy File Path", "").clicked() {
-                        ui.output_mut(|o| o.copied_text = menu_path.to_string_lossy().to_string());
-                        ui.close_menu();
+                        ui.ctx().copy_text(menu_path.to_string_lossy().to_string());
+                        ui.close_kind(egui::UiKind::Menu);
                     }
 
                     // ── Rename ──
@@ -4122,7 +4113,7 @@ impl BrowserPanel {
                         if renameable
                             && menu_item(ui, "Rename", "").clicked() {
                                 pending_start_rename = Some(menu_path.clone());
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                     }
 
@@ -4131,7 +4122,7 @@ impl BrowserPanel {
                     // ── File Info... ──
                     if menu_item(ui, "File Info\u{2026}", "").clicked() {
                         pending_show_file_info = Some(menu_path.clone());
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
 
                     ui.separator();
@@ -4141,13 +4132,13 @@ impl BrowserPanel {
                     if !is_recents_view
                         && menu_item(ui, "New Folder", "").clicked() {
                             pending_new_folder = true;
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
 
                     // ── Refresh folder ──
                     if menu_item(ui, "Refresh Folder", "").clicked() {
                         pending_refresh = true;
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }));
 
@@ -4178,11 +4169,11 @@ impl BrowserPanel {
                     if !is_recents_view
                         && menu_item(ui, "New Folder", "").clicked() {
                             pending_new_folder = true;
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     if menu_item(ui, "Refresh Folder", "").clicked() {
                         pending_refresh = true;
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }));
             }
@@ -4758,18 +4749,18 @@ impl BrowserPanel {
                     ui.separator();
                     if ui.button("New smart bin\u{2026}").clicked() {
                         open_editor = Some(klipp_core::SmartBin::new(uuid::Uuid::new_v4().to_string(), "Smart Bin"));
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if let SmartBinFilter::Saved(id) = &self.smart_bin_filter {
                         if let Some(bin) = state.media_pool.smart_bins.iter().find(|b| &b.id == id) {
                             if ui.button(format!("Edit \"{}\"\u{2026}", bin.name)).clicked() {
                                 open_editor = Some(bin.clone());
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                             if ui.button(format!("Delete \"{}\"", bin.name)).clicked() {
                                 self.pending_cmds.push(AppCommand::DeleteSmartBin { id: id.clone() });
                                 self.smart_bin_filter = SmartBinFilter::None;
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                     }
@@ -4924,7 +4915,7 @@ impl BrowserPanel {
                 ui.memory_mut(|m| m.toggle_popup(popup_id));
             }
 
-            egui::popup::popup_below_widget(
+            egui::popup_below_widget(
                 ui,
                 popup_id,
                 &pill_resp,
@@ -5529,15 +5520,15 @@ impl BrowserPanel {
                                 use klipp_core::events::ClipDrop;
                                 if ui.button("Add to media pool").clicked() {
                                     add_req = Some((t.clone(), ClipDrop::PoolOnly));
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Add at playhead").clicked() {
                                     add_req = Some((t.clone(), ClipDrop::AtPlayhead));
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Add to end of timeline").clicked() {
                                     add_req = Some((t.clone(), ClipDrop::EndOfTimeline));
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             })).response.on_hover_text("Download into the pool, with its credit kept");
                         });
@@ -7240,7 +7231,7 @@ mod search_field_tests {
         let mut run = |events: Vec<egui::Event>, query: &mut String, frame_rect: &mut egui::Rect| {
             let input = egui::RawInput { events, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))), ..Default::default() };
             let _ = ctx.run(input, |ctx| {
-                egui::SidePanel::left("library").exact_width(120.0).resizable(false).show(ctx, |ui| {
+                egui::Panel::left("library").exact_size(120.0).resizable(false).show(ctx, |ui| {
                     *frame_rect = ui.vertical(|ui| browser_search_field(ui, &theme, query, "Search", &mut state)).response.rect;
                 });
             });
@@ -7254,7 +7245,7 @@ mod search_field_tests {
         run(vec![egui::Event::PointerMoved(at), button(true)], &mut query, &mut frame_rect);
         run(vec![button(false)], &mut query, &mut frame_rect);
         run(vec![], &mut query, &mut frame_rect);
-        assert!(ctx.wants_keyboard_input(), "the field has the keys");
+        assert!(ctx.egui_wants_keyboard_input(), "the field has the keys");
         run(vec![egui::Event::Text("v".into())], &mut query, &mut frame_rect);
         assert_eq!(query, "v");
     }
@@ -7571,7 +7562,7 @@ mod narrow_library_tests {
         // Twice: a first frame sizes what a second lays out.
         for _ in 0..2 {
             let _ = ctx.run(input.clone(), |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     panel.show_library_tab(ui, &mut state, &theme);
                     width = ui.min_rect().width();
                 });
@@ -7610,7 +7601,7 @@ mod narrow_library_tests {
             // Twice: a first frame sizes what a second lays out.
             for _ in 0..2 {
                 shapes = ctx.run(input.clone(), |ctx| {
-                    egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                         panel.show_library_tab(ui, &mut state, &theme);
                     });
                 }).shapes;
@@ -7658,7 +7649,7 @@ mod narrow_library_tests {
         let run = |panel: &mut BrowserPanel, state: &mut AppState, events: Vec<egui::Event>| {
             let input = egui::RawInput { events, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 900.0))), ..Default::default() };
             let out = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| panel.show_library_tab(ui, state, &theme));
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| panel.show_library_tab(ui, state, &theme));
             });
             out.shapes.iter().filter_map(|s| match &s.shape {
                 egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),

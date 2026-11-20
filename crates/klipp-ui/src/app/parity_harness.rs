@@ -209,6 +209,11 @@ impl Run {
         else {
             return false;
         };
+        // The pointer reaches the text a frame before it presses, as a hand
+        // does: pressed in the frame it arrived, a submenu it opened by
+        // hover was still at egui 0.34's first, size-unknown place, and egui
+        // read the click as outside the menu and closed it.
+        self.frame(vec![egui::Event::PointerMoved(at)], egui::Modifiers::NONE);
         self.button(at, egui::PointerButton::Primary, true);
         self.button(at, egui::PointerButton::Primary, false);
         self.frame(Vec::new(), egui::Modifiers::NONE);
@@ -298,15 +303,7 @@ impl Run {
             self.apply(cmd);
         }
         self.shapes.clone_from(&out.shapes);
-        out.shapes
-            .iter()
-            .filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => {
-                    Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0))
-                }
-                _ => None,
-            })
-            .collect()
+        crate::screen_texts::screen_texts(&out.shapes)
     }
 
     /// `cmd` as the app's dispatch takes it: a graph-held clip's placement

@@ -1,3 +1,4 @@
+use crate::colour32::Colour029;
 use crate::theme::KlippTheme;
 use crate::widgets::scrubby_param::{scrubby_param_row, KeyframeState};
 use klipp_audio::ladspa::LadspaPluginInfo;
@@ -471,7 +472,7 @@ pub fn show(
                         .color(theme.text_accent),
                 )
                 .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(1.0_f32, theme.accent.linear_multiply(0.5))),
+                .stroke(egui::Stroke::new(1.0_f32, theme.accent.lin_mul(0.5))),
             );
             let popup_id = ui.id().with("add_audio_fx_popup");
             if btn.clicked() {
@@ -528,7 +529,7 @@ pub fn show_content(
                         .color(theme.text_accent),
                 )
                 .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(1.0_f32, theme.accent.linear_multiply(0.5))),
+                .stroke(egui::Stroke::new(1.0_f32, theme.accent.lin_mul(0.5))),
             );
             let popup_id = ui.id().with("add_audio_fx_popup_card");
             if btn.clicked() {
@@ -609,12 +610,12 @@ pub fn show_content(
         let collapsed_key = card_id.with("collapsed");
         let is_collapsed: bool = ui.ctx().data_mut(|d| d.get_temp(collapsed_key).unwrap_or(false));
 
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(1.0_f32, theme.border))
-            .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-            .outer_margin(egui::Margin::symmetric(0.0, 2.0))
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .outer_margin(egui::Margin::symmetric(0, 2))
             .show(ui, |ui| {
                 // ── Header row ──
                 ui.horizontal(|ui| {

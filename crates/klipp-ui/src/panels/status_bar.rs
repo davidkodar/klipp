@@ -1,3 +1,4 @@
+use crate::colour32::Colour029;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_engine::PlaybackState;
@@ -9,7 +10,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
     // left fields take the room it leaves, so the two never overlap
     // (#1355).
     let right_start = ui
-        .allocate_new_ui(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+        .scope_builder(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 14.0;
             ui.add_space(10.0);
 
@@ -112,7 +113,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
                     egui::RichText::new(format!("{pct}%"))
                         .size(10.0)
                         .monospace()
-                        .color(theme.text_secondary.linear_multiply(alpha)),
+                        .color(theme.text_secondary.lin_mul(alpha)),
                 );
 
                 // Progress bar
@@ -120,7 +121,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
                 let bar_h = 3.0;
                 let (bar_rect, _) =
                     ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
-                ui.painter().rect_filled(bar_rect, 2.0, theme.bg_raised.linear_multiply(alpha));
+                ui.painter().rect_filled(bar_rect, 2.0, theme.bg_raised.lin_mul(alpha));
                 let fill_w = (progress * bar_w).clamp(0.0, bar_w);
                 if fill_w > 0.0 {
                     ui.painter().rect_filled(
@@ -129,7 +130,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
                             egui::vec2(fill_w, bar_h),
                         ),
                         2.0,
-                        bar_color.linear_multiply(alpha),
+                        bar_color.lin_mul(alpha),
                     );
                 }
 
@@ -194,7 +195,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
         })
         .inner;
     let left = egui::Rect::from_min_max(bar.min, egui::pos2((right_start - 14.0).max(bar.min.x), bar.max.y));
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(left).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(left).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
         ui.set_clip_rect(left.intersect(ui.clip_rect()));
         left_fields(ui, state, theme);
     });
@@ -359,7 +360,7 @@ mod narrow_tests {
             for i in 0..3 {
                 let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 200.0))), time: Some(f64::from(i) * 0.1), ..Default::default() };
                 let output = ctx.run(input, |ctx| {
-                    egui::TopBottomPanel::bottom("status").exact_height(26.0).show(ctx, |ui| show(ui, &state, &KlippTheme::default()));
+                    egui::Panel::bottom("status").exact_size(26.0).show(ctx, |ui| show(ui, &state, &KlippTheme::default()));
                 });
                 texts = output.shapes.iter().filter_map(|s| match &s.shape {
                     egui::Shape::Text(t) if !t.galley.text().trim().is_empty() => Some((t.galley.text().to_owned(), t.visual_bounding_rect())),

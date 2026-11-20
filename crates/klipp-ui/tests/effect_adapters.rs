@@ -1,6 +1,10 @@
 //! The effect adapters (M3 step 6): an effect's specialist behaviour, re-
 //! hosted around its generated rows, sends what today's effects tab sends.
 
+// The frame is drawn as the app draws its panels, on the context (see
+// klipp-ui/src/lib.rs on the egui 0.34 deprecations kept).
+#![allow(deprecated)]
+
 use klipp_core::{AppCommand, ClipId, RationalTime};
 use klipp_effects::registry::{effect_types, EffectType, ParamDesc};
 use klipp_graph_format::path::{NodePath, Root};

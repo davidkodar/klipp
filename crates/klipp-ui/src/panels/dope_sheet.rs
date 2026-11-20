@@ -210,7 +210,7 @@ impl Sheet {
                     cmds.extend(key_selection::lane_drag_frame(state, clip.id, Some(anchor + (dt as f32) * px_per_sec), true));
                 } else if let Some(from) = self.box_from {
                     let b = Rect::from_two_pos(from, p);
-                    painter.rect(b, 0.0, theme.accent.gamma_multiply(0.12), Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.6)));
+                    painter.rect(b, 0.0, theme.accent.gamma_multiply(0.12), Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.6)), egui::StrokeKind::Outside);
                 }
             }
         }

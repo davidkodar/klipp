@@ -320,7 +320,7 @@ fn task_tile(
     } else {
         (theme.bg_raised.gamma_multiply(0.6), egui::Stroke::NONE)
     };
-    painter.rect(rect, 6.0, fill, stroke);
+    painter.rect(rect, 6.0, fill, stroke, egui::StrokeKind::Outside);
 
     // Content padding inside the tile.
     let pad = 10.0;
@@ -509,10 +509,10 @@ fn model_card(
 
     let running = matches!(state.inference, InferenceState::Running { .. });
 
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_raised.gamma_multiply(0.6))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 // Status indicator — spinning glyph during
@@ -642,7 +642,7 @@ fn model_picker_button(
     if response.clicked() {
         ui.memory_mut(|m| m.toggle_popup(popup_id));
     }
-    egui::popup::popup_below_widget(
+    egui::popup_below_widget(
         ui,
         popup_id,
         &response,
@@ -957,11 +957,11 @@ fn prompt_tab(
 /// breakdown under the prompt counter chips. Same visual
 /// language we use elsewhere for accent badges.
 fn tag_chip(ui: &mut egui::Ui, accent: egui::Color32, label: &str) {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(accent.gamma_multiply(0.18))
         .stroke(egui::Stroke::new(1.0_f32, accent))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 1.5))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(8, 2))
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(label)
@@ -987,10 +987,10 @@ fn counter_chip(
     } else {
         theme.text_secondary
     };
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_raised.gamma_multiply(0.5))
-        .rounding(2.0)
-        .inner_margin(egui::Margin::symmetric(6.0, 3.0))
+        .corner_radius(2.0)
+        .inner_margin(egui::Margin::symmetric(6, 3))
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(text)
@@ -1167,11 +1167,11 @@ fn running_progress_section(
     let avail = ui.available_width();
     let bar_w = (avail - 12.0).max(120.0);
     let bar_h = 36.0;
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_raised)
         .stroke(egui::Stroke::new(1.0_f32, theme.marker_warning))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::same(0.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::same(0))
         .show(ui, |ui| {
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(bar_w, bar_h),
@@ -1364,11 +1364,11 @@ fn done_preview(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme)
     };
 
     // Success banner.
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.marker_success.gamma_multiply(0.18))
         .stroke(egui::Stroke::new(1.0_f32, theme.marker_success))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.add(Icon::Check.image(12.0).tint(theme.marker_success));
@@ -1402,9 +1402,9 @@ fn done_preview(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme)
     let avail = ui.available_width();
     let h = (avail * 9.0 / 16.0).clamp(120.0, 220.0);
     let preview_w = (avail - 4.0).max(120.0);
-    egui::Frame::none()
-        .rounding(4.0)
-        .inner_margin(egui::Margin::same(0.0))
+    egui::Frame::NONE
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::same(0))
         .show(ui, |ui| {
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(preview_w, h),
@@ -1567,7 +1567,7 @@ fn paint_mask_heatmap(
                 ),
                 egui::vec2(cell_w + 0.5, cell_h + 0.5),
             );
-            let color = egui::Color32::from_rgba_unmultiplied(
+            let color = crate::colour32::rgba(
                 tint.r(),
                 tint.g(),
                 tint.b(),
@@ -1626,8 +1626,8 @@ fn recent_row(
     entry: &super::RecentEntry,
     theme: &KlippTheme,
 ) {
-    egui::Frame::none()
-        .inner_margin(egui::Margin::symmetric(0.0, 4.0))
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(0, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 // Thumbnail or coloured placeholder block.
@@ -1635,7 +1635,7 @@ fn recent_row(
                 if let Some(thumb) = &entry.thumbnail {
                     let img = egui::Image::new(thumb)
                         .fit_to_exact_size(thumb_size)
-                        .rounding(2.0);
+                        .corner_radius(2.0);
                     ui.add(img);
                 } else {
                     let (rect, _) = ui.allocate_exact_size(
@@ -1712,10 +1712,10 @@ fn running_output_overlay(
 ) {
     let avail = ui.available_width();
     let h = (avail * 9.0 / 16.0).clamp(120.0, 220.0);
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_raised.gamma_multiply(0.4))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::same(0.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::same(0))
         .show(ui, |ui| {
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(avail - 4.0, h),
@@ -1730,7 +1730,7 @@ fn running_output_overlay(
                     rect.min
                         + egui::vec2(b.x2 * rect.width(), b.y2 * rect.height()),
                 );
-                painter.rect_stroke(r, 0.0, egui::Stroke::new(1.5_f32, theme.marker_warning));
+                painter.rect_stroke(r, 0.0, egui::Stroke::new(1.5_f32, theme.marker_warning), egui::StrokeKind::Outside);
             }
             // Draw point markers — green for keep, warning-red
             // for exclude. Cosmetically matches the keep/exclude
@@ -1838,10 +1838,10 @@ fn display_mode_tab(
 /// What a run that made no mask said, where its mask would be: a run that
 /// looks as if it never happened is taken for a button that does nothing.
 fn run_said_no(ui: &mut egui::Ui, theme: &KlippTheme, said: &str) {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_raised.gamma_multiply(0.6))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(10.0, 12.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(10, 12))
         .show(ui, |ui| {
             ui.add(egui::Label::new(egui::RichText::new(said).small().color(theme.text_secondary)).wrap());
         });
@@ -1853,10 +1853,10 @@ fn empty_output_placeholder(ui: &mut egui::Ui, theme: &KlippTheme) {
     // ui.available_width() and re-asserting it as a min creates a
     // 1-pixel-per-frame growth loop with the SidePanel's resize
     // logic.
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_raised.gamma_multiply(0.6))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 36.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(8, 36))
         .show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add(Icon::Info.image(28.0).tint(theme.text_dim));
@@ -1910,10 +1910,10 @@ fn advanced_section(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTh
         return;
     }
     ui.add_space(6.0);
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_raised.gamma_multiply(0.4))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::same(8.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             // Mask threshold — slider 0.0..=1.0 with the value
             // pinned right-aligned. Reuses MaskTunables's
@@ -2168,7 +2168,7 @@ mod tests {
             };
             let mut card = egui::Rect::NOTHING;
             let _ = ctx.run(raw, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     card = ui.scope(|ui| task_tile(ui, AiTask::DetectObjects, 200.0, 92.0, false, state, &registry, &theme)).response.rect;
                 });
             });

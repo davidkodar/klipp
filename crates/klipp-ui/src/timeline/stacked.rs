@@ -25,7 +25,7 @@ pub const FOCUS_BAR: f32 = 3.0;
 /// both are drawn, so neither covers it.
 pub fn paint_focus(ui: &egui::Ui, theme: &KlippTheme, worked: egui::Rect, other_ruler: egui::Rect) {
     let painter = ui.painter();
-    painter.rect_stroke(worked.shrink(0.5), 0.0, egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.8)));
+    painter.rect_stroke(worked.shrink(0.5), 0.0, egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.8)), egui::StrokeKind::Outside);
     painter.rect_filled(egui::Rect::from_min_size(worked.min, egui::vec2(worked.width(), FOCUS_BAR)), 0.0, theme.accent);
     // The other steps back: a veil over its ruler, its playhead's head
     // dimmed with it; its clips stay as they are, to be read and picked.
@@ -177,7 +177,7 @@ fn header_row(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect:
     ui.painter().hline(rect.x_range(), rect.max.y - 0.5, egui::Stroke::new(1.0_f32, theme.border));
     let mut carry = false;
     let mut done = false;
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(8.0, 1.0))), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(8.0, 1.0))), |ui| {
         ui.horizontal_centered(|ui| {
             ui.label(egui::RichText::new("SELECTS").size(10.0).strong().color(theme.accent));
             ui.label(egui::RichText::new(&name).size(11.0).color(theme.text_secondary));
@@ -278,7 +278,7 @@ pub(super) fn carry_frame(st: &mut Stacked, ui: &egui::Ui, state: &mut AppState,
         let (y0, y1) = lane.map_or((p.y - 12.0, p.y + 12.0), |(_, r)| (r.min.y + 2.0, r.max.y - 2.0));
         let shape = egui::Rect::from_min_max(egui::pos2(x_of(at), y0), egui::pos2(x_of(at + span).max(x_of(at) + 4.0), y1));
         ghost.rect_filled(shape, 3.0, theme.accent.gamma_multiply(0.25));
-        ghost.rect_stroke(shape, 3.0, egui::Stroke::new(1.0_f32, theme.accent));
+        ghost.rect_stroke(shape, 3.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
         let n = carried.len();
         let what = if overwrite { "Overwrite" } else { "Insert" };
         let text = format!("{what} {n} clip{} at {}", if n == 1 { "" } else { "s" }, state.timecode_display().position_secs(at));
@@ -352,7 +352,7 @@ mod tests {
             let (state, panel, old) = (&mut self.state, &mut self.panel, &mut self.old);
             let mut cmds = Vec::new();
             let out = self.ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     cmds = panel.show(ui, state, &theme, old, &kb, false);
                 });
             });

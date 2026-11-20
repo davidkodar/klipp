@@ -224,7 +224,7 @@ pub fn bus_strip(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, cm
     let Some(bus) = routing.buses.get(at).cloned() else { return };
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
     ui.painter().rect_filled(rect, 2.0, theme.bg_panel);
-    ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.5)));
+    ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.5)), egui::StrokeKind::Outside);
     let inner = rect.shrink2(egui::vec2(6.0, 6.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Center)));
     let ui = &mut child;
@@ -233,7 +233,7 @@ pub fn bus_strip(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, cm
     // Its name; right-click to rename it or take it out.
     let name = ui.add(egui::Label::new(egui::RichText::new(&bus.name).size(10.0).color(theme.text_primary)).truncate().sense(egui::Sense::click()))
         .on_hover_text("An aux bus: the tracks that send to it mixed through its effects. Right-click to rename it or take it out.");
-    name.context_menu(|ui| {
+    crate::widgets::menu::context_menu(&name, |ui| {
         let key = ui.make_persistent_id(("bus_rename", bus.id));
         let mut text: String = ui.data_mut(|d| d.get_temp(key)).unwrap_or_else(|| bus.name.clone());
         let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(120.0));
@@ -244,12 +244,12 @@ pub fn bus_strip(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, cm
         if (ui.add_enabled(!named.is_empty() && !taken, egui::Button::new("Rename")).clicked() || (enter && !named.is_empty() && !taken)) && named != bus.name {
             edit(state, cmds, |r| r.buses[at].name = named.chars().take(klipp_timeline::routing::MAX_BUS_NAME).collect());
             ui.data_mut(|d| d.remove::<String>(key));
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
         ui.separator();
         if ui.button("Remove Bus").on_hover_text("Take the bus out, and every send to it").clicked() {
             edit(state, cmds, |r| remove_bus(r, at));
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
     });
 
@@ -364,7 +364,7 @@ pub fn sends_popup(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, 
     if button.clicked() {
         ui.memory_mut(|m| m.toggle_popup(id));
     }
-    egui::popup::popup_below_widget(ui, id, button, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+    egui::popup_below_widget(ui, id, button, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
         ui.set_min_width(230.0);
         let routing = state.sequence().routing();
         let sends: Vec<AuxSend> = sends_of(&routing, track).to_vec();
@@ -407,14 +407,14 @@ pub fn sends_popup(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, 
         ui.separator();
         let free: Vec<&AuxBus> = routing.buses.iter().filter(|b| !sends.iter().any(|s| s.bus == b.id)).collect();
         ui.add_enabled_ui(sends.len() < MAX_SENDS, |ui| {
-            ui.menu_button("Send to", |ui| {
+            crate::widgets::menu::menu_button(ui, "Send to", |ui| {
                 for b in &free {
                     if ui.button(&b.name).clicked() {
                         let bus = b.id;
                         edit(state, cmds, |r| {
                             add_send(r, track, bus);
                         });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 if !free.is_empty() {
@@ -426,7 +426,7 @@ pub fn sends_popup(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, 
                             add_send(r, track, bus);
                         }
                     });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             });
         });

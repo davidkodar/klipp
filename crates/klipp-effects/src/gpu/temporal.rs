@@ -16,7 +16,7 @@ const NEIGHBOURS_IN_FLIGHT: usize = 4;
 
 /// The longest a neighbour decode waits for one in flight to finish
 /// before the frame goes without it (#3174). The wait it replaced,
-/// `Maintain::Wait`, waited on every submission for up to a minute, and
+/// `PollType::wait_indefinitely()`, waited on every submission for up to a minute, and
 /// on an M1 playing a reverse by flow it never came back.
 const NEIGHBOUR_ROOM_WAIT: std::time::Duration = std::time::Duration::from_millis(4);
 
@@ -64,7 +64,7 @@ impl GpuEffectsPipeline {
         }
         let until = std::time::Instant::now() + NEIGHBOUR_ROOM_WAIT;
         loop {
-            let _ = self.device.poll(wgpu::Maintain::Poll);
+            let _ = self.device.poll(wgpu::PollType::Poll);
             if in_flight() < NEIGHBOURS_IN_FLIGHT {
                 return true;
             }

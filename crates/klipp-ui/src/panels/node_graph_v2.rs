@@ -853,7 +853,7 @@ impl NodeGraphV2Panel {
         let clip_grade = graph.grade_tools() && grade_version_names.is_some();
         if clip_grade || !graph.grade_tools() || !descent_path.is_empty() {
             let mut navigated = false;
-            egui::Frame::none().fill(theme.bg_panel).show(ui, |ui| {
+            egui::Frame::NONE.fill(theme.bg_panel).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.add_space(8.0);
                     if clip_grade {
@@ -927,7 +927,7 @@ impl NodeGraphV2Panel {
             egui::Button::new(label)
                 .stroke(egui::Stroke::new(
                     1.0_f32,
-                    egui::Color32::from_rgba_unmultiplied(
+                    crate::colour32::rgba(
                         theme.accent.r(), theme.accent.g(), theme.accent.b(), 110,
                     ),
                 ))
@@ -981,7 +981,7 @@ impl NodeGraphV2Panel {
         // alongside the canvas overlay.
         let find_button = if self.search_open {
             egui::Button::new(egui::RichText::new("\u{1F50D} Find").color(theme.accent))
-                .fill(egui::Color32::from_rgba_unmultiplied(
+                .fill(crate::colour32::rgba(
                     theme.accent.r(), theme.accent.g(), theme.accent.b(), 30,
                 ))
         } else {
@@ -1106,7 +1106,7 @@ impl NodeGraphV2Panel {
                             clip_id,
                             version_index: i,
                         });
-                        mb_ui.close_menu();
+                        mb_ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 if !grade_version_names.is_empty() {
@@ -1116,19 +1116,19 @@ impl NodeGraphV2Panel {
                     // Auto-numbered "V1", "V2", … based on current count.
                     let name = format!("V{}", grade_version_names.len() + 1);
                     cmds.push(AppCommand::SaveGradeVersion { clip_id, name });
-                    mb_ui.close_menu();
+                    mb_ui.close_kind(egui::UiKind::Menu);
                 }
                 if let Some(idx) = active_grade_version {
                     if mb_ui.button("Update active version with current").clicked() {
                         cmds.push(AppCommand::UpdateActiveGradeVersion { clip_id });
-                        mb_ui.close_menu();
+                        mb_ui.close_kind(egui::UiKind::Menu);
                     }
                     if mb_ui.button("Delete active version").clicked() {
                         cmds.push(AppCommand::DeleteGradeVersion {
                             clip_id,
                             version_index: idx,
                         });
-                        mb_ui.close_menu();
+                        mb_ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             }).response } else {
@@ -1153,14 +1153,14 @@ impl NodeGraphV2Panel {
                 .map(|n| n.label().to_owned())
                 .unwrap_or_else(|| "?".to_string());
             let solo_color = egui::Color32::from_rgb(0xff, 0xd5, 0x3a);
-            let bg = egui::Color32::from_rgba_unmultiplied(
+            let bg = crate::colour32::rgba(
                 solo_color.r(), solo_color.g(), solo_color.b(), 40,
             );
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(bg)
                 .stroke(egui::Stroke::new(0.5_f32, solo_color))
-                .rounding(2.0)
-                .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                .corner_radius(2.0)
+                .inner_margin(egui::Margin::symmetric(4, 1))
                 .show(&mut toolbar_ui, |ui| {
                     ui.label(
                         egui::RichText::new(format!("Viewing: {label}"))
@@ -1351,19 +1351,19 @@ impl NodeGraphV2Panel {
                 egui::pos2(max.x + pad, max.y + pad),
             );
             let bytes = frame.color_rgba.to_le_bytes();
-            let color = egui::Color32::from_rgba_unmultiplied(
+            let color = crate::colour32::rgba(
                 bytes[0], bytes[1], bytes[2], bytes[3],
             );
             // Tint fill (alpha 30) + border (alpha 180).
             painter.rect_filled(
                 frame_rect, 4.0,
-                egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 30),
+                crate::colour32::rgba(color.r(), color.g(), color.b(), 30),
             );
             painter.rect_stroke(
                 frame_rect, 4.0,
-                egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(
+                egui::Stroke::new(1.5_f32, crate::colour32::rgba(
                     color.r(), color.g(), color.b(), 180,
-                )),
+                )), egui::StrokeKind::Outside,
             );
             // Label chip on the top edge — coloured bg + dark text
             // for legible contrast on light tints.
@@ -1379,7 +1379,7 @@ impl NodeGraphV2Panel {
             let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
             painter.rect_filled(
                 chip_rect, 2.0,
-                egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 220),
+                crate::colour32::rgba(color.r(), color.g(), color.b(), 220),
             );
             painter.galley(chip_rect.min + chip_pad, galley, theme.bg_deep);
 
@@ -1392,7 +1392,7 @@ impl NodeGraphV2Panel {
             // soft-break instead of overflowing past the frame's
             // right border.
             if !frame.description.is_empty() && zoom >= 0.6 {
-                let descr_color = egui::Color32::from_rgba_unmultiplied(
+                let descr_color = crate::colour32::rgba(
                     theme.text_primary.r(),
                     theme.text_primary.g(),
                     theme.text_primary.b(),
@@ -1431,7 +1431,7 @@ impl NodeGraphV2Panel {
         )> = Vec::with_capacity(graph.sticky_notes().len());
         for note in graph.sticky_notes() {
             let bytes = note.color_rgba.to_le_bytes();
-            let color = egui::Color32::from_rgba_unmultiplied(
+            let color = crate::colour32::rgba(
                 bytes[0], bytes[1], bytes[2], bytes[3],
             );
             let width_screen = note.width * zoom;
@@ -1551,9 +1551,9 @@ impl NodeGraphV2Panel {
             let glow_width = if is_hover { 5.0 } else { 3.5 } * zoom;
             let glow_alpha = if is_hover { 90 } else { 40 };
             let main_alpha = if is_hover { 255 } else { 180 };
-            let glow = egui::Color32::from_rgba_unmultiplied(r, g, b, glow_alpha);
+            let glow = crate::colour32::rgba(r, g, b, glow_alpha);
             draw_wire(&painter, from, to, glow, glow_width);
-            let main = egui::Color32::from_rgba_unmultiplied(r, g, b, main_alpha);
+            let main = crate::colour32::rgba(r, g, b, main_alpha);
             draw_wire(&painter, from, to, main, main_width);
             // Animated traversal pulse on the hovered wire only —
             // small bright bead travels source → destination at
@@ -1577,7 +1577,7 @@ impl NodeGraphV2Panel {
                     p, bead_r,
                     egui::Stroke::new(
                         1.0_f32,
-                        egui::Color32::from_rgba_unmultiplied(r, g, b, 80),
+                        crate::colour32::rgba(r, g, b, 80),
                     ),
                 );
                 ui.ctx().request_repaint();
@@ -1658,7 +1658,7 @@ impl NodeGraphV2Panel {
                 // Painted on top of the wire so the snap cue is the
                 // brightest thing on the canvas.
                 if let Some((_, _, pos)) = snap_target {
-                    let ring_color = egui::Color32::from_rgba_unmultiplied(r, g, b, 140);
+                    let ring_color = crate::colour32::rgba(r, g, b, 140);
                     painter.circle_stroke(
                         pos,
                         PORT_RADIUS * zoom * 1.7,
@@ -1680,13 +1680,13 @@ impl NodeGraphV2Panel {
         // foreground element).
         if let Some((start, current)) = self.box_select {
             let rect = egui::Rect::from_two_pos(start, current);
-            let fill = egui::Color32::from_rgba_unmultiplied(
+            let fill = crate::colour32::rgba(
                 theme.accent.r(), theme.accent.g(), theme.accent.b(), 36,
             );
             painter.rect_filled(rect, 0.0, fill);
             painter.rect_stroke(
                 rect, 0.0,
-                egui::Stroke::new(1.0_f32, theme.accent),
+                egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside,
             );
         }
 
@@ -1709,7 +1709,7 @@ impl NodeGraphV2Panel {
             let border = if self.selected_sticky == Some(*sticky_id) {
                 theme.accent
             } else {
-                egui::Color32::from_rgba_unmultiplied(
+                crate::colour32::rgba(
                     color.r().saturating_sub(40),
                     color.g().saturating_sub(40),
                     color.b().saturating_sub(40),
@@ -1717,13 +1717,13 @@ impl NodeGraphV2Panel {
                 )
             };
             let border_w = if self.selected_sticky == Some(*sticky_id) { 1.6_f32 } else { 0.8_f32 };
-            painter.rect_stroke(*rect, 4.0, egui::Stroke::new(border_w, border));
+            painter.rect_stroke(*rect, 4.0, egui::Stroke::new(border_w, border), egui::StrokeKind::Outside);
             // Text — placeholder gets dimmed so it reads as a hint
             // rather than committed content.
             let inner_pad = egui::vec2(8.0 * zoom, 6.0 * zoom);
             let text_pos = rect.min + inner_pad;
             if *is_placeholder {
-                let dim = egui::Color32::from_rgba_unmultiplied(
+                let dim = crate::colour32::rgba(
                     theme.bg_deep.r(),
                     theme.bg_deep.g(),
                     theme.bg_deep.b(),
@@ -1808,7 +1808,7 @@ impl NodeGraphV2Panel {
                     painter.circle_stroke(
                         centre,
                         radius + 3.0,
-                        egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(
+                        egui::Stroke::new(1.5_f32, crate::colour32::rgba(
                             accent.r(), accent.g(), accent.b(), glow_alpha,
                         )),
                     );
@@ -1818,7 +1818,7 @@ impl NodeGraphV2Panel {
                     painter.circle_stroke(
                         centre,
                         radius + 5.0,
-                        egui::Stroke::new(1.8_f32, egui::Color32::from_rgba_unmultiplied(
+                        egui::Stroke::new(1.8_f32, crate::colour32::rgba(
                             cyan.r(), cyan.g(), cyan.b(), match_alpha,
                         )),
                     );
@@ -1828,7 +1828,7 @@ impl NodeGraphV2Panel {
                     painter.circle_stroke(
                         centre,
                         radius + 4.0,
-                        egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(
+                        egui::Stroke::new(1.5_f32, crate::colour32::rgba(
                             halo.r(), halo.g(), halo.b(), 70,
                         )),
                     );
@@ -1863,15 +1863,10 @@ impl NodeGraphV2Panel {
             // ghosts so a single shadow sits under the whole stack
             // rather than each ghost casting its own competing one.
             {
-                painter.add(egui::Shape::Rect(egui::epaint::RectShape {
-                    rect: rect.translate(egui::vec2(0.0, 5.0)).expand(2.0),
-                    rounding: egui::Rounding::same(4.0),
-                    fill: egui::Color32::from_rgba_premultiplied(0, 0, 0, 50),
-                    stroke: egui::Stroke::NONE,
-                    blur_width: 8.0,
-                    fill_texture_id: egui::TextureId::default(),
-                    uv: egui::Rect::ZERO,
-                }));
+                painter.add(egui::Shape::Rect(
+                    egui::epaint::RectShape::filled(rect.translate(egui::vec2(0.0, 5.0)).expand(2.0), egui::CornerRadius::same(4), egui::Color32::from_rgba_premultiplied(0, 0, 0, 50))
+                        .with_blur_width(8.0),
+                ));
                 // Tighter contact stop for the dark edge directly
                 // under the card — keeps the shadow from feeling
                 // floaty.
@@ -1899,9 +1894,9 @@ impl NodeGraphV2Panel {
                 let ghost2 = rect.translate(egui::vec2(off * 2.0, off * 2.0));
                 let ghost1 = rect.translate(egui::vec2(off, off));
                 painter.rect_filled(ghost2, 4.0, shade(fill, 70));
-                painter.rect_stroke(ghost2, 4.0, egui::Stroke::new(0.5_f32, theme.border));
+                painter.rect_stroke(ghost2, 4.0, egui::Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
                 painter.rect_filled(ghost1, 4.0, shade(fill, 35));
-                painter.rect_stroke(ghost1, 4.0, egui::Stroke::new(0.5_f32, theme.border));
+                painter.rect_stroke(ghost1, 4.0, egui::Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
             }
             // Hover glow — soft accent ring around the rect, alpha
             // tracking the smoothed `glow` value. Painted before
@@ -1914,9 +1909,9 @@ impl NodeGraphV2Panel {
                 painter.rect_stroke(
                     rect.expand(2.5),
                     5.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(
+                    egui::Stroke::new(1.5_f32, crate::colour32::rgba(
                         accent.r(), accent.g(), accent.b(), glow_alpha,
-                    )),
+                    )), egui::StrokeKind::Outside,
                 );
             }
             // Search match — cyan ring, distinct from amber hover/
@@ -1927,9 +1922,9 @@ impl NodeGraphV2Panel {
                 painter.rect_stroke(
                     rect.expand(4.0),
                     6.0,
-                    egui::Stroke::new(1.8_f32, egui::Color32::from_rgba_unmultiplied(
+                    egui::Stroke::new(1.8_f32, crate::colour32::rgba(
                         cyan.r(), cyan.g(), cyan.b(), match_alpha,
-                    )),
+                    )), egui::StrokeKind::Outside,
                 );
             }
             painter.rect_filled(rect, 4.0, theme.bg_panel);
@@ -1951,7 +1946,7 @@ impl NodeGraphV2Panel {
             if let Some(colour) = label {
                 painter.rect_filled(header_rect, 4.0, colour.gamma_multiply(0.3));
                 let band = egui::Rect::from_min_max(header_rect.min, egui::pos2(header_rect.max.x, header_rect.min.y + (3.0 * zoom).max(2.0)));
-                painter.rect_filled(band, egui::Rounding { nw: 4.0, ne: 4.0, sw: 0.0, se: 0.0 }, colour);
+                painter.rect_filled(band, egui::CornerRadius { nw: 4, ne: 4, sw: 0, se: 0 }, colour);
             }
             // Active nodes get a small lift on the kind-palette fill so
             // they read as live; bypassed nodes fall back to bg_panel_alt
@@ -1981,7 +1976,7 @@ impl NodeGraphV2Panel {
                     // Dark theme — overlay() returns light, but we
                     // want the divider DARKER than the body. Mix
                     // black in directly.
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 90)
+                    crate::colour32::rgba(0, 0, 0, 90)
                 };
                 painter.line_segment(
                     [
@@ -2004,7 +1999,7 @@ impl NodeGraphV2Panel {
                     if y <= body_rect.min.y { break; }
                     let a = (max_alpha as f32 * (1.0 - i as f32 / 4.0)) as u8;
                     if a == 0 { break; }
-                    let shadow = egui::Color32::from_rgba_unmultiplied(0, 0, 0, a);
+                    let shadow = crate::colour32::rgba(0, 0, 0, a);
                     painter.line_segment(
                         [
                             egui::pos2(body_rect.min.x + 4.0, y),
@@ -2052,21 +2047,21 @@ impl NodeGraphV2Panel {
             // sits on top and the focus state stays unambiguous.
             if is_selected {
                 let halo = theme.accent;
-                let halo_a1 = egui::Color32::from_rgba_unmultiplied(
+                let halo_a1 = crate::colour32::rgba(
                     halo.r(), halo.g(), halo.b(), 70,
                 );
-                let halo_a2 = egui::Color32::from_rgba_unmultiplied(
+                let halo_a2 = crate::colour32::rgba(
                     halo.r(), halo.g(), halo.b(), 32,
                 );
                 painter.rect_stroke(
                     rect.expand(2.0),
                     5.0,
-                    egui::Stroke::new(1.5_f32, halo_a1),
+                    egui::Stroke::new(1.5_f32, halo_a1), egui::StrokeKind::Outside,
                 );
                 painter.rect_stroke(
                     rect.expand(4.0),
                     6.0,
-                    egui::Stroke::new(1.5_f32, halo_a2),
+                    egui::Stroke::new(1.5_f32, halo_a2), egui::StrokeKind::Outside,
                 );
             }
             // Solo halo — yellow rings around the soloed node so the
@@ -2080,16 +2075,16 @@ impl NodeGraphV2Panel {
                 painter.rect_stroke(
                     rect.expand(2.0),
                     5.0,
-                    egui::Stroke::new(1.8_f32, egui::Color32::from_rgba_unmultiplied(
+                    egui::Stroke::new(1.8_f32, crate::colour32::rgba(
                         solo_color.r(), solo_color.g(), solo_color.b(), 200,
-                    )),
+                    )), egui::StrokeKind::Outside,
                 );
                 painter.rect_stroke(
                     rect.expand(4.0),
                     6.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(
+                    egui::Stroke::new(1.5_f32, crate::colour32::rgba(
                         solo_color.r(), solo_color.g(), solo_color.b(), 70,
-                    )),
+                    )), egui::StrokeKind::Outside,
                 );
             }
             let border = if is_selected { theme.accent } else { theme.border };
@@ -2100,7 +2095,7 @@ impl NodeGraphV2Panel {
             // before the canvas. Selected border keeps 2.0 px so
             // the focus state still dominates.
             let border_w = if is_selected { 2.0_f32 } else { 0.9_f32 };
-            painter.rect_stroke(rect, 4.0, egui::Stroke::new(border_w, border));
+            painter.rect_stroke(rect, 4.0, egui::Stroke::new(border_w, border), egui::StrokeKind::Outside);
 
             // Label (header)
             let label_color = if node_on { theme.text_primary } else { theme.text_dim };
@@ -2205,7 +2200,7 @@ impl NodeGraphV2Panel {
                 let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
                 let solo_color = egui::Color32::from_rgb(0xff, 0xd5, 0x3a);
                 painter.rect_filled(chip_rect, 2.0, solo_color);
-                painter.rect_stroke(chip_rect, 2.0, egui::Stroke::new(0.5_f32, theme.bg_deep));
+                painter.rect_stroke(chip_rect, 2.0, egui::Stroke::new(0.5_f32, theme.bg_deep), egui::StrokeKind::Outside);
                 painter.text(
                     chip_rect.center(),
                     egui::Align2::CENTER_CENTER,
@@ -2259,7 +2254,7 @@ impl NodeGraphV2Panel {
             // canvas stays readable.
             if zoom >= 0.55 {
                 let chip_fg = egui::Color32::from_rgb(120, 200, 220);
-                let chip_bg = egui::Color32::from_rgba_unmultiplied(
+                let chip_bg = crate::colour32::rgba(
                     chip_fg.r(), chip_fg.g(), chip_fg.b(), 48);
                 let chip_font = egui::FontId::proportional(9.0 * zoom);
                 if let Some(label) = node.output_link() {
@@ -2273,7 +2268,7 @@ impl NodeGraphV2Panel {
                     );
                     let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
                     painter.rect_filled(chip_rect, 2.0, chip_bg);
-                    painter.rect_stroke(chip_rect, 2.0, egui::Stroke::new(0.5_f32, chip_fg));
+                    painter.rect_stroke(chip_rect, 2.0, egui::Stroke::new(0.5_f32, chip_fg), egui::StrokeKind::Outside);
                     painter.galley(chip_rect.min + pad, galley, chip_fg);
                 }
                 for (port, slot) in node.input_links().iter().enumerate() {
@@ -2289,7 +2284,7 @@ impl NodeGraphV2Panel {
                         );
                         let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
                         painter.rect_filled(chip_rect, 2.0, chip_bg);
-                        painter.rect_stroke(chip_rect, 2.0, egui::Stroke::new(0.5_f32, chip_fg));
+                        painter.rect_stroke(chip_rect, 2.0, egui::Stroke::new(0.5_f32, chip_fg), egui::StrokeKind::Outside);
                         painter.galley(chip_rect.min + pad, galley, chip_fg);
                     }
                 }
@@ -2554,7 +2549,7 @@ impl NodeGraphV2Panel {
                         pos, r * 1.9,
                         egui::Stroke::new(
                             1.2_f32,
-                            egui::Color32::from_rgba_unmultiplied(rr, gg, bb, alpha),
+                            crate::colour32::rgba(rr, gg, bb, alpha),
                         ),
                     );
                     // Continuous repaint while dragging — the wire
@@ -2577,7 +2572,7 @@ impl NodeGraphV2Panel {
                         pos, r * 1.7,
                         egui::Stroke::new(
                             1.4_f32,
-                            egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 160),
+                            crate::colour32::rgba(rr, gg, bb, 160),
                         ),
                     );
                 }
@@ -2636,7 +2631,7 @@ impl NodeGraphV2Panel {
                     hint_pos, PORT_RADIUS * zoom * 0.7,
                     egui::Stroke::new(
                         1.0_f32,
-                        egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 90),
+                        crate::colour32::rgba(rr, gg, bb, 90),
                     ),
                 );
                 painter.text(
@@ -2644,7 +2639,7 @@ impl NodeGraphV2Panel {
                     egui::Align2::CENTER_CENTER,
                     "+",
                     egui::FontId::proportional(8.0 * zoom),
-                    egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 140),
+                    crate::colour32::rgba(rr, gg, bb, 140),
                 );
             }
 
@@ -2680,7 +2675,7 @@ impl NodeGraphV2Panel {
                         pos, half * 1.7,
                         egui::Stroke::new(
                             1.4_f32,
-                            egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 160),
+                            crate::colour32::rgba(rr, gg, bb, 160),
                         ),
                     );
                 }
@@ -3225,7 +3220,7 @@ impl NodeGraphV2Panel {
         // ids that the engine just removed. Gated on `wants_keyboard_
         // input` so the user typing into a slider doesn't accidentally
         // wipe nodes.
-        if graph.keyboard_enabled() && !ui.ctx().wants_keyboard_input()
+        if graph.keyboard_enabled() && !ui.ctx().egui_wants_keyboard_input()
             && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
             && !selected_set.is_empty()
         {
@@ -3300,7 +3295,7 @@ impl NodeGraphV2Panel {
         // a "set me first" toast instead of silently doing nothing —
         // confirms the binding registered even when no jump
         // happened.
-        if graph.keyboard_enabled() && !any_menu_open && !ui.ctx().wants_keyboard_input() {
+        if graph.keyboard_enabled() && !any_menu_open && !ui.ctx().egui_wants_keyboard_input() {
             const NUM_KEYS: [egui::Key; 9] = [
                 egui::Key::Num1, egui::Key::Num2, egui::Key::Num3,
                 egui::Key::Num4, egui::Key::Num5, egui::Key::Num6,
@@ -3625,11 +3620,11 @@ impl NodeGraphV2Panel {
                 // they're not covering content).
                 painter.rect_filled(
                     map_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(
+                    crate::colour32::rgba(
                         theme.bg_deep.r(), theme.bg_deep.g(), theme.bg_deep.b(), 200,
                     ),
                 );
-                painter.rect_stroke(map_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border));
+                painter.rect_stroke(map_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
 
                 // Node rects.
                 for node in graph.nodes() {
@@ -3651,7 +3646,7 @@ impl NodeGraphV2Panel {
                     if is_selected_n { fill = theme.accent; }
                     if is_soloed_n { fill = egui::Color32::from_rgb(0xff, 0xd5, 0x3a); }
                     let alpha: u8 = if on_n { 220 } else { 100 };
-                    let fill_a = egui::Color32::from_rgba_unmultiplied(
+                    let fill_a = crate::colour32::rgba(
                         fill.r(), fill.g(), fill.b(), alpha,
                     );
                     if node.kind().is_reroute() {
@@ -3680,7 +3675,7 @@ impl NodeGraphV2Panel {
                 if v_rect.is_positive() {
                     painter.rect_stroke(
                         v_rect, 2.0,
-                        egui::Stroke::new(1.5_f32, theme.accent),
+                        egui::Stroke::new(1.5_f32, theme.accent), egui::StrokeKind::Outside,
                     );
                 }
 
@@ -3765,7 +3760,7 @@ impl NodeGraphV2Panel {
                                 ui.label(
                                     egui::RichText::new(counter)
                                         .small()
-                                        .color(egui::Color32::from_rgba_unmultiplied(
+                                        .color(crate::colour32::rgba(
                                             theme.text_primary.r(),
                                             theme.text_primary.g(),
                                             theme.text_primary.b(),
@@ -3815,10 +3810,10 @@ impl NodeGraphV2Panel {
                 let fade = 1.0 - age / LIFETIME;
                 let alpha = (fade * 255.0).clamp(0.0, 255.0) as u8;
                 let bg_alpha = (fade * 200.0).clamp(0.0, 200.0) as u8;
-                let bg = egui::Color32::from_rgba_unmultiplied(
+                let bg = crate::colour32::rgba(
                     theme.bg_raised.r(), theme.bg_raised.g(), theme.bg_raised.b(), bg_alpha,
                 );
-                let fg = egui::Color32::from_rgba_unmultiplied(
+                let fg = crate::colour32::rgba(
                     theme.text_primary.r(), theme.text_primary.g(), theme.text_primary.b(), alpha,
                 );
                 let pad = egui::vec2(10.0, 6.0);
@@ -3833,9 +3828,9 @@ impl NodeGraphV2Panel {
                 painter.rect_filled(toast_rect, 4.0, bg);
                 painter.rect_stroke(
                     toast_rect, 4.0,
-                    egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_unmultiplied(
+                    egui::Stroke::new(0.5_f32, crate::colour32::rgba(
                         theme.border.r(), theme.border.g(), theme.border.b(), alpha,
-                    )),
+                    )), egui::StrokeKind::Outside,
                 );
                 painter.galley(toast_rect.min + pad, galley, fg);
                 ui.ctx().request_repaint();
@@ -3911,7 +3906,7 @@ impl NodeGraphV2Panel {
         let mk = |alpha: u8, w: f32| {
             egui::Stroke::new(
                 w,
-                egui::Color32::from_rgba_unmultiplied(
+                crate::colour32::rgba(
                     GRID_COOL.r(),
                     GRID_COOL.g(),
                     GRID_COOL.b(),
@@ -3984,7 +3979,7 @@ impl NodeGraphV2Panel {
             let inset_rect = rect.shrink(i as f32);
             painter.rect_stroke(
                 inset_rect, 0.0,
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(0, 0, 0, a)),
+                egui::Stroke::new(1.0_f32, crate::colour32::rgba(0, 0, 0, a)), egui::StrokeKind::Outside,
             );
         }
     }
@@ -4011,7 +4006,7 @@ impl NodeGraphV2Panel {
 
         // Zoom: mouse wheel, anchored on the cursor (so the point under
         // the cursor stays put through the zoom).
-        let scroll = ui.input(|i| i.raw_scroll_delta.y);
+        let scroll = raw_scroll_delta(ui.ctx()).y;
         if scroll.abs() > 0.0 {
             if let Some(cursor) = ui.input(|i| i.pointer.hover_pos()) {
                 if canvas_rect.contains(cursor) {
@@ -4096,7 +4091,7 @@ impl NodeGraphV2Panel {
         // less than the full window height. ScrollArea handles
         // wheel scroll for free; same pattern the Add Transition
         // submenu uses on the timeline side.
-        let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
+        let max_h = (ui.ctx().content_rect().height() * 0.70).max(240.0);
 
         // Lookup helper — recents store kind_str; we want to render
         // them with their display label, so we walk categories once.
@@ -4466,7 +4461,7 @@ impl NodeGraphV2Panel {
                     ui.horizontal(|ui| {
                         for &(label, rgba) in FRAME_COLOR_PALETTE.iter() {
                             let bytes = rgba.to_le_bytes();
-                            let swatch_color = egui::Color32::from_rgba_unmultiplied(
+                            let swatch_color = crate::colour32::rgba(
                                 bytes[0], bytes[1], bytes[2], 255,
                             );
                             let selected = current_color == Some(rgba);
@@ -4920,7 +4915,7 @@ impl NodeGraphV2Panel {
                                         for (node_id, delta_x, delta_y) in align_moves(graph, &ids, how) {
                                             cmds.push(AppCommand::MoveNode { clip_id, node_id, delta_x, delta_y });
                                         }
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                         close = true;
                                     }
                                 }
@@ -5038,7 +5033,7 @@ impl NodeGraphV2Panel {
                                             port,
                                             label: if active { None } else { Some(lab.clone()) },
                                         });
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                         close = true;
                                     }
                                 }
@@ -5047,7 +5042,7 @@ impl NodeGraphV2Panel {
                                         cmds.push(AppCommand::SetNodeInputLink {
                                             clip_id, node_id, port, label: None,
                                         });
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                         close = true;
                                     }
                                 ui.separator();
@@ -5331,13 +5326,13 @@ fn paint_port_label(
     // on top of any canvas content (wires, frames, other nodes).
     painter.rect_filled(
         chip_rect, 2.0,
-        egui::Color32::from_rgba_unmultiplied(
+        crate::colour32::rgba(
             theme.bg_deep.r(), theme.bg_deep.g(), theme.bg_deep.b(), 230,
         ),
     );
     painter.rect_stroke(
         chip_rect, 2.0,
-        egui::Stroke::new(0.5_f32, theme.border),
+        egui::Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside,
     );
     painter.galley(chip_min + pad, galley, theme.text_primary);
 }
@@ -5353,13 +5348,13 @@ fn add_menu_entry(ui: &mut egui::Ui, label: &str, theme: &KlippTheme) -> bool {
     let painter = ui.painter();
     if resp.hovered() {
         let a = theme.accent;
-        let bg = egui::Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), 32);
+        let bg = crate::colour32::rgba(a.r(), a.g(), a.b(), 32);
         painter.rect_filled(resp.rect, 2.0, bg);
     }
     let text_color = if resp.hovered() {
         theme.text_primary
     } else {
-        egui::Color32::from_rgba_unmultiplied(
+        crate::colour32::rgba(
             theme.text_primary.r(),
             theme.text_primary.g(),
             theme.text_primary.b(),
@@ -5411,15 +5406,10 @@ fn paint_thumb_rounded(
     tex_id: egui::TextureId,
     rounding_px: f32,
 ) {
-    painter.add(egui::Shape::Rect(egui::epaint::RectShape {
-        rect,
-        rounding: egui::Rounding::same(rounding_px),
-        fill: egui::Color32::WHITE,
-        stroke: egui::Stroke::NONE,
-        blur_width: 0.0,
-        fill_texture_id: tex_id,
-        uv: egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-    }));
+    painter.add(egui::Shape::Rect(
+        egui::epaint::RectShape::filled(rect, egui::CornerRadius::from(rounding_px), egui::Color32::WHITE)
+            .with_texture(tex_id, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))),
+    ));
 }
 
 /// One-letter category badge for the per-node thumbnail's corner
@@ -5502,7 +5492,7 @@ fn paint_thumb_histogram(
     // bright thumbs (e.g. blown-out skies) too.
     painter.rect_filled(
         strip_rect, 0.0,
-        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 110),
+        crate::colour32::rgba(0, 0, 0, 110),
     );
     let max_bin = bins.iter().copied().max().unwrap_or(1).max(1) as f32;
     let bar_w = strip_rect.width() / bins.len() as f32;
@@ -5514,7 +5504,7 @@ fn paint_thumb_histogram(
             egui::pos2(x0, strip_rect.max.y - bar_h),
             egui::pos2(x0 + bar_w, strip_rect.max.y),
         );
-        let bar_color = egui::Color32::from_rgba_unmultiplied(
+        let bar_color = crate::colour32::rgba(
             theme.text_primary.r(),
             theme.text_primary.g(),
             theme.text_primary.b(),
@@ -5544,7 +5534,7 @@ fn paint_thumb_badge(
         ),
         egui::vec2(chip_size, chip_size),
     );
-    let bg = egui::Color32::from_rgba_unmultiplied(
+    let bg = crate::colour32::rgba(
         theme.bg_deep.r(), theme.bg_deep.g(), theme.bg_deep.b(), 200,
     );
     painter.rect_filled(chip_rect, 2.5, bg);
@@ -5822,7 +5812,7 @@ mod dock_toolbar_tests {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 600.0))),
                     ..Default::default()
                 }, |ctx| {
-                    egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                         panel.show(ui, &mut None, &mut Default::default(), &mut graph, clip, &theme,
                             &Default::default(), 0, &mut Vec::new(), &mut Vec::new(), &[], Some(&[]), None,
                             0.0, false, 0.0, None);
@@ -6598,4 +6588,25 @@ mod empty_preview_tests {
         let at = src.find(&["FeedbackKind::NoPreview).filter(|_| !kind", ".is_group())"].concat());
         assert!(at.is_some(), "a group's body draws no preview note");
     }
+}
+
+/// The wheel's movement this frame in points, summed as egui 0.29's
+/// `InputState::raw_scroll_delta` was (egui 0.34 dropped it): lines at the
+/// line scroll speed, pages at the window's height, shift turning a
+/// vertical wheel horizontal. Unsmoothed, so one notch is one zoom step.
+fn raw_scroll_delta(ctx: &egui::Context) -> egui::Vec2 {
+    let line = ctx.options(|o| o.input_options.line_scroll_speed);
+    ctx.input(|i| {
+        i.raw.events.iter().fold(egui::Vec2::ZERO, |sum, event| match event {
+            egui::Event::MouseWheel { unit, delta, modifiers, .. } => {
+                let delta = match unit {
+                    egui::MouseWheelUnit::Point => *delta,
+                    egui::MouseWheelUnit::Line => line * *delta,
+                    egui::MouseWheelUnit::Page => i.content_rect().height() * *delta,
+                };
+                sum + if modifiers.shift { egui::vec2(delta.x + delta.y, 0.0) } else { delta }
+            }
+            _ => sum,
+        })
+    })
 }

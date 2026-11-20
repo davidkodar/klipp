@@ -119,21 +119,21 @@ impl MarkersPanel {
                                         rfd::FileDialog::new().set_title("Export Review Copy").add_filter("MP4 video", &["mp4"]).set_file_name(&name).save_file()
                                             .map(|path| vec![AppCommand::ExportReviewCopy { path }]).unwrap_or_default()
                                     });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Import Review Comments\u{2026}").on_hover_text("Add a reviewer's comments, with their timecodes, as review markers").clicked() {
                                     crate::file_dialog::spawn(move || {
                                         rfd::FileDialog::new().set_title("Import Review Comments").add_filter("Comments", &["csv", "tsv", "txt"]).pick_file()
                                             .map(|path| vec![AppCommand::ImportReviewComments { path }]).unwrap_or_default()
                                     });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Export Review List\u{2026}").on_hover_text("Write the review comments and where each stands, for the next round").clicked() {
                                     crate::file_dialog::spawn(move || {
                                         rfd::FileDialog::new().set_title("Export Review List").add_filter("CSV", &["csv"]).set_file_name("review-list.csv").save_file()
                                             .map(|path| vec![AppCommand::ExportReviewList { path }]).unwrap_or_default()
                                     });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 ui.separator();
                                 ui.checkbox(&mut self.open_reviews_only, "Show only open review comments");
@@ -459,7 +459,7 @@ mod window_tests {
         let (ctx, mut panel) = (egui::Context::default(), MarkersPanel::default());
         frame(&ctx, &mut panel, &mut state);
         assert!(ctx.memory(|m| m.focused()).is_some(), "the field takes the keyboard");
-        assert!(ctx.wants_keyboard_input(), "shortcuts stand aside");
+        assert!(ctx.egui_wants_keyboard_input(), "shortcuts stand aside");
         frame(&ctx, &mut panel, &mut state);
         let rect = ctx.memory(|m| m.area_rect(egui::Id::new("Markers"))).expect("shown");
         assert!(rect.min.y >= crate::panels::toolbar::MENU_BAR_HEIGHT, "{rect:?}");

@@ -156,8 +156,8 @@ impl RenderQueuePanel {
 
                             egui::Frame::default()
                                 .fill(job_frame_bg)
-                                .rounding(4.0)
-                                .inner_margin(egui::Margin::same(8.0))
+                                .corner_radius(4.0)
+                                .inner_margin(egui::Margin::same(8))
                                 .stroke(egui::Stroke::new(1.0_f32, theme.border))
                                 .show(ui, |ui| {
                                     Self::show_job_row(ui, job, theme, actions);

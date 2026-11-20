@@ -34,7 +34,7 @@ fn read(device: &wgpu::Device, queue: &wgpu::Queue, buf: &wgpu::Buffer, pixels: 
     queue.submit(std::iter::once(enc.finish()));
     let slice = staging.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
-    device.poll(wgpu::Maintain::Wait);
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
     let out: Vec<f32> = bytemuck::pod_collect_to_vec(&slice.get_mapped_range());
     staging.unmap();
     out

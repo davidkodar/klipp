@@ -34,11 +34,11 @@ pub fn backends() -> wgpu::Backends {
 fn backends_unlocked() -> wgpu::Backends {
     static PICKED: std::sync::OnceLock<wgpu::Backends> = std::sync::OnceLock::new();
     *PICKED.get_or_init(|| {
-        if let Some(chosen) = wgpu::util::backend_bits_from_env() {
+        if let Some(chosen) = wgpu::Backends::from_env() {
             return chosen;
         }
-        let primary = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::PRIMARY, flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION, ..Default::default() });
-        if primary.enumerate_adapters(wgpu::Backends::PRIMARY).is_empty() {
+        let primary = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::PRIMARY, flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION, ..wgpu::InstanceDescriptor::new_without_display_handle() });
+        if pollster::block_on(primary.enumerate_adapters(wgpu::Backends::PRIMARY)).is_empty() {
             info!("GpuContext: no Vulkan adapter; GL instead");
             wgpu::Backends::GL
         } else {
@@ -60,13 +60,24 @@ fn instance_unlocked() -> wgpu::Instance {
     wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: backends_unlocked(),
         flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION,
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     })
 }
 
 /// The features a device asks for to time the GPU's work (#3207): both
 /// timestamp features where the adapter has them, none where it hasn't,
 /// so a device is never refused for want of them.
+/// How the device suballocates memory: in 8 to 64 MB blocks, so a large
+/// buffer (a 4K frame is 133 MB) gets memory of its own and gives it back
+/// when it goes. wgpu 22's allocator did that for anything over 32 MB;
+/// wgpu 29's packs everything into 128 to 256 MB blocks by default and
+/// keeps emptied blocks, so a nested scene took 256 MB a level and an
+/// engine left ~500 MB behind after it quit. Klipp and Veylvik share one
+/// card, so memory given back matters more than the allocator's speed.
+pub fn memory_hints() -> wgpu::MemoryHints {
+    wgpu::MemoryHints::MemoryUsage
+}
+
 pub fn timing_features(adapter: &wgpu::Adapter) -> wgpu::Features {
     if adapter.features().contains(crate::gpu::timing::FEATURES) {
         crate::gpu::timing::FEATURES
@@ -162,7 +173,8 @@ impl GpuContext {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
-        }))?;
+        }))
+        .ok()?;
 
         let adapter_info = adapter.get_info();
         info!("GpuContext: {} ({:?})", adapter_info.name, adapter_info.backend);
@@ -172,9 +184,9 @@ impl GpuContext {
                 label: Some("klipp-shared"),
                 required_features: timing_features(&adapter),
                 required_limits: device_limits(&adapter),
+                memory_hints: memory_hints(),
                 ..Default::default()
             },
-            None,
         ))
         .ok()?;
         drop(_loading);
@@ -299,8 +311,8 @@ impl GpuContext {
     /// by an earlier `install_shared` or by `shared()` triggering
     /// its lazy init); the caller can decide whether to log and
     /// proceed with two devices or abort.
-    pub fn install_shared(ctx: GpuContext) -> Result<(), GpuContext> {
-        SHARED.set(ctx)?;
+    pub fn install_shared(ctx: GpuContext) -> Result<(), Box<GpuContext>> {
+        SHARED.set(ctx).map_err(Box::new)?;
         SHARED_FROM_UI.store(true, std::sync::atomic::Ordering::Release);
         Ok(())
     }
@@ -481,7 +493,7 @@ fn register_device_callbacks(
     {
         let flag = device_lost.clone();
         let tally = std::sync::Mutex::new(ErrorTally::default());
-        device.on_uncaptured_error(Box::new(move |err| {
+        device.on_uncaptured_error(std::sync::Arc::new(move |err: wgpu::Error| {
             // A validation error is one dropped command on a device that
             // is otherwise fine: the frame it was part of is wrong, the
             // next frame records afresh. It used to take the GPU away
@@ -521,15 +533,12 @@ fn register_device_callbacks(
     }
     {
         let flag = device_lost.clone();
-        device.set_device_lost_callback(Box::new(move |reason, msg| {
-            // `ReplacedCallback` fires if a newer callback ever takes
-            // over this slot — the device itself is fine.
-            if matches!(reason, wgpu::DeviceLostReason::ReplacedCallback) {
-                return;
-            }
+        // A callback a newer one replaces is dropped without being called
+        // (wgpu 24 removed `ReplacedCallback`), so every call is a loss.
+        device.set_device_lost_callback(move |reason, msg| {
             tracing::error!("WGPU device lost ({reason:?}): {msg} — disabling GPU effects");
             flag.store(true, Ordering::SeqCst);
-        }));
+        });
     }
     device_lost
 }

@@ -393,12 +393,12 @@ impl GpuNv12Converter {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nv12_pl"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         // Push error scope to catch shader compilation errors
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nv12_to_rgba"),
@@ -409,12 +409,12 @@ impl GpuNv12Converter {
             label: Some("nv12_to_rgba"),
             layout: Some(&pipeline_layout),
             module: &shader_module,
-            entry_point: "main",
+            entry_point: Some("main"),
             compilation_options: Default::default(),
             cache: None,
         });
 
-        if let Some(err) = pollster::block_on(device.pop_error_scope()) {
+        if let Some(err) = pollster::block_on(validation_scope.pop()) {
             crate::shader_check::shader_failed("NV12 converter", &err.to_string());
             return None;
         }
@@ -665,7 +665,7 @@ impl GpuNv12Converter {
         encoder.copy_buffer_to_buffer(output_buf, 0, staging, 0, output_size);
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        // Map + poll-loop + read. `Maintain::Wait` and
+        // Map + poll-loop + read. `PollType::wait_indefinitely()` and
         // `WaitForSubmissionIndex` both unreliably deadlock on a
         // device shared with a busy UI thread — see
         // `gpu.rs::poll_until_mapped` for the writeup. Inline the
@@ -680,7 +680,7 @@ impl GpuNv12Converter {
             let start = std::time::Instant::now();
             let timeout = std::time::Duration::from_secs(2);
             loop {
-                self.device.poll(wgpu::Maintain::Poll);
+                let _ = self.device.poll(wgpu::PollType::Poll);
                 match rx.try_recv() {
                     Ok(v) => break Some(v),
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => break None,

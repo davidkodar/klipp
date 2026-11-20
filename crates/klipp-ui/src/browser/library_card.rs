@@ -19,7 +19,7 @@ pub fn library_card(
     theme: &KlippTheme,
     paint_preview: impl FnOnce(&egui::Painter, egui::Rect),
 ) -> egui::Rect {
-    let rounding = egui::Rounding::same(crate::theme::radius::PANEL);
+    let rounding = egui::CornerRadius::from(crate::theme::radius::PANEL);
     let painter = ui.painter().clone();
     painter.rect_filled(rect, rounding, theme.bg_panel_alt);
     let preview = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), (rect.height() - CAPTION_H).max(1.0)));
@@ -32,7 +32,7 @@ pub fn library_card(
     } else {
         (1.0_f32, theme.border)
     };
-    painter.rect_stroke(rect, rounding, egui::Stroke::new(stroke_w, stroke_colour));
+    painter.rect_stroke(rect, rounding, egui::Stroke::new(stroke_w, stroke_colour), egui::StrokeKind::Outside);
 
     let name_font = egui::FontId::proportional(crate::theme::type_scale::BODY);
     let caption_font = egui::FontId::proportional(crate::theme::type_scale::CAPTION);
@@ -89,12 +89,12 @@ pub fn favourite_star(ui: &mut egui::Ui, theme: &KlippTheme, card: &egui::Respon
     if is_fav || card.hovered() || star.hovered() {
         if grid {
             let alpha = if is_fav { 180 } else { 130 };
-            ui.painter().rect_filled(star_rect, 4.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, alpha));
+            ui.painter().rect_filled(star_rect, 4.0, crate::colour32::rgba(0, 0, 0, alpha));
         }
         let colour = if is_fav || star.hovered() {
             egui::Color32::from_rgb(255, 215, 106)
         } else if grid {
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200)
+            crate::colour32::rgba(255, 255, 255, 200)
         } else {
             theme.text_dim
         };
@@ -108,7 +108,7 @@ pub fn favourite_star(ui: &mut egui::Ui, theme: &KlippTheme, card: &egui::Respon
 pub fn favourite_menu_item(ui: &mut egui::Ui, is_fav: bool) -> bool {
     let chosen = ui.button(if is_fav { "Remove from Favourites" } else { "Add to Favourites" }).clicked();
     if chosen {
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     chosen
 }

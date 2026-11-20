@@ -171,13 +171,13 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                 let x = r.min.x + r.width() * (i as f32 + 1.0) / 5.0;
                 p.line_segment(
                     [egui::pos2(x - 2.0, r.min.y), egui::pos2(x + 2.0, r.max.y)],
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(40)),
+                    egui::Stroke::new(1.0_f32, crate::colour32::white(40)),
                 );
             }
         },
         K::Flash => |p, r, _, _progress| {
             preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
-            preview_circle(p, r, 0.6, egui::Color32::from_white_alpha(180));
+            preview_circle(p, r, 0.6, crate::colour32::white(180));
         },
         K::Spin => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
@@ -217,7 +217,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             );
             p.line_segment(
                 [egui::pos2(r.center().x, r.min.y), egui::pos2(r.center().x, r.max.y)],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(60)),
+                egui::Stroke::new(1.0_f32, crate::colour32::white(60)),
             );
         },
         K::BarnDoorClose => |p, r, _, _progress| {
@@ -368,7 +368,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             p.add(egui::Shape::convex_polygon(pts, PREVIEW_A, egui::Stroke::NONE));
             p.line_segment(
                 [egui::pos2(r.max.x, r.min.y), egui::pos2(r.min.x, r.max.y)],
-                egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(100)),
+                egui::Stroke::new(1.5_f32, crate::colour32::white(100)),
             );
         },
         K::DiagonalWipeTRBL => |p, r, _, _progress| {
@@ -377,7 +377,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             p.add(egui::Shape::convex_polygon(pts, PREVIEW_A, egui::Stroke::NONE));
             p.line_segment(
                 [r.min, r.max],
-                egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(100)),
+                egui::Stroke::new(1.5_f32, crate::colour32::white(100)),
             );
         },
         K::CheckerboardWipe => |p, r, _, _progress| {
@@ -446,14 +446,14 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                     egui::pos2(r.center().x - center_w * 0.5, r.min.y),
                     egui::pos2(r.center().x - center_w * 0.5, r.max.y),
                 ],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(80)),
+                egui::Stroke::new(1.0_f32, crate::colour32::white(80)),
             );
             p.line_segment(
                 [
                     egui::pos2(r.center().x + center_w * 0.5, r.min.y),
                     egui::pos2(r.center().x + center_w * 0.5, r.max.y),
                 ],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(80)),
+                egui::Stroke::new(1.0_f32, crate::colour32::white(80)),
             );
         },
         K::SplitWipeVertical => |p, r, _, _progress| {
@@ -469,14 +469,14 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                     egui::pos2(r.min.x, r.center().y - center_h * 0.5),
                     egui::pos2(r.max.x, r.center().y - center_h * 0.5),
                 ],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(80)),
+                egui::Stroke::new(1.0_f32, crate::colour32::white(80)),
             );
             p.line_segment(
                 [
                     egui::pos2(r.min.x, r.center().y + center_h * 0.5),
                     egui::pos2(r.max.x, r.center().y + center_h * 0.5),
                 ],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(80)),
+                egui::Stroke::new(1.0_f32, crate::colour32::white(80)),
             );
         },
         K::StarWipe => |p, r, _, _progress| {
@@ -573,7 +573,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             pa.rect_filled(
                 shrink,
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(
+                crate::colour32::rgba(
                     PREVIEW_A.r(),
                     PREVIEW_A.g(),
                     PREVIEW_A.b(),
@@ -585,7 +585,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                 pa.arrow(
                     egui::pos2(c.x + dx * 8.0, c.y + dy * 8.0),
                     egui::vec2(dx * 10.0, dy * 10.0),
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(160)),
+                    egui::Stroke::new(1.5_f32, crate::colour32::white(160)),
                 );
             }
         },
@@ -594,7 +594,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             pa.rect_filled(
                 r,
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(
+                crate::colour32::rgba(
                     PREVIEW_A.r(),
                     PREVIEW_A.g(),
                     PREVIEW_A.b(),
@@ -605,7 +605,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             pa.rect_filled(
                 inner,
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(
+                crate::colour32::rgba(
                     PREVIEW_A.r(),
                     PREVIEW_A.g(),
                     PREVIEW_A.b(),
@@ -617,7 +617,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                 pa.arrow(
                     egui::pos2(c.x + dx * 18.0, c.y + dy * 18.0),
                     egui::vec2(-dx * 10.0, -dy * 10.0),
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(160)),
+                    egui::Stroke::new(1.5_f32, crate::colour32::white(160)),
                 );
             }
         },
@@ -628,14 +628,14 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             pa.arrow(
                 egui::pos2(left.center().x, left.center().y),
                 egui::vec2(12.0, 0.0),
-                egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(180)),
+                egui::Stroke::new(1.5_f32, crate::colour32::white(180)),
             );
             let right = egui::Rect::from_min_max(egui::pos2(mid, r.min.y), r.max);
             pa.rect_filled(right, 0.0, PREVIEW_B);
             pa.arrow(
                 egui::pos2(right.center().x, right.center().y),
                 egui::vec2(-12.0, 0.0),
-                egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(180)),
+                egui::Stroke::new(1.5_f32, crate::colour32::white(180)),
             );
         },
         K::BokehDissolve => |pa, r, _, _progress| {
@@ -655,13 +655,13 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                     radius,
                     egui::Stroke::new(
                         1.5_f32,
-                        egui::Color32::from_rgba_unmultiplied(255, 240, 200, alpha),
+                        crate::colour32::rgba(255, 240, 200, alpha),
                     ),
                 );
                 pa.circle_filled(
                     egui::pos2(cx, cy),
                     radius * 0.3,
-                    egui::Color32::from_rgba_unmultiplied(255, 250, 230, alpha / 2),
+                    crate::colour32::rgba(255, 250, 230, alpha / 2),
                 );
             }
         },
@@ -675,7 +675,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             pa.rect_filled(
                 streak_rect,
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(100, 180, 255, 180),
+                crate::colour32::rgba(100, 180, 255, 180),
             );
             let core_rect = egui::Rect::from_center_size(
                 r.center(),
@@ -684,14 +684,14 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             pa.rect_filled(
                 core_rect,
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(200, 230, 255, 240),
+                crate::colour32::rgba(200, 230, 255, 240),
             );
             for i in 0..5 {
                 let x = r.min.x + r.width() * (i as f32 + 0.5) / 5.0;
                 pa.circle_filled(
                     egui::pos2(x, r.center().y),
                     2.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
+                    crate::colour32::rgba(255, 255, 255, 200),
                 );
             }
         },
@@ -700,19 +700,19 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             pa.rect_filled(
                 r,
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(255, 220, 150, 60),
+                crate::colour32::rgba(255, 220, 150, 60),
             );
             preview_circle(
                 pa,
                 r,
                 0.7,
-                egui::Color32::from_rgba_unmultiplied(255, 240, 200, 40),
+                crate::colour32::rgba(255, 240, 200, 40),
             );
             preview_circle(
                 pa,
                 r,
                 0.4,
-                egui::Color32::from_rgba_unmultiplied(255, 250, 230, 60),
+                crate::colour32::rgba(255, 250, 230, 60),
             );
         },
         K::ProjectorFlicker => |pa, r, _, _progress| {
@@ -736,14 +736,14 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             pa.rect_filled(
                 r.shrink2(egui::vec2(12.0, 4.0)),
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(255, 240, 200, 40),
+                crate::colour32::rgba(255, 240, 200, 40),
             );
             let sx = r.min.x + r.width() * 0.7;
             pa.line_segment(
                 [egui::pos2(sx, r.min.y), egui::pos2(sx + 1.0, r.max.y)],
                 egui::Stroke::new(
                     1.0_f32,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 200, 120),
+                    crate::colour32::rgba(255, 255, 200, 120),
                 ),
             );
         },
@@ -753,22 +753,22 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             pa.circle_filled(
                 cx,
                 r.height() * 0.5,
-                egui::Color32::from_rgba_unmultiplied(255, 100, 30, 30),
+                crate::colour32::rgba(255, 100, 30, 30),
             );
             pa.circle_filled(
                 cx,
                 r.height() * 0.3,
-                egui::Color32::from_rgba_unmultiplied(255, 140, 60, 60),
+                crate::colour32::rgba(255, 140, 60, 60),
             );
             pa.circle_filled(
                 cx,
                 r.height() * 0.15,
-                egui::Color32::from_rgba_unmultiplied(255, 200, 150, 140),
+                crate::colour32::rgba(255, 200, 150, 140),
             );
             pa.circle_filled(
                 cx,
                 r.height() * 0.06,
-                egui::Color32::from_rgba_unmultiplied(255, 240, 220, 240),
+                crate::colour32::rgba(255, 240, 220, 240),
             );
         },
         K::GlitchRGBSplit => |pa, r, _, _progress| {
@@ -784,7 +784,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                         egui::vec2(r.width(), block_h - 1.0),
                     ),
                     0.0,
-                    egui::Color32::from_rgba_unmultiplied(200, 0, 0, 100),
+                    crate::colour32::rgba(200, 0, 0, 100),
                 );
                 pa.rect_filled(
                     egui::Rect::from_min_size(
@@ -792,7 +792,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                         egui::vec2(r.width(), block_h - 1.0),
                     ),
                     0.0,
-                    egui::Color32::from_rgba_unmultiplied(0, 180, 0, 80),
+                    crate::colour32::rgba(0, 180, 0, 80),
                 );
                 pa.rect_filled(
                     egui::Rect::from_min_size(
@@ -800,7 +800,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                         egui::vec2(r.width(), block_h - 1.0),
                     ),
                     0.0,
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 200, 100),
+                    crate::colour32::rgba(0, 0, 200, 100),
                 );
             }
         },
@@ -837,7 +837,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                             egui::vec2(r.width(), band_h - 1.0),
                         ),
                         0.0,
-                        egui::Color32::from_rgba_unmultiplied(
+                        crate::colour32::rgba(
                             PREVIEW_B.r(),
                             PREVIEW_B.g(),
                             PREVIEW_B.b(),
@@ -849,7 +849,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             pa.rect_filled(
                 egui::Rect::from_min_size(r.min, egui::vec2(4.0, r.height())),
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(255, 100, 100, 100),
+                crate::colour32::rgba(255, 100, 100, 100),
             );
         },
         K::Swirl => |pa, r, _, _progress| {
@@ -874,7 +874,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                     [pts[i], pts[i + 1]],
                     egui::Stroke::new(
                         2.0_f32,
-                        egui::Color32::from_rgba_unmultiplied(
+                        crate::colour32::rgba(
                             PREVIEW_B.r(),
                             PREVIEW_B.g(),
                             PREVIEW_B.b(),
@@ -896,7 +896,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                 let next = egui::pos2(x, y);
                 pa.line_segment(
                     [prev, next],
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(180)),
+                    egui::Stroke::new(1.5_f32, crate::colour32::white(180)),
                 );
                 prev = next;
             }
@@ -907,7 +907,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                 p,
                 r,
                 0.55,
-                egui::Color32::from_rgba_unmultiplied(0, 200, 255, 150),
+                crate::colour32::rgba(0, 200, 255, 150),
             );
         },
         K::HueRotate => |pa, r, _, _progress| {
@@ -1003,7 +1003,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                     egui::vec2(3.0, r.height()),
                 ),
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(255, 0, 0, 120),
+                crate::colour32::rgba(255, 0, 0, 120),
             );
             p.rect_filled(
                 egui::Rect::from_min_size(
@@ -1011,7 +1011,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                     egui::vec2(3.0, r.height()),
                 ),
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(0, 0, 255, 120),
+                crate::colour32::rgba(0, 0, 255, 120),
             );
         },
         K::Desaturate => |p, r, _, _progress| {
@@ -1046,7 +1046,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                     egui::vec2(r.width() * 0.4, r.height()),
                 ),
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 80),
+                crate::colour32::rgba(255, 255, 255, 80),
             );
         },
         K::FadeToColor => |p, r, _, _progress| {
@@ -1079,17 +1079,17 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
             p.circle_filled(
                 cx,
                 r.height() * 0.4,
-                egui::Color32::from_rgba_unmultiplied(255, 160, 40, 60),
+                crate::colour32::rgba(255, 160, 40, 60),
             );
             p.circle_filled(
                 cx,
                 r.height() * 0.25,
-                egui::Color32::from_rgba_unmultiplied(255, 200, 100, 140),
+                crate::colour32::rgba(255, 200, 100, 140),
             );
             p.circle_filled(
                 cx,
                 r.height() * 0.12,
-                egui::Color32::from_rgba_unmultiplied(255, 240, 220, 220),
+                crate::colour32::rgba(255, 240, 220, 220),
             );
             for i in 0..8 {
                 let gx = r.min.x + (i as f32 * 37.0) % r.width();
@@ -1097,7 +1097,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                 p.circle_filled(
                     egui::pos2(gx, gy),
                     1.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 220, 150, 80),
+                    crate::colour32::rgba(255, 220, 150, 80),
                 );
             }
         },
@@ -1112,12 +1112,12 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                     egui::vec2(hw * 2.0, hh * 2.0),
                 ),
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(255, 0, 0, 120),
+                crate::colour32::rgba(255, 0, 0, 120),
             );
             p.rect_filled(
                 egui::Rect::from_center_size(cx, egui::vec2(hw * 2.0, hh * 2.0)),
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(0, 255, 0, 120),
+                crate::colour32::rgba(0, 255, 0, 120),
             );
             p.rect_filled(
                 egui::Rect::from_center_size(
@@ -1125,7 +1125,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                     egui::vec2(hw * 2.0, hh * 2.0),
                 ),
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(0, 0, 255, 120),
+                crate::colour32::rgba(0, 0, 255, 120),
             );
         },
         K::Ripple => |p, r, _, _progress| {
@@ -1137,7 +1137,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                 p.circle_stroke(
                     cx,
                     radius,
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(alpha)),
+                    egui::Stroke::new(1.0_f32, crate::colour32::white(alpha)),
                 );
             }
         },
@@ -1156,7 +1156,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                 let half = r.width() * (0.3 - 0.04 * i.abs() as f32);
                 p.line_segment(
                     [egui::pos2(r.center().x - half, y), egui::pos2(r.center().x + half, y)],
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(170)),
+                    egui::Stroke::new(1.5_f32, crate::colour32::white(170)),
                 );
             }
         },
@@ -1169,7 +1169,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                 let ring = radius - i as f32 * 9.0;
                 if ring > 1.0 {
                     let alpha = (150 - i * 45).max(30) as u8;
-                    p.circle_stroke(c, ring, egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(alpha)));
+                    p.circle_stroke(c, ring, egui::Stroke::new(1.5_f32, crate::colour32::white(alpha)));
                 }
             }
         },
@@ -1223,7 +1223,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
                 p.rect_filled(
                     strip,
                     0.0,
-                    egui::Color32::from_rgba_unmultiplied(
+                    crate::colour32::rgba(
                         PREVIEW_B.r(),
                         PREVIEW_B.g(),
                         PREVIEW_B.b(),
@@ -1234,7 +1234,7 @@ fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
         },
         K::LightLeak => |p, r, _, _progress| {
             preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B);
-            preview_circle(p, r, 0.4, egui::Color32::from_rgba_unmultiplied(255, 180, 60, 120));
+            preview_circle(p, r, 0.4, crate::colour32::rgba(255, 180, 60, 120));
         },
     }
 }
@@ -1277,7 +1277,7 @@ pub fn show(
     );
 
     // ── Sidebar ──
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
         ui.set_min_size(sidebar_rect.size());
         ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
         ui.painter().vline(
@@ -1351,13 +1351,13 @@ pub fn show(
     });
 
     // ── Right pane ──
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
         ui.set_min_size(content_rect.size());
         ui.add_space(8.0);
 
         // Search bar
-        egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 super::browser_search_field(ui, theme, search_query, "Search transitions\u{2026}", state);
             });
@@ -1366,8 +1366,8 @@ pub fn show(
         // View row. Every transition is built in and runs on the GPU
         // (with a CPU twin for parity), so there is no source or
         // capability to filter by.
-        egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.with_layout(
@@ -1778,7 +1778,7 @@ fn transition_card(
             if let Some(g) = arrow {
                 let pos = egui::pos2(canvas.max.x - 16.0, canvas.max.y - 12.0);
                 let ind_rect = egui::Rect::from_center_size(pos, egui::vec2(24.0, 16.0));
-                p.rect_filled(ind_rect, crate::theme::radius::CONTROL, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180));
+                p.rect_filled(ind_rect, crate::theme::radius::CONTROL, crate::colour32::rgba(0, 0, 0, 180));
                 p.text(ind_rect.center(), egui::Align2::CENTER_CENTER, g, egui::FontId::proportional(11.0), theme.text_primary);
             }
             if elapsed_secs > 0.0 {
@@ -1798,7 +1798,7 @@ fn paint_play_progress(p: &egui::Painter, canvas: egui::Rect, elapsed_secs: f32,
     let (play, hold) = (TX_LOOP_SECS, TX_HOLD_SECS);
     let t = (elapsed_secs.rem_euclid(play + hold) / play).min(1.0);
     let track = egui::Rect::from_min_max(egui::pos2(canvas.min.x, canvas.max.y - 3.0), canvas.max);
-    p.rect_filled(track, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120));
+    p.rect_filled(track, 0.0, crate::colour32::rgba(0, 0, 0, 120));
     p.rect_filled(egui::Rect::from_min_max(track.min, egui::pos2(track.min.x + track.width() * t, track.max.y)), 0.0, theme.accent);
 }
 
@@ -1874,12 +1874,12 @@ fn transition_list_row(
     );
     let hovered = resp.hovered();
     if is_selected {
-        let bg = egui::Color32::from_rgba_unmultiplied(
+        let bg = crate::colour32::rgba(
             theme.accent.r(), theme.accent.g(), theme.accent.b(), 28,
         );
-        ui.painter().rect_filled(rect, egui::Rounding::same(4.0), bg);
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(4), bg);
     } else if hovered {
-        ui.painter().rect_filled(rect, egui::Rounding::same(4.0), theme.bg_raised);
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(4), theme.bg_raised);
     }
     // At the pictures' own 16:9, not stretched into a wider box (#548).
     let mini_h = row_h - 12.0;
@@ -1889,7 +1889,7 @@ fn transition_list_row(
     );
     let progress = if elapsed_secs > 0.0 { tx_progress(elapsed_secs) } else { 0.5 };
     if let Some(t) = rendered {
-        ui.painter().rect_filled(mini_rect, egui::Rounding::same(4.0), egui::Color32::BLACK);
+        ui.painter().rect_filled(mini_rect, egui::CornerRadius::same(4), egui::Color32::BLACK);
         ui.painter().image(t.id(), mini_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     } else {
         paint_ab_canvas(ui.painter(), mini_rect, progress);
@@ -1931,8 +1931,8 @@ fn paint_ab_canvas(painter: &egui::Painter, rect: egui::Rect, _progress: f32) {
     let mid_x = rect.center().x;
     let left = egui::Rect::from_min_max(rect.min, egui::pos2(mid_x, rect.max.y));
     let right = egui::Rect::from_min_max(egui::pos2(mid_x, rect.min.y), rect.max);
-    painter.rect_filled(left, egui::Rounding::same(4.0), a);
-    painter.rect_filled(right, egui::Rounding::same(4.0), b);
+    painter.rect_filled(left, egui::CornerRadius::same(4), a);
+    painter.rect_filled(right, egui::CornerRadius::same(4), b);
 }
 
 /// The piece transitions' card at `t` (#985), drawn as their defaults
@@ -2034,7 +2034,7 @@ fn paint_kind_motion_overlay(
     let t = progress.clamp(0.0, 1.0);
     let a = egui::Color32::from_rgb(0xc4, 0x6e, 0x3d);
     let b = egui::Color32::from_rgb(0x60, 0x7a, 0xa8);
-    let r = egui::Rounding::same(4.0);
+    let r = egui::CornerRadius::same(4);
 
     // Helper closures kept local — don't pollute the module's public
     // surface. Each is a single visual primitive.
@@ -2043,7 +2043,7 @@ fn paint_kind_motion_overlay(
         p.rect_filled(
             rect,
             r,
-            egui::Color32::from_rgba_unmultiplied(
+            crate::colour32::rgba(
                 colour.r(), colour.g(), colour.b(), alpha,
             ),
         );
@@ -2055,7 +2055,7 @@ fn paint_kind_motion_overlay(
         p.rect_filled(
             rect,
             r,
-            egui::Color32::from_rgba_unmultiplied(
+            crate::colour32::rgba(
                 colour.r(), colour.g(), colour.b(), alpha,
             ),
         );
@@ -2178,7 +2178,7 @@ fn paint_kind_motion_overlay(
         let bw = rect.width() * t;
         let bh = rect.height() * t;
         let inner = egui::Rect::from_center_size(rect.center(), egui::vec2(bw, bh));
-        p.rect_filled(inner, egui::Rounding::same(2.0), b);
+        p.rect_filled(inner, egui::CornerRadius::same(2), b);
     };
     let box_out = || {
         // BoxWipeOut — full B canvas with an A "hole" shrinking toward centre.
@@ -2186,7 +2186,7 @@ fn paint_kind_motion_overlay(
         let aw = rect.width() * (1.0 - t);
         let ah = rect.height() * (1.0 - t);
         let hole = egui::Rect::from_center_size(rect.center(), egui::vec2(aw, ah));
-        p.rect_filled(hole, egui::Rounding::same(2.0), a);
+        p.rect_filled(hole, egui::CornerRadius::same(2), a);
     };
     let circle_in = || {
         // CircleWipeIn — disc grows from centre.
@@ -2207,7 +2207,7 @@ fn paint_kind_motion_overlay(
         p.circle_stroke(
             rect.center(),
             radius + 1.0,
-            egui::Stroke::new(2.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180)),
+            egui::Stroke::new(2.0_f32, crate::colour32::rgba(255, 255, 255, 180)),
         );
     };
     let clock_wipe = || {
@@ -2260,7 +2260,7 @@ fn paint_kind_motion_overlay(
                 egui::pos2(rect.min.x, y),
                 egui::vec2(rect.width(), grow),
             );
-            p.rect_filled(band, egui::Rounding::ZERO, b);
+            p.rect_filled(band, egui::CornerRadius::ZERO, b);
         }
     };
     let venetian_v = || {
@@ -2273,7 +2273,7 @@ fn paint_kind_motion_overlay(
                 egui::pos2(x, rect.min.y),
                 egui::vec2(grow, rect.height()),
             );
-            p.rect_filled(band, egui::Rounding::ZERO, b);
+            p.rect_filled(band, egui::CornerRadius::ZERO, b);
         }
     };
     let checker = || {
@@ -2297,7 +2297,7 @@ fn paint_kind_motion_overlay(
                         ),
                         egui::vec2(cw, ch),
                     );
-                    p.rect_filled(cell, egui::Rounding::ZERO, b);
+                    p.rect_filled(cell, egui::CornerRadius::ZERO, b);
                 }
             }
         }
@@ -2323,7 +2323,7 @@ fn paint_kind_motion_overlay(
                         ),
                         egui::vec2(cw + 1.0, ch + 1.0),
                     );
-                    p.rect_filled(cell, egui::Rounding::ZERO, b);
+                    p.rect_filled(cell, egui::CornerRadius::ZERO, b);
                 }
             }
         }
@@ -2384,7 +2384,7 @@ fn paint_kind_motion_overlay(
             egui::vec2(rect.width() * scale, rect.height() * scale),
         );
         p.rect_filled(rect, r, b);
-        p.rect_filled(small, egui::Rounding::same(2.0), a);
+        p.rect_filled(small, egui::CornerRadius::same(2), a);
     };
     let cross_zoom = || {
         // Both clips zoom toward centre with a flash mid-way.
@@ -2437,7 +2437,7 @@ fn paint_kind_motion_overlay(
                 radius,
                 egui::Stroke::new(
                     2.0_f32,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha),
+                    crate::colour32::rgba(255, 255, 255, alpha),
                 ),
             );
         }
@@ -2447,7 +2447,7 @@ fn paint_kind_motion_overlay(
         // Orange/yellow bloom growing from a corner, eating the canvas.
         let centre = egui::pos2(rect.max.x, rect.min.y);
         let radius = (rect.width() + rect.height()) * 0.9 * t;
-        p.circle_filled(centre, radius, egui::Color32::from_rgba_unmultiplied(0xff, 0x80, 0x20, 220));
+        p.circle_filled(centre, radius, crate::colour32::rgba(0xff, 0x80, 0x20, 220));
         if t > 0.6 {
             fade_over(b, (t - 0.6) / 0.4);
         }
@@ -2462,8 +2462,8 @@ fn paint_kind_motion_overlay(
         );
         p.rect_filled(
             band,
-            egui::Rounding::same(2.0),
-            egui::Color32::from_rgba_unmultiplied(0xff, 0xc0, 0x60, (pulse * 220.0) as u8),
+            egui::CornerRadius::same(2),
+            crate::colour32::rgba(0xff, 0xc0, 0x60, (pulse * 220.0) as u8),
         );
         if t > 0.5 {
             fade_over(b, (t - 0.5) * 2.0);
@@ -2475,7 +2475,7 @@ fn paint_kind_motion_overlay(
         p.circle_filled(
             rect.center(),
             rect.width().max(rect.height()) * 0.4,
-            egui::Color32::from_rgba_unmultiplied(0xff, 0xa0, 0x60, alpha),
+            crate::colour32::rgba(0xff, 0xa0, 0x60, alpha),
         );
         fade_over(b, t);
     };
@@ -2489,8 +2489,8 @@ fn paint_kind_motion_overlay(
         let alpha = (pulse * 235.0) as u8;
         p.rect_filled(
             band,
-            egui::Rounding::same(4.0),
-            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xc0, alpha),
+            egui::CornerRadius::same(4),
+            crate::colour32::rgba(0xff, 0xff, 0xc0, alpha),
         );
         fade_over(b, t);
     };
@@ -2504,7 +2504,7 @@ fn paint_kind_motion_overlay(
             p.circle_filled(
                 egui::pos2(rect.min.x + px * rect.width(), rect.min.y + py * rect.height()),
                 radius,
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha),
+                crate::colour32::rgba(255, 255, 255, alpha),
             );
         }
         fade_over(b, t);
@@ -2529,12 +2529,12 @@ fn paint_kind_motion_overlay(
         p.rect_filled(
             r_band,
             r,
-            egui::Color32::from_rgba_unmultiplied(255, 80, 80, 130),
+            crate::colour32::rgba(255, 80, 80, 130),
         );
         p.rect_filled(
             b_band,
             r,
-            egui::Color32::from_rgba_unmultiplied(80, 80, 255, 130),
+            crate::colour32::rgba(80, 80, 255, 130),
         );
         fade_over(b, t);
     };
@@ -2552,8 +2552,8 @@ fn paint_kind_motion_overlay(
             );
             p.rect_filled(
                 band,
-                egui::Rounding::ZERO,
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha),
+                egui::CornerRadius::ZERO,
+                crate::colour32::rgba(255, 255, 255, alpha),
             );
         }
         fade_over(b, t);
@@ -2568,8 +2568,8 @@ fn paint_kind_motion_overlay(
         );
         p.rect_filled(
             band.intersect(rect),
-            egui::Rounding::ZERO,
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
+            egui::CornerRadius::ZERO,
+            crate::colour32::rgba(255, 255, 255, 200),
         );
         fade_over(b, t);
     };
@@ -2586,7 +2586,7 @@ fn paint_kind_motion_overlay(
                     egui::pos2(rect.min.x + off, y),
                     egui::vec2(rect.width(), bh - 0.5),
                 );
-                p.rect_filled(band.intersect(rect), egui::Rounding::ZERO, b);
+                p.rect_filled(band.intersect(rect), egui::CornerRadius::ZERO, b);
             }
         }
     };
@@ -2595,12 +2595,12 @@ fn paint_kind_motion_overlay(
         p.rect_filled(
             rect.translate(egui::vec2(off, 0.0)).intersect(rect),
             r,
-            egui::Color32::from_rgba_unmultiplied(255, 80, 80, 110),
+            crate::colour32::rgba(255, 80, 80, 110),
         );
         p.rect_filled(
             rect.translate(egui::vec2(-off, 0.0)).intersect(rect),
             r,
-            egui::Color32::from_rgba_unmultiplied(80, 100, 255, 110),
+            crate::colour32::rgba(80, 100, 255, 110),
         );
         fade_over(b, t);
     };
@@ -2610,7 +2610,7 @@ fn paint_kind_motion_overlay(
         p.rect_filled(
             rect,
             r,
-            egui::Color32::from_rgba_unmultiplied(255, 240, 200, alpha),
+            crate::colour32::rgba(255, 240, 200, alpha),
         );
         fade_over(b, t);
     };
@@ -2630,7 +2630,7 @@ fn paint_kind_motion_overlay(
                 p.circle_filled(
                     pos,
                     1.5,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 150),
+                    crate::colour32::rgba(255, 255, 255, 150),
                 );
             }
         }
@@ -2648,7 +2648,7 @@ fn paint_kind_motion_overlay(
                 egui::pos2(x, rect.min.y + y_off),
                 egui::vec2(cw + 1.0, rect.height()),
             );
-            p.rect_filled(band.intersect(rect), egui::Rounding::ZERO, b);
+            p.rect_filled(band.intersect(rect), egui::CornerRadius::ZERO, b);
         }
     };
     let spin = || {
@@ -2672,7 +2672,7 @@ fn paint_kind_motion_overlay(
         K::CrossDissolve => fade_over(b, t),
         K::SmoothCut => fade_over(b, t),
         K::FilmDissolve => {
-            fade_over(egui::Color32::from_rgba_unmultiplied(255, 220, 180, 60), t);
+            fade_over(crate::colour32::rgba(255, 220, 180, 60), t);
             fade_over(b, t);
         }
         K::AdditiveDissolve => {
@@ -2684,7 +2684,7 @@ fn paint_kind_motion_overlay(
             // Lay down B then a soft white veil to suggest blur.
             fade_over(b, t);
             fade_over(
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 60),
+                crate::colour32::rgba(255, 255, 255, 60),
                 (1.0 - (t - 0.5).abs() * 2.0).max(0.0),
             );
         }
@@ -2693,20 +2693,20 @@ fn paint_kind_motion_overlay(
         K::FadeToColor => dip_through(egui::Color32::from_rgb(0xc4, 0x6e, 0x3d)),
         K::Desaturate => {
             // Fade saturation to grey then to B.
-            fade_over(egui::Color32::from_rgba_unmultiplied(120, 120, 120, 200), t);
+            fade_over(crate::colour32::rgba(120, 120, 120, 200), t);
             fade_over(b, t);
         }
         K::Sepia => {
-            fade_over(egui::Color32::from_rgba_unmultiplied(120, 95, 60, 180), t);
+            fade_over(crate::colour32::rgba(120, 95, 60, 180), t);
             fade_over(b, t);
         }
         K::HueRotate => {
             // Cycle through a few hues as t advances.
             let hue_color = match (t * 4.0) as i32 {
-                0 => egui::Color32::from_rgba_unmultiplied(220, 80, 80, 150),
-                1 => egui::Color32::from_rgba_unmultiplied(220, 220, 80, 150),
-                2 => egui::Color32::from_rgba_unmultiplied(80, 220, 80, 150),
-                _ => egui::Color32::from_rgba_unmultiplied(80, 80, 220, 150),
+                0 => crate::colour32::rgba(220, 80, 80, 150),
+                1 => crate::colour32::rgba(220, 220, 80, 150),
+                2 => crate::colour32::rgba(80, 220, 80, 150),
+                _ => crate::colour32::rgba(80, 80, 220, 150),
             };
             fade_over(hue_color, 1.0);
             fade_over(b, t);
@@ -2714,7 +2714,7 @@ fn paint_kind_motion_overlay(
         K::ColorizeFlash => {
             let bell = (t * std::f32::consts::PI).sin();
             fade_over(
-                egui::Color32::from_rgba_unmultiplied(0xff, 0xa0, 0x40, 220),
+                crate::colour32::rgba(0xff, 0xa0, 0x40, 220),
                 bell,
             );
             if t > 0.5 {
@@ -2724,7 +2724,7 @@ fn paint_kind_motion_overlay(
         K::NegativeFlash => {
             let bell = (t * std::f32::consts::PI).sin();
             fade_over(
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 235),
+                crate::colour32::rgba(255, 255, 255, 235),
                 bell,
             );
             if t > 0.5 {
@@ -2889,7 +2889,7 @@ fn tx_sidebar_row(
             egui::vec2(icon_size, icon_size),
         );
         let img = icon.image(icon_size).tint(icon_tint);
-        ui.allocate_new_ui(
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(icon_rect),
             |ui| {
                 ui.add(img);
@@ -2954,7 +2954,7 @@ fn tx_general_row(
         egui::vec2(icon_size, icon_size),
     );
     let img = icon.image(icon_size).tint(theme.text_dim);
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new().max_rect(icon_rect),
         |ui| {
             ui.add(img);
@@ -3037,11 +3037,11 @@ fn view_mode_button(
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
     let size = 13.0;
     let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
     let img = icon.image(size).tint(fg);
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
+    ui.scope_builder(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
     let _ = resp.clone().on_hover_text(tooltip);
     if resp.clicked() {
         *current = target;
@@ -3075,7 +3075,7 @@ fn tx_result_strip(
     // The count in the room left of Sort: shortened, or left out, where
     // the panel is narrow. It was drawn under Sort.
     crate::browser::library_card::paint_count(ui, theme, rect, dropdown_w, count, &format!("{count} Transitions"));
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(dropdown_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(dropdown_rect), |ui| {
         ui.style_mut().visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
         ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
         let label = format!("Sort: {}", sort_mode.label());

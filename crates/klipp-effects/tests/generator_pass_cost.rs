@@ -29,7 +29,7 @@ fn measure_4k_living_gradient_pass() {
                 let start = std::time::Instant::now();
                 assert!(gpu.stack_layer_living_gradient(0, [12, 23, 32, 255], [29, 60, 65, 255], 25.0, 1.5, 0.18, grain, n as f64 / 30.0));
                 gpu.stack_end();
-                device.poll(wgpu::Maintain::Wait);
+                let _ = device.poll(wgpu::PollType::wait_indefinitely());
                 if n >= 10 {
                     samples.push(start.elapsed().as_secs_f64() * 1000.0);
                 }

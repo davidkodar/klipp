@@ -753,13 +753,13 @@ impl Grade {
             let frame = crate::inspector::keyframe_selection::FrameSelection { time_secs: 0.5, tolerance: 0.02, clip_start };
             g.draw(input, frame, &theme)
         });
-        self.icons = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.fill_texture_id != egui::TextureId::default() => Some(r.rect), _ => None }).collect();
+        self.icons = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.fill_texture_id() != egui::TextureId::default() => Some(r.rect), _ => None }).collect();
         self.boxes = out.shapes.iter().filter_map(|s| match &s.shape {
-            egui::Shape::Rect(r) if r.fill_texture_id == egui::TextureId::default() && (10.0..=20.0).contains(&r.rect.width()) && (r.rect.width() - r.rect.height()).abs() < 1.0 => Some(r.rect),
+            egui::Shape::Rect(r) if r.fill_texture_id() == egui::TextureId::default() && (10.0..=20.0).contains(&r.rect.width()) && (r.rect.width() - r.rect.height()).abs() < 1.0 => Some(r.rect),
             _ => None,
         }).collect();
         self.canvases = out.shapes.iter().filter_map(|s| match &s.shape {
-            egui::Shape::Rect(r) if r.fill_texture_id == egui::TextureId::default() && r.fill != egui::Color32::TRANSPARENT && r.rect.width() >= 100.0 && r.rect.height() >= 60.0 => Some(r.rect),
+            egui::Shape::Rect(r) if r.fill_texture_id() == egui::TextureId::default() && r.fill != egui::Color32::TRANSPARENT && r.rect.width() >= 100.0 && r.rect.height() >= 60.0 => Some(r.rect),
             _ => None,
         }).collect();
         self.diamonds = out.shapes.iter().filter_map(|s| match &s.shape {
@@ -927,6 +927,9 @@ impl Grade {
 
     pub(super) fn click_at(&mut self, at: egui::Pos2) {
         let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        // Arrives a frame before it presses, as a hand does (see
+        // `parity_harness::Run::click_last`).
+        self.frame(vec![egui::Event::PointerMoved(at)]);
         self.frame(vec![egui::Event::PointerMoved(at), button(true)]);
         self.frame(vec![egui::Event::PointerMoved(at), button(false)]);
         self.frame(vec![egui::Event::PointerGone]);

@@ -37,7 +37,7 @@ use klipp_effects::p010_gpu::GpuP010Converter;
 /// whether the GPU works is the circularity this test exists to break.
 fn an_adapter_exists() -> bool {
     let instance = klipp_effects::gpu_context::instance();
-    let adapters = instance.enumerate_adapters(klipp_effects::gpu_context::backends());
+    let adapters = pollster::block_on(instance.enumerate_adapters(klipp_effects::gpu_context::backends()));
     for a in &adapters {
         let info = a.get_info();
         eprintln!("  adapter: {} ({:?}, {:?})", info.name, info.device_type, info.backend);

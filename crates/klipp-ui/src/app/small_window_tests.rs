@@ -111,7 +111,7 @@ fn the_timeline_toolbar_clips_nothing() {
         let mut shown = Vec::new();
         for frame in 0..4 {
             let out = ctx.run(input(screen, Vec::new(), frame as f64 * 0.1), |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     let mut cmds = Vec::new();
                     crate::timeline::toolbar::show(ui, &mut state, &theme, &mut cmds, &kb);
                 });
@@ -153,7 +153,7 @@ fn the_timeline_shows_v1_a1_and_a2() {
         let mut shown = Vec::new();
         for frame in 0..3 {
             let out = ctx.run(input(screen, Vec::new(), frame as f64 * 0.1), |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     let _ = panel.show(ui, &mut state, &theme, &mut old, &kb, false);
                 });
             });
@@ -176,12 +176,12 @@ fn ends_in_view(name: &str, rect: egui::Rect, draw: &mut dyn FnMut(&mut egui::Ui
     let mut shown = Vec::new();
     for frame in 0..12 {
         let events = if frame >= 2 {
-            vec![egui::Event::PointerMoved(screen.center()), egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -4000.0), modifiers: Default::default() }]
+            vec![egui::Event::PointerMoved(screen.center()), egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -4000.0), modifiers: Default::default(), phase: egui::TouchPhase::Move }]
         } else {
             Vec::new()
         };
         let out = ctx.run(input(screen, events, frame as f64 * 0.5), |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| draw(ui));
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| draw(ui));
         });
         // Every text, clipped or not: one left below the foot is a control
         // the panel cannot bring into view.
@@ -329,7 +329,7 @@ fn a_narrow_timeline_toolbar_overlaps_nothing() {
         let mut shown = Vec::new();
         for frame in 0..4 {
             let out = ctx.run(input(screen, Vec::new(), frame as f64 * 0.1), |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     crate::timeline::toolbar::show(ui, &mut state, &theme, &mut Vec::new(), &kb);
                 });
             });

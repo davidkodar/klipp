@@ -661,7 +661,7 @@ impl NewTimelinePanel {
             let bg = egui::Rect::from_min_size(at, galley.size()).expand(6.0);
             let painter = ui.painter().with_clip_rect(tracks_rect);
             painter.rect_filled(bg, 4.0, theme.bg_raised);
-            painter.rect_stroke(bg, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 220, 120)));
+            painter.rect_stroke(bg, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 220, 120)), egui::StrokeKind::Outside);
             painter.galley(at, galley, theme.text_primary);
         }
         if let Some(typed) = &state.trim_entry {
@@ -673,7 +673,7 @@ impl NewTimelinePanel {
             let bg = egui::Rect::from_min_size(at, galley.size()).expand(6.0);
             let painter = ui.painter().with_clip_rect(tracks_rect);
             painter.rect_filled(bg, 4.0, theme.bg_raised);
-            painter.rect_stroke(bg, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 220, 120)));
+            painter.rect_stroke(bg, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 220, 120)), egui::StrokeKind::Outside);
             painter.galley(at, galley, theme.text_primary);
         }
 
@@ -721,7 +721,7 @@ mod colour_strip_tests {
                 ..Default::default()
             };
             let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     all.extend(panel.show(ui, state, &theme, &mut old, &kb, false));
                 });
             });
@@ -801,7 +801,7 @@ mod menu_smoke_tests {
             let (state, panel, old) = (&mut self.state, &mut self.panel, &mut self.old);
             let mut cmds: Vec<AppCommand> = Vec::new();
             let out = self.ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     cmds = panel.show(ui, state, &theme, old, &kb, false);
                 });
             });
@@ -1914,7 +1914,7 @@ mod menu_smoke_tests {
         update(&mut timeline, 0.0);
         let texture = timeline.state.graded_thumbs.texture(clip).expect("the clip's graded thumbnail").id();
         timeline.frame(Vec::new());
-        let drawn = |t: &Timeline, id: egui::TextureId| t.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill_texture_id == id) || matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == id));
+        let drawn = |t: &Timeline, id: egui::TextureId| t.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill_texture_id() == id) || matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == id));
         assert!(drawn(&timeline, texture), "the graded thumbnail isn't drawn on the strip");
 
         // A grade change: the thumbnail is stale until it is drawn again.
@@ -2023,8 +2023,8 @@ mod menu_smoke_tests {
             let (state, panel, old) = (&mut timeline.state, &mut timeline.panel, &mut timeline.old);
             let _ = timeline.ctx.run(input, |ctx| {
                 // The media pool above, the timeline below it.
-                egui::TopBottomPanel::top("pool").exact_height(300.0).show(ctx, |_| {});
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::Panel::top("pool").exact_size(300.0).show(ctx, |_| {});
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     sent.extend(panel.show(ui, state, &theme, old, &kb, false));
                 });
             });

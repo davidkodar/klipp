@@ -9,6 +9,7 @@
 //! per-row rendering, AppState flag for visibility, edits flow back as
 //! AppCommands through the existing handlers.
 
+use crate::widgets::colour_field::ColourField;
 use crate::state::AppState;
 use crate::widgets::timecode_edit::timecode_edit;
 use klipp_core::{AppCommand, ClipId, Fps, Timecode, TrackId};
@@ -175,8 +176,8 @@ fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
             } else if form.animated.is_some() {
                 ui.label("Spoken word");
                 let [r, g, b, a] = form.active_color;
-                let mut c = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                let mut c = crate::colour32::rgba(r, g, b, a);
+                if ui.colour_srgba(&mut c).changed() {
                     form.active_color = c.to_array();
                 }
             }
@@ -382,18 +383,18 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                                 if row.track_id != st.track_id { continue; }
                                 let is_active = active_idx == Some(i);
                                 let is_selected = selected_clip == Some(row.clip_id);
-                                let row_frame = egui::Frame::none()
+                                let row_frame = egui::Frame::NONE
                                     .fill(if is_active {
-                                        egui::Color32::from_rgba_unmultiplied(0xff, 0xdc, 0x32, 30)
+                                        crate::colour32::rgba(0xff, 0xdc, 0x32, 30)
                                     } else if is_selected {
-                                        egui::Color32::from_rgba_unmultiplied(0x40, 0x80, 0xff, 20)
+                                        crate::colour32::rgba(0x40, 0x80, 0xff, 20)
                                     } else {
                                         egui::Color32::TRANSPARENT
                                     })
-                                    .inner_margin(egui::Margin::same(4.0))
+                                    .inner_margin(egui::Margin::same(4))
                                     .stroke(egui::Stroke::new(
                                         1.0_f32,
-                                        egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 10),
+                                        crate::colour32::rgba(0xff, 0xff, 0xff, 10),
                                     ));
                                 row_frame.show(ui, |ui| {
                                     render_row(ui, row_counter, row, fps, state, &mut cmds);
@@ -461,12 +462,12 @@ fn render_track_header(
     cmds: &mut Vec<AppCommand>,
 ) {
     let collapsed = state.subtitle_editor.subtitle_track_collapsed.contains(&st.track_id);
-    let hdr_frame = egui::Frame::none()
-        .fill(egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 6))
-        .inner_margin(egui::Margin::symmetric(4.0, 3.0))
+    let hdr_frame = egui::Frame::NONE
+        .fill(crate::colour32::rgba(0xff, 0xff, 0xff, 6))
+        .inner_margin(egui::Margin::symmetric(4, 3))
         .stroke(egui::Stroke::new(
             1.0_f32,
-            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 16),
+            crate::colour32::rgba(0xff, 0xff, 0xff, 16),
         ));
     hdr_frame.show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -595,14 +596,14 @@ fn render_style_form(ui: &mut egui::Ui, st: &SubTrack, state: &mut AppState, cmd
             ui.end_row();
             ui.label("Colour");
             ui.horizontal(|ui| {
-                ui.color_edit_button_srgba_unmultiplied(&mut draft.color);
+                ui.colour_srgba_unmultiplied(&mut draft.color);
                 ui.checkbox(&mut draft.bold, "Bold");
             });
             ui.end_row();
             ui.label("Outline");
             ui.horizontal(|ui| {
                 ui.add(crate::widgets::number_field(&mut draft.outline).range(0.0..=12.0).speed(0.1).suffix(" px"));
-                ui.color_edit_button_srgba_unmultiplied(&mut draft.outline_color);
+                ui.colour_srgba_unmultiplied(&mut draft.outline_color);
             });
             ui.end_row();
             ui.label("Backing");

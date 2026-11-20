@@ -390,10 +390,7 @@ impl ThumbnailRenderer {
                 .map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]))
                 .collect();
 
-            let image = egui::ColorImage {
-                size: [result.width as usize, result.height as usize],
-                pixels,
-            };
+            let image = egui::ColorImage::new([result.width as usize, result.height as usize], pixels);
 
             let name = format!("fx_thumb_{}", result.effect_name);
             let texture = crate::app::alloc_texture_logged(

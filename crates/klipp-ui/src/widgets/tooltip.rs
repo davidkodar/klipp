@@ -13,11 +13,11 @@ pub fn styled_tooltip(
         // dark and light themes — was hardcoded 0x1e1e26 (always
         // dark) which paired with theme.text_primary turned into
         // dark-on-dark on light themes.
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
-            .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(10.0, 5.0))
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(10, 5))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
@@ -32,11 +32,11 @@ pub fn styled_tooltip(
                         // elevation rather than stay equal — pick
                         // bg_panel_alt for the inverse of the
                         // previous always-bg_raised choice.
-                        egui::Frame::none()
+                        egui::Frame::NONE
                             .fill(theme.bg_panel_alt)
                             .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
-                            .rounding(2.0)
-                            .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                            .corner_radius(2.0)
+                            .inner_margin(egui::Margin::symmetric(4, 1))
                             .show(ui, |ui| {
                                 ui.label(
                                     egui::RichText::new(key)

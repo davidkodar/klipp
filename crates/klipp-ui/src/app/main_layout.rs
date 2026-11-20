@@ -42,7 +42,7 @@ impl KlippApp {
     fn render_launch_screen(&mut self, ctx: &egui::Context, all_cmds: &mut Vec<AppCommand>) -> bool {
         if self.state.project_path.is_none() {
             egui::CentralPanel::default()
-                .frame(egui::Frame::none().fill(self.theme.bg_void))
+                .frame(egui::Frame::NONE.fill(self.theme.bg_void))
                 .show(ctx, |ui| {
                     // Auto-saves are recovery copies, not projects: they are
                     // offered from their project's card and open prompt.
@@ -67,7 +67,7 @@ impl KlippApp {
             // Fullscreen viewer occupies the entire screen — record this so the
             // dim-on-play overlay (which paints around the viewer rect) computes
             // a zero-area frame and produces no visible strips.
-            self.state.viewer_panel_rect = ctx.screen_rect();
+            self.state.viewer_panel_rect = ctx.content_rect();
             egui::CentralPanel::default().show(ctx, |ui| {
                 let panel_cmds = self.viewer.show_fullscreen(ui, &mut self.state);
                 all_cmds.extend(panel_cmds);
@@ -88,7 +88,7 @@ impl KlippApp {
             // ── Manual rect layout ──
             // Use CentralPanel as the container, then compute rects manually.
             egui::CentralPanel::default()
-                .frame(egui::Frame::none().fill(self.theme.bg_void))
+                .frame(egui::Frame::NONE.fill(self.theme.bg_void))
                 .show(ctx, |ui| {
                     let full = ui.available_rect_before_wrap();
 
@@ -654,7 +654,7 @@ impl KlippApp {
                 v.window_stroke = egui::Stroke::NONE;
                 v.window_shadow = egui::Shadow::NONE;
             }
-            let frame = egui::Frame::none()
+            let frame = egui::Frame::NONE
                 .fill(self.theme.bg_viewer)
                 .inner_margin(egui::Margin::ZERO);
             frame.show(ui, |ui| {
@@ -1119,14 +1119,14 @@ impl KlippApp {
                                                 name: buf.trim().to_string(),
                                             });
                                             ui.data_mut(|d| d.remove::<String>(id));
-                                            ui.close_menu();
+                                            ui.close_kind(egui::UiKind::Menu);
                                         } else {
                                             ui.data_mut(|d| d.insert_temp(id, buf));
                                         }
                                         ui.separator();
                                         if !is_active && ui.button("Delete").clicked() {
                                             all_cmds.push(AppCommand::DeleteGradeVersion { clip_id, version_index: i });
-                                            ui.close_menu();
+                                            ui.close_kind(egui::UiKind::Menu);
                                         }
                                     });
                                 }
@@ -1161,7 +1161,7 @@ impl KlippApp {
                                     let pixels: Vec<egui::Color32> = still.rgba.chunks_exact(4)
                                         .map(|px| egui::Color32::from_rgba_premultiplied(px[0], px[1], px[2], px[3]))
                                         .collect();
-                                    let image = egui::ColorImage { size: [sw, sh], pixels };
+                                    let image = egui::ColorImage::new([sw, sh], pixels);
                                     let name = format!("grade_still_thumb_{}", i);
                                     still.texture = Some(alloc_texture_logged(
                                         ui.ctx(),
@@ -1185,7 +1185,7 @@ impl KlippApp {
                                 } else {
                                     egui::Stroke::new(1.0_f32, theme.border)
                                 };
-                                ui.painter().rect_stroke(rect, crate::theme::radius::CONTROL, stroke);
+                                ui.painter().rect_stroke(rect, crate::theme::radius::CONTROL, stroke, egui::StrokeKind::Outside);
                                 if resp.clicked() {
                                     all_cmds.push(AppCommand::SetActiveGradeStill {
                                         index: if is_active { None } else { Some(i) },
@@ -1216,7 +1216,7 @@ impl KlippApp {
                                         .clicked()
                                     {
                                         apply_idx = Some((i, false));
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                     if ui.add_enabled(can, egui::Button::new(add_label))
                                         .on_hover_text(add_hover)
@@ -1224,11 +1224,11 @@ impl KlippApp {
                                         .clicked()
                                     {
                                         apply_idx = Some((i, true));
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                     if ui.button("Delete").clicked() {
                                         delete_idx = Some(i);
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                 });
                             }
@@ -1664,7 +1664,7 @@ fn wipe_clip_buttons(ui: &mut egui::Ui, neighbours: (Option<klipp_core::ClipId>,
         (AFTER, klipp_core::WipeClip::Next, "Wipe against the clip after this one, graded", neighbours.1),
     ] {
         let lit = that.is_some() && that == wiping;
-        if ui.add_enabled(that.is_some(), egui::Button::new(label).small().selected(lit)).on_hover_text(hover).clicked() {
+        if crate::widgets::selected_button(ui, egui::Button::new(label).small(), lit, |ui, b| ui.add_enabled(that.is_some(), b)).on_hover_text(hover).clicked() {
             cmds.push(AppCommand::WipeAgainstClip { target: (!lit).then_some(target) });
         }
     }

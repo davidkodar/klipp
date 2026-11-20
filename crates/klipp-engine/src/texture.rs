@@ -50,10 +50,10 @@ impl GpuOutputSnapshot {
         });
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("klipp_viewer_readback") });
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture { texture: &self.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyTextureInfo { texture: &self.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo {
                 buffer: &staging,
-                layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) },
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) },
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
@@ -63,7 +63,7 @@ impl GpuOutputSnapshot {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
         rx.recv()
             .map_err(|_| "the viewer readback was dropped".to_string())?
             .map_err(|e| format!("the viewer readback failed: {e}"))?;
@@ -284,6 +284,20 @@ type FrameStamp = (u64, bool, u64);
 /// (#455). An sRGB view decodes on sampling, so what egui re-encodes is
 /// the picture the engine made.
 pub const GPU_VIEWER_SAMPLE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// The view of the viewer texture to sample: through
+/// [`GPU_VIEWER_SAMPLE_FORMAT`], and for sampling only. A view takes all
+/// of its texture's usages unless given its own (wgpu 23 and later, as
+/// WebGPU does), and the viewer texture is a storage texture too, which
+/// an sRGB view can't be: without the usage the view was invalid and the
+/// viewer drew nothing while playing.
+pub fn gpu_viewer_sample_view(texture: &wgpu::Texture) -> wgpu::TextureView {
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        format: Some(GPU_VIEWER_SAMPLE_FORMAT),
+        usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+        ..Default::default()
+    })
+}
 
 impl FrameBuffer {
     /// Publish a complete answer, including an empty answer. A nearby

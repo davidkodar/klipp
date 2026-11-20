@@ -102,7 +102,7 @@ pub fn draw(ui: &egui::Ui, state: &AppState, theme: &crate::theme::KlippTheme, r
                 for (line, text, colour) in [(0.0, format!("{label}{handle}"), theme.text_primary), (1.0, s.name.clone(), theme.text_secondary)] {
                     let mut job = egui::text::LayoutJob::simple_singleline(text, font.clone(), colour);
                     job.wrap = egui::text::TextWrapping::truncate_at_width(width);
-                    let galley = ui.fonts(|f| f.layout_job(job));
+                    let galley = ui.fonts_mut(|f| f.layout_job(job));
                     painter.galley(egui::pos2(half.min.x + 8.0, half.max.y - caption_h + 1.0 + line * 16.0), galley, colour);
                 }
             }
@@ -111,7 +111,7 @@ pub fn draw(ui: &egui::Ui, state: &AppState, theme: &crate::theme::KlippTheme, r
             }
         }
         if trimmed && side.is_some() {
-            painter.rect_stroke(half.shrink(1.0), 2.0, egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(120, 220, 120)));
+            painter.rect_stroke(half.shrink(1.0), 2.0, egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(120, 220, 120)), egui::StrokeKind::Outside);
         }
     }
     true

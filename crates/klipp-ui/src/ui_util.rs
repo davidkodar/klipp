@@ -17,7 +17,7 @@ pub fn panel_ui<R>(
     if !ui.is_enabled() {
         builder = builder.disabled();
     }
-    let mut panel = egui::Ui::new(ui.ctx().clone(), ui.layer_id(), egui::Id::new(id), builder);
+    let mut panel = egui::Ui::new(ui.ctx().clone(), egui::Id::new(id), builder.layer_id(ui.layer_id()));
     panel.set_clip_rect(rect.intersect(ui.clip_rect()));
     add_contents(&mut panel)
 }
@@ -35,7 +35,7 @@ pub fn allocate_clipped_ui<R>(
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     let clipped_rect = rect.intersect(ui.clip_rect());
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         ui.set_clip_rect(clipped_rect);
         add_contents(ui)
     })
@@ -82,10 +82,7 @@ pub fn checked_image(size: [usize; 2], rgba: &[u8], what: &str) -> Option<egui::
 
 fn decode_png_inner(bytes: &[u8]) -> egui::ColorImage {
     fn fallback() -> egui::ColorImage {
-        egui::ColorImage {
-            size: [1, 1],
-            pixels: vec![egui::Color32::TRANSPARENT],
-        }
+        egui::ColorImage::new([1, 1], vec![egui::Color32::TRANSPARENT])
     }
 
     let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
@@ -109,7 +106,7 @@ fn decode_png_inner(bytes: &[u8]) -> egui::ColorImage {
     let pixels: Vec<egui::Color32> = match info.color_type {
         png::ColorType::Rgba => bytes
             .chunks_exact(4)
-            .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+            .map(|c| crate::colour32::rgba(c[0], c[1], c[2], c[3]))
             .collect(),
         png::ColorType::Rgb => bytes
             .chunks_exact(3)
@@ -123,10 +120,7 @@ fn decode_png_inner(bytes: &[u8]) -> egui::ColorImage {
             return fallback();
         }
     };
-    egui::ColorImage {
-        size: [info.width as usize, info.height as usize],
-        pixels,
-    }
+    egui::ColorImage::new([info.width as usize, info.height as usize], pixels)
 }
 
 /// Open `target` (a URL, a file or a folder) in the desktop's default

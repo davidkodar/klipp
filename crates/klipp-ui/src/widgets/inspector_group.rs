@@ -16,7 +16,7 @@
 use crate::icons::Icon;
 use crate::theme::KlippTheme;
 use egui::{
-    Align, Color32, FontId, Frame, Layout, Margin, Rect, Response, RichText, Rounding, Sense,
+    Align, Color32, FontId, Frame, Layout, Margin, Rect, Response, RichText, CornerRadius, Sense,
     Stroke, Ui, pos2, vec2,
 };
 
@@ -41,7 +41,7 @@ pub const SECTION_HEADER_H: f32 = 28.0;
 pub fn paint_section_header(ui: &Ui, rect: Rect, title: &str, is_open: bool, badge: Option<&str>, hovered: bool, theme: &KlippTheme) {
     let painter = ui.painter();
     if hovered {
-        painter.rect_filled(rect, Rounding::ZERO, theme.bg_hover);
+        painter.rect_filled(rect, CornerRadius::ZERO, theme.bg_hover);
     }
     painter.hline(rect.min.x..=rect.max.x, rect.max.y - 0.5, Stroke::new(1.0_f32, theme.border));
     let icon = if is_open { Icon::CaretDown } else { Icon::CaretRight };
@@ -120,8 +120,8 @@ pub fn section_card(ui: &mut Ui, title: &str, badge: Option<String>, theme: &Kli
         });
     }
     if col_state.is_open() {
-        Frame::none()
-            .inner_margin(Margin { left: 0.0, right: 0.0, top: 4.0, bottom: 6.0 })
+        Frame::NONE
+            .inner_margin(Margin { left: 0, right: 0, top: 4, bottom: 6 })
             .show(ui, |ui| add_contents(ui));
     }
     col_state.store(ui.ctx());
@@ -132,7 +132,7 @@ pub fn section_card(ui: &mut Ui, title: &str, badge: Option<String>, theme: &Kli
 pub fn panel_title_row(ui: &mut Ui, title: &str, dim: bool, theme: &KlippTheme) -> bool {
     let mut collapse = false;
     let rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), SECTION_HEADER_H));
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         ui.painter().rect_filled(rect, 0.0, theme.bg_deep);
         ui.painter().hline(rect.x_range(), rect.max.y, Stroke::new(1.0_f32, theme.border));
         ui.horizontal_centered(|ui| {
@@ -187,7 +187,7 @@ pub fn tab_strip(ui: &mut Ui, labels: &[&str], short: &[&str], active: usize, th
 pub fn tab_strip_with_tips(ui: &mut Ui, labels: &[&str], short: &[&str], tips: &[Option<String>], active: usize, theme: &KlippTheme) -> Option<usize> {
     let strip = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), SECTION_HEADER_H));
     let mut clicked = None;
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(strip), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(strip), |ui| {
         ui.painter().rect_filled(strip, 0.0, theme.bg_deep);
         ui.painter().hline(strip.x_range(), strip.max.y, Stroke::new(1.0_f32, theme.border));
         ui.horizontal_centered(|ui| {
@@ -291,11 +291,11 @@ fn themed_toggle_ui(ui: &mut Ui, on: &mut bool, theme: &KlippTheme) -> Response 
     let bg = lerp_color(theme.bg_raised, theme.accent, how_on);
     let rounding = rect.height() / 2.0;
     ui.painter()
-        .rect_filled(rect, Rounding::same(rounding), bg);
+        .rect_filled(rect, CornerRadius::from(rounding), bg);
     ui.painter().rect_stroke(
         rect,
-        Rounding::same(rounding),
-        Stroke::new(1.0_f32, theme.border),
+        CornerRadius::from(rounding),
+        Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside,
     );
 
     // Knob.
@@ -335,11 +335,11 @@ pub fn inspector_subgroup_card<R>(
     theme: &KlippTheme,
     add_body: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
-    let frame = Frame::none()
+    let frame = Frame::NONE
         .fill(theme.bg_panel_alt)
         .stroke(Stroke::new(1.0_f32, theme.border))
-        .rounding(Rounding::same(4.0))
-        .inner_margin(Margin::same(0.0));
+        .corner_radius(CornerRadius::same(4))
+        .inner_margin(Margin::same(0));
 
     let mut body_result: Option<R> = None;
 
@@ -388,11 +388,11 @@ pub fn inspector_subgroup_card<R>(
         // first param row has breathing room under the header,
         // matching the reference's interior rhythm.
         if *enabled {
-            let body_frame = Frame::none().inner_margin(Margin {
-                left: 12.0,
-                right: 12.0,
-                top: 8.0,
-                bottom: 12.0,
+            let body_frame = Frame::NONE.inner_margin(Margin {
+                left: 12,
+                right: 12,
+                top: 8,
+                bottom: 12,
             });
             let inner = body_frame.show(ui, |ui| add_body(ui));
             body_result = Some(inner.inner);
@@ -432,9 +432,9 @@ pub fn quick_preset_button(
 
     ui.painter().rect(
         rect,
-        Rounding::same(4.0),
+        CornerRadius::same(4),
         bg,
-        Stroke::new(1.0_f32, stroke_color),
+        Stroke::new(1.0_f32, stroke_color), egui::StrokeKind::Outside,
     );
     ui.painter().text(
         rect.center(),

@@ -189,9 +189,9 @@ impl TransitionPreviews {
             let pixels: Vec<egui::Color32> = done
                 .rgba
                 .chunks_exact(4)
-                .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
+                .map(|p| crate::colour32::rgba(p[0], p[1], p[2], p[3]))
                 .collect();
-            let image = egui::ColorImage { size: [PREVIEW_W as usize, PREVIEW_H as usize], pixels };
+            let image = egui::ColorImage::new([PREVIEW_W as usize, PREVIEW_H as usize], pixels);
             let tex = crate::app::alloc_texture_logged(ctx, "transition_preview", image, egui::TextureOptions::LINEAR);
             if let Some(old) = self.textures.insert(done.key, tex) {
                 displaced.push(old);
@@ -480,7 +480,7 @@ mod tests {
         // jump back to the resting midpoint at 0.5.
         let ctx = egui::Context::default();
         let mut p = TransitionPreviews::default();
-        let img = egui::ColorImage::new([2, 2], egui::Color32::BLACK);
+        let img = egui::ColorImage::filled([2, 2], egui::Color32::BLACK);
         let mut ids = Vec::new();
         for step in [0.5f32, 0.0, 0.04] {
             let t = ctx.load_texture(format!("t{step}"), img.clone(), egui::TextureOptions::LINEAR);

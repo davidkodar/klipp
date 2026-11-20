@@ -403,7 +403,7 @@ impl KlippTheme {
     pub fn role_color(&self, roles: &klipp_core::roles::RoleSet, role: Option<&klipp_core::roles::RoleRef>) -> Color32 {
         let Some(role) = role else { return self.role_broll };
         if let Some([r, g, b, a]) = roles.colour(role) {
-            return Color32::from_rgba_unmultiplied(r, g, b, a);
+            return crate::colour32::rgba(r, g, b, a);
         }
         let palette = [self.role_dialogue, self.role_music, self.role_sfx, self.role_graphics, self.role_voiceover, self.role_ambience, self.role_foley];
         roles.palette_slot(role).map_or(self.role_broll, |i| palette[i % palette.len()])
@@ -537,10 +537,20 @@ impl KlippTheme {
         visuals.warn_fg_color = self.marker_warning;
         visuals.hyperlink_color = self.accent;
 
+        // Round slider handles, as Klipp's always were: egui 0.34's default
+        // became a narrow rectangle.
+        visuals.handle_shape = egui::style::HandleShape::Circle;
+
         visuals.window_stroke = egui::Stroke::new(1.0_f32, self.border);
         visuals.window_shadow = egui::Shadow::NONE;
 
         ctx.set_visuals(visuals);
+        // No fade at a scroll area's edges: egui 0.34 started painting the
+        // panel colour over the content there, which Klipp's panels never
+        // had; a row half under it read as disabled.
+        let mut style = (*ctx.global_style()).clone();
+        style.spacing.scroll.fade.strength = 0.0;
+        ctx.set_global_style(style);
     }
 
     /// Configure egui font sizes. `base_size` is the body text size (default 13.0).
@@ -554,7 +564,7 @@ impl KlippTheme {
 
         install_unicode_fallback_fonts(ctx);
 
-        let mut style = (*ctx.style()).clone();
+        let mut style = (*ctx.global_style()).clone();
         style.text_styles.insert(
             TextStyle::Body,
             FontId::new(base_size, FontFamily::Proportional),
@@ -575,7 +585,7 @@ impl KlippTheme {
             TextStyle::Monospace,
             FontId::new(base_size - 1.0, FontFamily::Monospace),
         );
-        ctx.set_style(style);
+        ctx.set_global_style(style);
     }
 }
 
@@ -621,7 +631,7 @@ pub(crate) fn unicode_fallback_fonts() -> egui::FontDefinitions {
     // face (SIL Open Font License), whose zero is plain. egui's own mono
     // (Hack) dots its zero, which at the 10 px of the readouts and counts
     // read as an 8: "104" as "184", twice, to two readers.
-    defs.font_data.insert(UI_MONO.to_owned(), FontData::from_static(UI_MONO_BYTES));
+    defs.font_data.insert(UI_MONO.to_owned(), std::sync::Arc::new(FontData::from_static(UI_MONO_BYTES)));
     defs.families.entry(FontFamily::Monospace).or_default().insert(0, UI_MONO.to_owned());
 
     fn try_load_first(paths: &[&str]) -> Option<Vec<u8>> {
@@ -643,7 +653,7 @@ pub(crate) fn unicode_fallback_fonts() -> egui::FontDefinitions {
     if let Some(bytes) = try_load_first(DEJAVU_PATHS) {
         defs.font_data.insert(
             "klipp_fallback_dejavu".to_owned(),
-            FontData::from_owned(bytes),
+            std::sync::Arc::new(FontData::from_owned(bytes)),
         );
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
             defs.families
@@ -665,7 +675,7 @@ pub(crate) fn unicode_fallback_fonts() -> egui::FontDefinitions {
     if let Some(bytes) = try_load_first(CJK_PATHS) {
         let mut data = FontData::from_owned(bytes);
         data.index = 0;
-        defs.font_data.insert("klipp_fallback_cjk".to_owned(), data);
+        defs.font_data.insert("klipp_fallback_cjk".to_owned(), std::sync::Arc::new(data));
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
             defs.families
                 .entry(family)
@@ -678,7 +688,7 @@ pub(crate) fn unicode_fallback_fonts() -> egui::FontDefinitions {
     // never leaves an arrow as tofu. The bytes are the title renderer's
     // own copy, not a second one.
     if let Some(bytes) = klipp_title::bundled::lookup("JetBrains Mono", "Regular") {
-        defs.font_data.insert("klipp_fallback_bundled".to_owned(), FontData::from_static(bytes));
+        defs.font_data.insert("klipp_fallback_bundled".to_owned(), std::sync::Arc::new(FontData::from_static(bytes)));
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
             defs.families
                 .entry(family)
@@ -867,7 +877,7 @@ mod fallback_font_tests {
         ctx.set_fonts(unicode_fallback_fonts());
         let _ = ctx.run(Default::default(), |_| {});
         for c in ['▾', '▸', '●', '✓'] {
-            assert!(ctx.fonts(|f| f.has_glyph(&egui::FontId::proportional(13.0), c)), "no glyph for {c:?}");
+            assert!(ctx.fonts_mut(|f| f.has_glyph(&egui::FontId::proportional(13.0), c)), "no glyph for {c:?}");
         }
     }
 }

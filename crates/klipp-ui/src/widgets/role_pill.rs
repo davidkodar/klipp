@@ -15,7 +15,7 @@ pub fn role_pill(
     )
     .fill(bg)
     .stroke(stroke)
-    .rounding(4.0)
+    .corner_radius(4.0)
     .min_size(egui::vec2(0.0, 18.0));
 
     ui.add(btn).clicked()

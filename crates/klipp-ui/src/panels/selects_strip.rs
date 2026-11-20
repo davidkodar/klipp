@@ -81,7 +81,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: e
 
     // ── Header: what it is, its range, and what can be done with it ──
     let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER));
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(header.shrink2(egui::vec2(8.0, 2.0))), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(header.shrink2(egui::vec2(8.0, 2.0))), |ui| {
         ui.horizontal_centered(|ui| {
             ui.label(egui::RichText::new("SELECTS").size(10.0).strong().color(theme.accent));
             let others: Vec<(SequenceId, String)> = state.sequences.iter().filter(|s| s.id != state.sequence().id).map(|s| (s.id, s.name.clone())).collect();
@@ -163,7 +163,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: e
     if let Some((a, b)) = state.selects_range.filter(|(a, b)| b > a) {
         let r = egui::Rect::from_x_y_ranges(scale.x(a)..=scale.x(b), lanes.y_range());
         painter.rect_filled(r, 0.0, theme.accent.gamma_multiply(0.18));
-        painter.rect_stroke(r, 0.0, egui::Stroke::new(1.5_f32, theme.accent));
+        painter.rect_stroke(r, 0.0, egui::Stroke::new(1.5_f32, theme.accent), egui::StrokeKind::Outside);
     }
 
     // ── Pointer: skim, mark, take a clip, drag the range down ──
@@ -210,7 +210,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: e
             let galley = ghost.layout_no_wrap(text, egui::FontId::proportional(11.0), theme.text_primary);
             let r = egui::Rect::from_min_size(p + egui::vec2(12.0, 8.0), galley.size() + egui::vec2(8.0, 4.0));
             ghost.rect_filled(r, 3.0, theme.bg_panel);
-            ghost.rect_stroke(r, 3.0, egui::Stroke::new(1.0_f32, theme.accent));
+            ghost.rect_stroke(r, 3.0, egui::Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
             ghost.galley(r.min + egui::vec2(4.0, 2.0), galley, theme.text_primary);
             ui.ctx().request_repaint();
         }
@@ -282,7 +282,7 @@ mod tests {
         let mut cmds = Vec::new();
         state.browser_skim_active_this_frame = false;
         let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(828.0, 400.0))), events, ..Default::default() }, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| show(ui, state, &KlippTheme::default(), RECT, &mut cmds));
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| show(ui, state, &KlippTheme::default(), RECT, &mut cmds));
         });
         let texts = out.shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),

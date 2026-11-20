@@ -215,7 +215,7 @@ fn stack_cost(seq: &Sequence, files: &'static HashMap<MediaId, klipp_render::Med
         let t = Instant::now();
         let _ = r.render_display_on_gpu(seq, at, size.0, size.1, &mut src, klipp_compose::RenderOptions::default(), klipp_compose::DisplayDelivery { texture: None, bytes: false });
         if let Some(ctx) = &ctx {
-            ctx.device().poll(wgpu::Maintain::Wait);
+            let _ = ctx.device().poll(wgpu::PollType::wait_indefinitely());
         }
         if f >= 6 {
             costs.push(t.elapsed().as_secs_f64() * 1000.0);

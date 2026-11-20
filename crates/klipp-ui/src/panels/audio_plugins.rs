@@ -132,7 +132,7 @@ pub fn show_audio_plugins_dialog(
     // viewport even when the plugin list is huge. Default starts ~70% so
     // there's visible margin around it. Same pattern as the AI Models
     // dialog.
-    let screen_rect = ctx.screen_rect();
+    let screen_rect = ctx.content_rect();
     let max_h = (screen_rect.height() * 0.80).clamp(360.0, 720.0);
     let max_w = (screen_rect.width() * 0.80).clamp(480.0, 820.0);
     let default_h = (screen_rect.height() * 0.70).clamp(360.0, max_h);
@@ -519,12 +519,12 @@ fn render_plugin_row(
         theme.text_primary
     };
 
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(row_bg)
         .stroke(egui::Stroke::new(1.0_f32, row_border))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-        .outer_margin(egui::Margin::symmetric(0.0, 1.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .outer_margin(egui::Margin::symmetric(0, 1))
         .show(ui, |ui| {
             // ── Header row (always visible) ─────────────────────────
             //

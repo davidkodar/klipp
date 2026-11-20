@@ -167,7 +167,7 @@ pub fn show(
 
     // ── Sidebar ─────────────────────────────────────────────────────
     if !folded {
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
         ui.set_min_size(sidebar_rect.size());
         ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
         ui.painter().vline(
@@ -239,7 +239,7 @@ pub fn show(
     }
 
     // ── Right pane ──────────────────────────────────────────────────
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
         ui.set_min_size(content_rect.size());
 
         ui.add_space(8.0);
@@ -262,8 +262,8 @@ pub fn show(
         }
 
         // ── Preview header: PREVIEW ON [swatches] [text input] ──
-        egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 // Wrapped: in a narrow panel the swatches and the text
                 // field go on lines of their own, not past the edge (#2602).
@@ -303,15 +303,15 @@ pub fn show(
         ui.add_space(8.0);
 
         // ── Search bar ──
-        egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 super::browser_search_field(ui, theme, search_query, "Search titles\u{2026}", state);
             });
         ui.add_space(6.0);
         // Rolling credits from a list (#1514).
         if *active_category == Some("Credits") {
-            egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
                 if ui.button("Credits from a list\u{2026}").on_hover_text("Build rolling credits from a CSV or tab-separated list of roles and names").clicked() {
                     state.credits_dialog = Some(Default::default());
                 }
@@ -340,8 +340,8 @@ pub fn show(
         // The chips beside the pill and the view buttons where they fit,
         // else on a line of their own above them (#2602).
         let segments = source_segments(scoped_total, builtin_count, user_count, pack_count);
-        egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 let row_w = ui.available_width();
                 let spacing = ui.spacing().item_spacing.x;
@@ -598,11 +598,11 @@ fn handle_title_interaction(
         if let Entry::User(t) = title {
             if ui.button("Rename\u{2026}").clicked() {
                 state.title_template_dialog = Some(TemplateDialog::Rename { from: t.name.clone(), name: t.name.clone() });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Delete\u{2026}").clicked() {
                 state.title_template_dialog = Some(TemplateDialog::Delete { name: t.name.clone() });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         }
     });
@@ -648,9 +648,9 @@ fn title_card(
         if template_is_animated(title) { " \u{00B7} Animated" } else { "" },
     );
     crate::browser::library_card::library_card(ui, rect, title.name(), &caption, is_selected, hovered, theme, |p, area| {
-        let top = egui::Rounding { nw: crate::theme::radius::PANEL, ne: crate::theme::radius::PANEL, sw: 0.0, se: 0.0 };
+        let top = egui::CornerRadius { nw: crate::theme::radius::PANEL as u8, ne: crate::theme::radius::PANEL as u8, sw: 0, se: 0 };
         let shown = preview.map_or(area, |t| fitted(area, t));
-        paint_preview_backdrop(p, shown, if shown == area { top } else { egui::Rounding::ZERO }, preview_bg, footage);
+        paint_preview_backdrop(p, shown, if shown == area { top } else { egui::CornerRadius::ZERO }, preview_bg, footage);
         if let Some(t) = preview {
             p.image(t.id(), shown, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
         }
@@ -663,7 +663,7 @@ fn title_card(
 fn paint_preview_backdrop(
     p: &egui::Painter,
     area: egui::Rect,
-    rounding: egui::Rounding,
+    rounding: egui::CornerRadius,
     preview_bg: TitlesPreviewBg,
     footage: Option<&egui::TextureHandle>,
 ) {
@@ -823,16 +823,16 @@ fn title_list_row(
     let hovered = resp.hovered();
 
     if is_selected {
-        let bg = egui::Color32::from_rgba_unmultiplied(
+        let bg = crate::colour32::rgba(
             theme.accent.r(),
             theme.accent.g(),
             theme.accent.b(),
             28,
         );
         ui.painter()
-            .rect_filled(rect, egui::Rounding::same(4.0), bg);
+            .rect_filled(rect, egui::CornerRadius::same(4), bg);
     } else if hovered {
-        ui.painter().rect_filled(rect, egui::Rounding::same(4.0), theme.bg_raised);
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(4), theme.bg_raised);
     }
 
     // Mini preview on the left, text block on the right.
@@ -842,7 +842,7 @@ fn title_list_row(
         egui::vec2(mini_w, row_h - 12.0),
     );
     let shown = preview.map_or(mini_rect, |t| fitted(mini_rect, t));
-    paint_preview_backdrop(ui.painter(), shown, egui::Rounding::same(4.0), preview_bg, footage);
+    paint_preview_backdrop(ui.painter(), shown, egui::CornerRadius::same(4), preview_bg, footage);
     if let Some(t) = preview {
         ui.painter().image(t.id(), shown, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     }
@@ -869,7 +869,7 @@ fn title_list_row(
 fn paint_preview_canvas(
     painter: &egui::Painter,
     rect: egui::Rect,
-    rounding: egui::Rounding,
+    rounding: egui::CornerRadius,
     bg: TitlesPreviewBg,
 ) {
     match bg {
@@ -908,8 +908,8 @@ fn paint_preview_canvas(
                 if alt {
                     painter.rect_filled(
                         s,
-                        egui::Rounding::ZERO,
-                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 30),
+                        egui::CornerRadius::ZERO,
+                        crate::colour32::rgba(0, 0, 0, 30),
                     );
                 }
                 x += stripe_w;
@@ -920,7 +920,7 @@ fn paint_preview_canvas(
             painter.rect_filled(rect, rounding, egui::Color32::from_rgb(0x2c, 0x5e, 0x3a));
             // Dotted grid — chroma-screen reference.
             let step = 8.0;
-            let dot = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24);
+            let dot = crate::colour32::rgba(255, 255, 255, 24);
             let mut y = rect.min.y + step * 0.5;
             while y < rect.max.y {
                 let mut x = rect.min.x + step * 0.5;
@@ -948,7 +948,7 @@ fn preview_swatch(
         egui::vec2(size, size),
         egui::Sense::click(),
     );
-    paint_preview_canvas(ui.painter(), rect, egui::Rounding::same(4.0), bg);
+    paint_preview_canvas(ui.painter(), rect, egui::CornerRadius::same(4), bg);
     let is_active = *selected == bg;
     let stroke = if is_active {
         egui::Stroke::new(2.0_f32, theme.accent)
@@ -957,7 +957,7 @@ fn preview_swatch(
     } else {
         egui::Stroke::new(1.0_f32, theme.border)
     };
-    ui.painter().rect_stroke(rect, egui::Rounding::same(4.0), stroke);
+    ui.painter().rect_stroke(rect, egui::CornerRadius::same(4), stroke, egui::StrokeKind::Outside);
     if resp.clicked() {
         *selected = bg;
     }
@@ -1011,7 +1011,7 @@ fn titles_sidebar_row(
             egui::vec2(icon_size, icon_size),
         );
         let img = icon.image(icon_size).tint(icon_tint);
-        ui.allocate_new_ui(
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(icon_rect),
             |ui| {
                 ui.add(img);
@@ -1085,7 +1085,7 @@ fn titles_general_row(
         egui::vec2(icon_size, icon_size),
     );
     let img = icon.image(icon_size).tint(theme.text_dim);
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new().max_rect(icon_rect),
         |ui| {
             ui.add(img);
@@ -1156,7 +1156,7 @@ fn titles_section_header(
             egui::vec2(icon_size, icon_size),
         );
         let img = icon.image(icon_size).tint(theme.text_dim);
-        ui.allocate_new_ui(
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(icon_rect),
             |ui| {
                 ui.add(img);
@@ -1236,13 +1236,13 @@ fn animated_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) 
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
     let icon_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
         egui::vec2(icon_size, icon_size),
     );
     let img = Icon::Lightning.image(icon_size).tint(fg);
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new().max_rect(icon_rect),
         |ui| {
             ui.add(img);
@@ -1282,11 +1282,11 @@ fn view_mode_button(
         (theme.bg_panel, theme.border, theme.text_secondary)
     };
     ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border), egui::StrokeKind::Outside);
     let size = 13.0;
     let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
     let img = icon.image(size).tint(fg);
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new().max_rect(icon_rect),
         |ui| {
             ui.add(img);
@@ -1323,7 +1323,7 @@ fn titles_result_strip(
         egui::pos2(rect.max.x - dropdown_w - 8.0, rect.min.y + 1.0),
         egui::pos2(rect.max.x - 8.0, rect.max.y - 1.0),
     );
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new().max_rect(dropdown_rect),
         |ui| {
             ui.style_mut().visuals.widgets.inactive.weak_bg_fill =
@@ -1432,7 +1432,7 @@ mod tests {
         // Twice: a first frame sizes what a second lays out.
         for _ in 0..2 {
             shapes = ctx.run(input.clone(), |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     panel.show_library_tab(ui, &mut state, &theme);
                 });
             }).shapes;

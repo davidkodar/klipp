@@ -1302,7 +1302,7 @@ mod tests {
         let moved = at + egui::vec2(60.0, 20.0);
         assert_ne!(frame(vec![egui::Event::PointerMoved(moved)]).1, pan);
         let zoom = frame(vec![button(moved, egui::PointerButton::Middle, false)]).2;
-        assert_ne!(frame(vec![egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, 80.0), modifiers: egui::Modifiers::NONE }]).2, zoom);
+        assert_ne!(frame(vec![egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, 80.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move }]).2, zoom);
         assert_eq!(c.picture_v2().unwrap(), before);
     }
 
@@ -2034,8 +2034,12 @@ mod tests {
         let at = card_of(&d, opacity);
         let notes = d.texts.iter().filter(|(t, p)| t == "Not in this frame" && at.contains(*p)).count();
         assert_eq!(notes, 0, "it is in this frame: no \"Not in this frame\" on it, let alone twice");
+        // Moved there once, then held still, as a hand rests on it: egui
+        // 0.34 takes every move event as motion, even to the same spot,
+        // and a tooltip waits for the pointer to be still.
+        d.frame(vec![egui::Event::PointerMoved(at.center())]);
         for _ in 0..12 {
-            d.frame(vec![egui::Event::PointerMoved(at.center())]);
+            d.frame(Vec::new());
         }
         let tip = d.texts.iter().find(|(t, _)| t.starts_with("No preview")).map(|(t, _)| t.clone()).expect("its reason on hover");
         assert!(!tip.contains(&opacity.to_string()), "in words, not by its id: {tip}");
@@ -2087,8 +2091,10 @@ mod tests {
         d.settle();
         let tooltip = |d: &mut Dock, node: NodeId| {
             let at = card_of(d, node).center();
+            // Moved there once, then held still (see above).
+            d.frame(vec![egui::Event::PointerMoved(at)]);
             for _ in 0..12 {
-                d.frame(vec![egui::Event::PointerMoved(at)]);
+                d.frame(Vec::new());
             }
             d.texts.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>()
         };

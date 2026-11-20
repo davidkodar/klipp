@@ -421,10 +421,10 @@ fn tags_section(ui: &mut egui::Ui, theme: &KlippTheme, media: &klipp_media::Medi
                 ui.add_space(pad);
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                 for (i, tag) in media.tags.iter().enumerate() {
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(theme.bg_raised)
-                        .rounding(4.0)
-                        .inner_margin(egui::Margin { left: 8.0, right: 4.0, top: 3.0, bottom: 3.0 })
+                        .corner_radius(4.0)
+                        .inner_margin(egui::Margin { left: 8, right: 4, top: 3, bottom: 3 })
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 3.0;

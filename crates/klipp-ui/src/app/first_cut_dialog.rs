@@ -203,7 +203,7 @@ impl KlippApp {
         let (mut open, mut flip, mut go) = (true, None, None);
         // At the top right under the menus, clear of the menu bar and the
         // Media panel (#3445), and left of the inspector.
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let at = changes_panel_pos(screen, self.layout.inspector_width);
         crate::widgets::window("First Cut changes")
             .constrain_to(crate::widgets::below_menu_bar(ctx))

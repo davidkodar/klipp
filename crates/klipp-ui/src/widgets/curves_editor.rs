@@ -147,14 +147,14 @@ pub fn curves_editor_in(
 
     // Background
     painter.rect_filled(rect, 4.0, bg_color);
-    painter.rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32, border_color));
+    painter.rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32, border_color), egui::StrokeKind::Outside);
 
     // Histogram background (if provided)
     if let Some(bins) = histogram_bins {
         let max_count = bins.iter().max().copied().unwrap_or(1) as f32;
         let curve_col = channel_color(channel);
         let hist_alpha = 35u8; // subtle, per spec
-        let hist_color = egui::Color32::from_rgba_unmultiplied(
+        let hist_color = crate::colour32::rgba(
             curve_col.r(), curve_col.g(), curve_col.b(), hist_alpha,
         );
         let bin_w = rect.width() / 256.0;
@@ -480,12 +480,12 @@ pub fn curves_editor_in(
         ui.data_mut(|d| d.insert_temp(menu_id, at));
     }
     let menu_point: Option<usize> = ui.data(|d| d.get_temp(menu_id)).flatten();
-    response.context_menu(|ui| match menu_point.filter(|&i| i > 0 && i + 1 < points.len()) {
+    crate::widgets::menu::context_menu(&response, |ui| match menu_point.filter(|&i| i > 0 && i + 1 < points.len()) {
         Some(i) => {
             if ui.button("Delete point").clicked() {
                 points.remove(i);
                 changed = true;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         }
         None => {

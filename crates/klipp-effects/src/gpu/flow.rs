@@ -475,7 +475,7 @@ fn pipeline(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ComputePi
         label: Some(label),
         layout: None,
         module: &module,
-        entry_point: "main",
+        entry_point: Some("main"),
         compilation_options: Default::default(),
         cache: None,
     })
@@ -653,7 +653,7 @@ impl GpuEffectsPipeline {
                     // Made on this call: its copy goes with this chain.
                     read.submitted = true;
                 } else if read.asked {
-                    let _ = device.poll(wgpu::Maintain::Poll);
+                    let _ = device.poll(wgpu::PollType::Poll);
                     let mapped = *read.mapped.lock().unwrap_or_else(|e| e.into_inner());
                     match mapped {
                         Some(true) => {

@@ -182,7 +182,7 @@ impl TranscriptPanel {
                             if transcript::is_filler(&word.text) {
                                 text = text.italics();
                             }
-                            let r = ui.add(egui::SelectableLabel::new(in_selection, text)).interact(egui::Sense::click_and_drag());
+                            let r = ui.add(egui::Button::selectable(in_selection, text)).interact(egui::Sense::click_and_drag());
                             if r.clicked() {
                                 clicked = Some(i);
                             }
@@ -192,7 +192,7 @@ impl TranscriptPanel {
                             r.context_menu_rows(|ui| {
                                 if ui.button("Correct\u{2026}").clicked() {
                                     self.correcting = Some((i, word.text.clone()));
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             });
                             if follow && Some(i) == current {
@@ -233,14 +233,14 @@ impl TranscriptPanel {
         // global Delete shortcut, which ran earlier this frame, stood
         // aside on the same flag, so the key is taken once.
         let delete = state.transcript_panel_hovered
-            && !ui.ctx().wants_keyboard_input()
+            && !ui.ctx().egui_wants_keyboard_input()
             && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
         if delete {
             self.cut_selection(state);
         }
         // Shift+Left/Right moves the selection's far end a word (#3020);
         // the transport stands aside on the same flag.
-        if state.transcript_panel_hovered && !ui.ctx().wants_keyboard_input() {
+        if state.transcript_panel_hovered && !ui.ctx().egui_wants_keyboard_input() {
             let step = ui.input(|i| match (i.modifiers.shift, i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight)) {
                 (true, true, false) => -1,
                 (true, false, true) => 1,
@@ -317,7 +317,7 @@ impl TranscriptPanel {
                                 for (lang, label) in [(current.clone(), language_name(current.as_deref())), (None, "Detect".to_string())] {
                                     if ui.button(format!("{} in {label}", klipp_analysis::transcript::model_label(m))).clicked() {
                                         cmds.push(AppCommand::RetranscribeClip { media_id: *media_id, model: Some((*m).to_string()), language: lang.clone() });
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                     if current.is_none() {
                                         break;

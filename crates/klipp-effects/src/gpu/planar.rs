@@ -94,7 +94,7 @@ pub struct GpuTemplate {
 
 fn pipeline(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ComputePipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(source.into()) });
-    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(label), layout: None, module: &module, entry_point: "main", compilation_options: Default::default(), cache: None })
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(label), layout: None, module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: None })
 }
 
 /// Workgroups for `n` points of 64, split across two dimensions so no

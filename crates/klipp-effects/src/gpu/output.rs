@@ -89,7 +89,7 @@ impl GpuEffectsPipeline {
         let (tx, rx) = std::sync::mpsc::channel();
         self.flush();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        // Non-blocking poll loop instead of `Maintain::Wait` — on a
+        // Non-blocking poll loop instead of `PollType::wait_indefinitely()` — on a
         // UI-shared device, Wait never returns because eframe-wgpu
         // keeps the queue non-empty with continuous egui submits.
         // `poll_until_mapped` drives the map callback via Poll until
@@ -240,15 +240,15 @@ impl GpuEffectsPipeline {
         // buffer layout matches `Rgba8Unorm`'s row-major RGBA bytes
         // byte-for-byte (R in bits 0-7 of each u32, then G, B, A).
         encoder.copy_buffer_to_texture(
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: out_buf,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(width * 4),
                     rows_per_image: Some(height),
                 },
             },
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: target,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
@@ -757,7 +757,7 @@ impl GpuEffectsPipeline {
         let slice = staging.slice(..bytes);
         self.flush();
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
         let data = slice.get_mapped_range();
         let map: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
         drop(data);

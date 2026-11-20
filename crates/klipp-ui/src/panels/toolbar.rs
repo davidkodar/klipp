@@ -69,7 +69,7 @@ impl ToolbarPanel {
             let rect = egui::Rect::from_min_size(egui::pos2(rx, cy - 14.0), egui::vec2(92.0, 28.0));
             // "Nodes", the name the Colour page uses for the same graphs, lit while
             // the dock is open (#1726).
-            if ui.put(rect, egui::Button::new("Nodes").selected(state.graph_dock_open)).on_hover_text("The clip's effects and grade as connected nodes").clicked() {
+            if crate::widgets::selected_button(ui, egui::Button::new("Nodes"), state.graph_dock_open, |ui, b| ui.put(rect, b)).on_hover_text("The clip's effects and grade as connected nodes").clicked() {
                 cmds.push(AppCommand::ToggleGraphDock);
             }
         }
@@ -82,7 +82,7 @@ impl ToolbarPanel {
         // Drawn first, up to the right group: where it ends is where the
         // workspace tabs may start (#1355).
         let left_rect = egui::Rect::from_min_max(toolbar_rect.min, egui::pos2(right_edge.max(toolbar_rect.min.x), toolbar_rect.max.y));
-        let left_end = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(left_rect), |ui| {
+        let left_end = ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.add_space(10.0);
@@ -166,7 +166,7 @@ impl ToolbarPanel {
             // Too narrow for them all: the one shown, the others a click away.
             SwitcherPlace::Menu(rect) => {
                 let mut chosen = active;
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                     ui.centered_and_justified(|ui| {
                         egui::ComboBox::from_id_salt("workspace_switcher").selected_text(labels[active]).width(rect.width()).show_ui(ui, |ui| {
                             for (i, label) in labels.iter().enumerate() {
@@ -200,13 +200,13 @@ impl ToolbarPanel {
 
     fn file_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, recent: &[RecentProject], kb: &crate::keybindings::KeyBindings) {
         ui.menu_rows(egui::RichText::new("File").size(crate::theme::type_scale::CONTROL), |ui| {
-            if ui.add(egui::Button::new("New Project...").shortcut_text(kb.display_for("new_project"))).clicked() { cmds.push(AppCommand::NewProject); ui.close_menu(); }
+            if ui.add(egui::Button::new("New Project...").shortcut_text(kb.display_for("new_project"))).clicked() { cmds.push(AppCommand::NewProject); ui.close_kind(egui::UiKind::Menu); }
             if ui.add(egui::Button::new("Open Project...").shortcut_text(kb.display_for("open_project"))).clicked() {
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(crate::project_paths::pick_project_commands);
             }
             if ui.button("Open Project from Another Editor...").on_hover_text(klipp_project::import_report::READS).clicked() {
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
                     rfd::FileDialog::new()
                         .set_title("Open Project from Another Editor")
@@ -221,14 +221,14 @@ impl ToolbarPanel {
                 ui.menu_rows("Open Recent", |ui| {
                     for rp in recent {
                         let label = rp.name.clone();
-                        if ui.button(&label).clicked() { cmds.push(AppCommand::OpenProject { path: rp.path.clone() }); ui.close_menu(); }
+                        if ui.button(&label).clicked() { cmds.push(AppCommand::OpenProject { path: rp.path.clone() }); ui.close_kind(egui::UiKind::Menu); }
                     }
                 });
             }
             ui.separator();
-            if ui.add(egui::Button::new("Save").shortcut_text(kb.display_for("save_project"))).clicked() { cmds.push(AppCommand::SaveProject); ui.close_menu(); }
+            if ui.add(egui::Button::new("Save").shortcut_text(kb.display_for("save_project"))).clicked() { cmds.push(AppCommand::SaveProject); ui.close_kind(egui::UiKind::Menu); }
             if ui.add(egui::Button::new("Save As...").shortcut_text(kb.display_for("save_project_as"))).clicked() {
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
                     rfd::FileDialog::new()
                         .set_title("Save As")
@@ -242,30 +242,30 @@ impl ToolbarPanel {
             // The project's structure kept to start new ones from (#618).
             if ui.add_enabled(state.project_path.is_some(), egui::Button::new("Save Project as Template...")).clicked() {
                 state.save_template_dialog = Some(Default::default());
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Revert to Saved").clicked() {
                 if let Some(path) = state.project_path.clone() { cmds.push(AppCommand::OpenProject { path }); }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.add(egui::Button::new("Import Media...").shortcut_text(kb.display_for("import_media"))).clicked() {
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(crate::command_palette::import_media_commands);
             }
             ui.separator();
             if ui.button("New Bin").clicked() {
                 cmds.push(AppCommand::NewBin { media_ids: Vec::new() });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             let selected: Vec<klipp_core::MediaId> = state.selected_media_ids.iter().copied().collect();
             if ui.add_enabled(!selected.is_empty(), egui::Button::new("New Bin from Selection")).on_disabled_hover_text("Select clips in the media pool first.").clicked() {
                 cmds.push(AppCommand::NewBin { media_ids: selected });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.button("Import Subtitles...").clicked() {
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
                     rfd::FileDialog::new()
                         .set_title("Import Subtitles")
@@ -276,7 +276,7 @@ impl ToolbarPanel {
                 });
             }
             if ui.button("Import Metadata Sheet...").on_hover_text("A CSV or ALE: scene, shot, take, description, keywords, rating and the rest, matched to clips by file name.").clicked() {
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
                     rfd::FileDialog::new()
                         .set_title("Import Metadata Sheet")
@@ -291,7 +291,7 @@ impl ToolbarPanel {
             // doesn't clutter the top level.
             ui.menu_rows("Import Timeline", |ui| {
                 if ui.button("Kdenlive Project...").clicked() {
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
                         rfd::FileDialog::new()
                             .set_title("Import Kdenlive Project")
@@ -302,7 +302,7 @@ impl ToolbarPanel {
                     });
                 }
                 if ui.button("EDL (.edl)...").clicked() {
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
                         rfd::FileDialog::new()
                             .set_title("Import EDL")
@@ -313,7 +313,7 @@ impl ToolbarPanel {
                     });
                 }
                 if ui.button("OpenTimelineIO (.otio)...").clicked() {
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
                         rfd::FileDialog::new()
                             .set_title("Import OpenTimelineIO")
@@ -324,7 +324,7 @@ impl ToolbarPanel {
                     });
                 }
                 if ui.button("Final Cut Pro XML (.fcpxml)...").clicked() {
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
                         rfd::FileDialog::new()
                             .set_title("Import FCPXML Project")
@@ -336,9 +336,9 @@ impl ToolbarPanel {
                 }
             });
             ui.separator();
-            if ui.add(egui::Button::new("Export...").shortcut_text(kb.display_for("export"))).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_menu(); }
+            if ui.add(egui::Button::new("Export...").shortcut_text(kb.display_for("export"))).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_kind(egui::UiKind::Menu); }
             if ui.button("Export Subtitles...").clicked() {
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
                     rfd::FileDialog::new()
                         .set_title("Export Subtitles")
@@ -356,7 +356,7 @@ impl ToolbarPanel {
                 });
             }
             if ui.button("YouTube Chapters\u{2026}").clicked() {
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
                     rfd::FileDialog::new()
                         .set_title("Export YouTube Chapters")
@@ -368,7 +368,7 @@ impl ToolbarPanel {
                 });
             }
             if ui.button("Generate Render Script\u{2026}").clicked() {
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
                     rfd::FileDialog::new()
                         .set_title("Save Render Script")
@@ -382,7 +382,7 @@ impl ToolbarPanel {
             // Timeline-format exports (current Sequence → interchange format).
             ui.menu_rows("Export Timeline", |ui| {
                 if ui.button("FCPXML...").clicked() {
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
                         rfd::FileDialog::new()
                             .set_title("Export FCPXML")
@@ -394,7 +394,7 @@ impl ToolbarPanel {
                     });
                 }
                 if ui.button("Kdenlive Project...").clicked() {
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
                         rfd::FileDialog::new()
                             .set_title("Export as Kdenlive Project")
@@ -406,7 +406,7 @@ impl ToolbarPanel {
                     });
                 }
                 if ui.button("EDL...").clicked() {
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
                         rfd::FileDialog::new()
                             .set_title("Export EDL")
@@ -420,7 +420,7 @@ impl ToolbarPanel {
                 // OpenTimelineIO, here with the other formats (#925); it was
                 // only in the command palette.
                 if ui.button("OpenTimelineIO...").clicked() {
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
                         rfd::FileDialog::new()
                             .set_title("Export OpenTimelineIO")
@@ -443,7 +443,7 @@ impl ToolbarPanel {
                     None => aaf,
                 };
                 if aaf.clicked() {
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
                         rfd::FileDialog::new()
                             .set_title("Export AAF")
@@ -457,7 +457,7 @@ impl ToolbarPanel {
             });
             ui.menu_rows("Export Metadata Sheet", |ui| {
                 if ui.button("CSV...").clicked() {
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
                         rfd::FileDialog::new()
                             .set_title("Export Metadata as CSV")
@@ -469,7 +469,7 @@ impl ToolbarPanel {
                     });
                 }
                 if ui.button("ALE (Avid Log Exchange)...").clicked() {
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
                         rfd::FileDialog::new()
                             .set_title("Export Metadata as ALE")
@@ -482,16 +482,16 @@ impl ToolbarPanel {
                 }
             });
             ui.separator();
-            if ui.add(egui::Button::new("Close Project").shortcut_text(kb.display_for("close_project"))).clicked() { cmds.push(AppCommand::CloseProject); ui.close_menu(); }
-            if ui.button("Project Properties...").clicked() { state.show_project_info = true; ui.close_menu(); }
-            if ui.button("Colour Management\u{2026}").clicked() { state.show_colour_management = true; ui.close_menu(); }
+            if ui.add(egui::Button::new("Close Project").shortcut_text(kb.display_for("close_project"))).clicked() { cmds.push(AppCommand::CloseProject); ui.close_kind(egui::UiKind::Menu); }
+            if ui.button("Project Properties...").clicked() { state.show_project_info = true; ui.close_kind(egui::UiKind::Menu); }
+            if ui.button("Colour Management\u{2026}").clicked() { state.show_colour_management = true; ui.close_kind(egui::UiKind::Menu); }
             if ui.button("Sequence Settings...").clicked() {
                 cmds.push(AppCommand::OpenSequenceSettings { sequence_idx: state.active_sequence_idx });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
-            if ui.add_enabled(state.last_import_report.is_some(), egui::Button::new("Last Import Report…")).clicked() { state.show_import_report = true; ui.close_menu(); }
+            if ui.add_enabled(state.last_import_report.is_some(), egui::Button::new("Last Import Report…")).clicked() { state.show_import_report = true; ui.close_kind(egui::UiKind::Menu); }
             let has_offline = !state.offline_media_ids.is_empty();
-            if ui.add_enabled(has_offline, egui::Button::new("Relink Media...")).clicked() { cmds.push(AppCommand::ShowRelinkDialog); ui.close_menu(); }
+            if ui.add_enabled(has_offline, egui::Button::new("Relink Media...")).clicked() { cmds.push(AppCommand::ShowRelinkDialog); ui.close_kind(egui::UiKind::Menu); }
             // Consolidate Project: copy the project + all media into a new
             // self-contained directory. Requires the project to already be saved.
             let has_project = state.project_path.is_some();
@@ -510,93 +510,93 @@ impl ToolbarPanel {
                     }
                 }
                 state.show_consolidate_dialog = true;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
-            if ui.add(egui::Button::new("Quit").shortcut_text(kb.display_for("quit"))).clicked() { cmds.push(AppCommand::Quit); ui.close_menu(); }
+            if ui.add(egui::Button::new("Quit").shortcut_text(kb.display_for("quit"))).clicked() { cmds.push(AppCommand::Quit); ui.close_kind(egui::UiKind::Menu); }
         });
     }
 
     fn edit_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, kb: &crate::keybindings::KeyBindings) {
         ui.menu_rows(egui::RichText::new("Edit").size(crate::theme::type_scale::CONTROL), |ui| {
-            if ui.add_enabled(state.next_undo().is_some(), egui::Button::new(state.undo_label().map(|d| format!("Undo {d}")).unwrap_or("Undo".into())).shortcut_text(kb.display_for("undo"))).clicked() { cmds.push(AppCommand::Undo); ui.close_menu(); }
-            if ui.add_enabled(state.next_redo().is_some(), egui::Button::new(state.redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text(kb.display_for("redo"))).clicked() { cmds.push(AppCommand::Redo); ui.close_menu(); }
-            if ui.button("History...").clicked() { state.show_history_panel = true; ui.close_menu(); }
-            if ui.button("Find and Replace in Titles\u{2026}").on_hover_text("Find words across every title, and replace them in one step").clicked() { state.show_title_find = true; ui.close_menu(); }
-            if ui.button("Check Spelling in Titles\u{2026}").on_hover_text("Every misspelt word in the titles and captions, one by one").clicked() { state.show_spelling_dialog = true; ui.close_menu(); }
-            if ui.button("First Cut\u{2026}").on_hover_text("A rough cut of what is said: pauses, filler words and retakes out, punch-ins and captions in, as one undo step").clicked() { state.show_first_cut_dialog = true; ui.close_menu(); }
+            if ui.add_enabled(state.next_undo().is_some(), egui::Button::new(state.undo_label().map(|d| format!("Undo {d}")).unwrap_or("Undo".into())).shortcut_text(kb.display_for("undo"))).clicked() { cmds.push(AppCommand::Undo); ui.close_kind(egui::UiKind::Menu); }
+            if ui.add_enabled(state.next_redo().is_some(), egui::Button::new(state.redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text(kb.display_for("redo"))).clicked() { cmds.push(AppCommand::Redo); ui.close_kind(egui::UiKind::Menu); }
+            if ui.button("History...").clicked() { state.show_history_panel = true; ui.close_kind(egui::UiKind::Menu); }
+            if ui.button("Find and Replace in Titles\u{2026}").on_hover_text("Find words across every title, and replace them in one step").clicked() { state.show_title_find = true; ui.close_kind(egui::UiKind::Menu); }
+            if ui.button("Check Spelling in Titles\u{2026}").on_hover_text("Every misspelt word in the titles and captions, one by one").clicked() { state.show_spelling_dialog = true; ui.close_kind(egui::UiKind::Menu); }
+            if ui.button("First Cut\u{2026}").on_hover_text("A rough cut of what is said: pauses, filler words and retakes out, punch-ins and captions in, as one undo step").clicked() { state.show_first_cut_dialog = true; ui.close_kind(egui::UiKind::Menu); }
             // The last First Cut's changes, to take any back one at a time
             // once its panel was closed (#3445).
-            if ui.add_enabled(state.first_cut_session.is_some(), egui::Button::new("First Cut Changes")).on_hover_text("The last First Cut's changes, each one to take back or put back").clicked() { state.show_first_cut_panel = true; ui.close_menu(); }
+            if ui.add_enabled(state.first_cut_session.is_some(), egui::Button::new("First Cut Changes")).on_hover_text("The last First Cut's changes, each one to take back or put back").clicked() { state.show_first_cut_panel = true; ui.close_kind(egui::UiKind::Menu); }
             ui.separator();
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Cut").shortcut_text(kb.display_for("cut_clip"))).clicked() {
                 if let Some(clip_id) = state.selected_clip {
                     cmds.push(AppCommand::CopyClip { clip_id });
                     cmds.push(AppCommand::RemoveClip { clip_id });
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Copy").shortcut_text(kb.display_for("copy_clip"))).clicked() {
                 if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::CopyClip { clip_id }); }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(state.clipboard.is_some(), egui::Button::new("Paste").shortcut_text(kb.display_for("paste_clip"))).clicked() {
                 cmds.push(AppCommand::PasteClip);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(state.clipboard.is_some(), egui::Button::new("Paste Insert")).on_hover_text("Cut every unlocked track at the playhead and move what follows along by the paste's length").clicked() {
                 cmds.push(AppCommand::PasteClipInsert);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             // A title's look (#1718).
             let title_selected = state.selected_clip.is_some_and(|id| state.sequence().all_clips().any(|c| c.id == id && c.title_data().is_some()));
             if ui.add_enabled(title_selected, egui::Button::new("Copy Title Style")).clicked() {
                 if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::CopyTitleStyle { clip_id }); }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(title_selected && state.title_style_clipboard.is_some(), egui::Button::new("Paste Title Style")).on_hover_text("Give the selected titles the copied look, each keeping its words").clicked() {
                 let to = if state.selected_clips.is_empty() { state.selected_clip.into_iter().collect() } else { state.selected_clips.clone() };
                 cmds.push(AppCommand::PasteTitleStyle { from: None, to });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Copy Attributes").shortcut_text(kb.display_for("copy_attributes"))).clicked() {
                 if let Some(cid) = state.selected_clip { cmds.push(AppCommand::CopyAttributes { clip_id: cid }); }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(state.attributes_clipboard.is_some() && state.selected_clip.is_some(), egui::Button::new("Paste Attributes...").shortcut_text(kb.display_for("paste_attributes")))
                 .on_disabled_hover_text(if state.attributes_clipboard.is_none() { "Copy a clip or its attributes first" } else { "Select the clips to paste onto" })
                 .clicked()
             {
-                state.show_paste_attributes_dialog = true; ui.close_menu();
+                state.show_paste_attributes_dialog = true; ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Duplicate").shortcut_text(kb.display_for("duplicate_clip"))).clicked() {
                 if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::DuplicateClip { clip_id }); }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Delete").shortcut_text(kb.display_for("delete_clip"))).clicked() {
                 if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::RemoveClip { clip_id }); }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
-            if ui.add(egui::Button::new("Select All").shortcut_text(kb.display_for("select_all"))).clicked() { cmds.push(AppCommand::SelectAllClips); ui.close_menu(); }
+            if ui.add(egui::Button::new("Select All").shortcut_text(kb.display_for("select_all"))).clicked() { cmds.push(AppCommand::SelectAllClips); ui.close_kind(egui::UiKind::Menu); }
             // No default key (each would take one the other actions use);
             // bindable in Preferences, so no shortcut text here.
-            if ui.button("Select Forward").on_hover_text("Every clip starting at or after the playhead, on every unlocked track").clicked() { cmds.push(AppCommand::SelectClipsForward); ui.close_menu(); }
-            if ui.button("Select Backward").on_hover_text("Every clip ending at or before the playhead, on every unlocked track").clicked() { cmds.push(AppCommand::SelectClipsBackward); ui.close_menu(); }
+            if ui.button("Select Forward").on_hover_text("Every clip starting at or after the playhead, on every unlocked track").clicked() { cmds.push(AppCommand::SelectClipsForward); ui.close_kind(egui::UiKind::Menu); }
+            if ui.button("Select Backward").on_hover_text("Every clip ending at or before the playhead, on every unlocked track").clicked() { cmds.push(AppCommand::SelectClipsBackward); ui.close_kind(egui::UiKind::Menu); }
             // By what the clips are (#925).
             let any = state.selected_clip.is_some() || !state.selected_clips.is_empty();
-            if ui.button("Invert Selection").on_hover_text("Every clip not selected now").clicked() { cmds.push(AppCommand::SelectInverse); ui.close_menu(); }
-            if ui.add_enabled(any, egui::Button::new("Select Same Source")).on_hover_text("Every clip from the selected clips' media files").clicked() { cmds.push(AppCommand::SelectSameSource); ui.close_menu(); }
+            if ui.button("Invert Selection").on_hover_text("Every clip not selected now").clicked() { cmds.push(AppCommand::SelectInverse); ui.close_kind(egui::UiKind::Menu); }
+            if ui.add_enabled(any, egui::Button::new("Select Same Source")).on_hover_text("Every clip from the selected clips' media files").clicked() { cmds.push(AppCommand::SelectSameSource); ui.close_kind(egui::UiKind::Menu); }
             ui.menu_rows("Select by Colour", |ui| {
                 for label in klipp_media::ColorLabel::ALL.into_iter().filter(|l| l.to_u8() != 0) {
                     let swatch = label.rgb().map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)).unwrap_or(ui.visuals().weak_text_color());
                     if ui.button(egui::RichText::new(format!("\u{25CF} {}", label.label())).color(swatch)).clicked() {
                         cmds.push(AppCommand::SelectByColour { label: label.to_u8() });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });
-            if ui.button("Go to Next Gap").on_hover_text("The playhead to the next empty stretch on an unlocked track").clicked() { cmds.push(AppCommand::GoToNextGap); ui.close_menu(); }
+            if ui.button("Go to Next Gap").on_hover_text("The playhead to the next empty stretch on an unlocked track").clicked() { cmds.push(AppCommand::GoToNextGap); ui.close_kind(egui::UiKind::Menu); }
             // The selected clip's track (#844); a track's own header menu
             // has the same three for any track.
             let on_track = state.selected_clip.is_some();
@@ -607,12 +607,12 @@ impl ToolbarPanel {
             ] {
                 if ui.add_enabled(on_track, egui::Button::new(label).shortcut_text(kb.display_for(action))).on_disabled_hover_text("Select a clip on the track first, or use the track header's menu").clicked() {
                     cmds.push(AppCommand::SelectClipsOnSelectedTrack { range });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
-            if ui.add(egui::Button::new("Deselect All").shortcut_text(kb.display_for("deselect_all"))).clicked() { { state.selected_clip = None; state.selected_clips.clear(); }; ui.close_menu(); }
+            if ui.add(egui::Button::new("Deselect All").shortcut_text(kb.display_for("deselect_all"))).clicked() { { state.selected_clip = None; state.selected_clips.clear(); }; ui.close_kind(egui::UiKind::Menu); }
             ui.separator();
-            if ui.add(egui::Button::new("Preferences...").shortcut_text(kb.display_for("preferences"))).clicked() { cmds.push(AppCommand::ShowPreferences); ui.close_menu(); }
+            if ui.add(egui::Button::new("Preferences...").shortcut_text(kb.display_for("preferences"))).clicked() { cmds.push(AppCommand::ShowPreferences); ui.close_kind(egui::UiKind::Menu); }
         });
     }
 
@@ -624,14 +624,14 @@ impl ToolbarPanel {
                     let enabled = state.sequence().all_clips().find(|c| c.id == cid).is_none_or(|c| c.enabled);
                     cmds.push(AppCommand::SetClipEnabled { clip_id: cid, enabled: !enabled });
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(has_clip, egui::Button::new("Solo")).clicked() {
                 if let Some(cid) = state.selected_clip {
                     let soloed = state.sequence().all_clips().find(|c| c.id == cid).is_some_and(|c| c.solo);
                     cmds.push(AppCommand::SetClipSolo { clip_id: cid, solo: !soloed });
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             // Match Frame — finds the source frame for the program
@@ -641,19 +641,19 @@ impl ToolbarPanel {
             // ramps + clip.source_in.
             if ui.add(egui::Button::new("Match Frame").shortcut_text(kb.display_for("match_frame_program_to_source"))).clicked() {
                 cmds.push(AppCommand::MatchFrameProgramToSource);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             let has_source = state.source_media_id.is_some();
             if ui.add_enabled(has_source,
                 egui::Button::new("Match Frame Reverse").shortcut_text(kb.display_for("match_frame_source_to_program")),
             ).clicked() {
                 cmds.push(AppCommand::MatchFrameSourceToProgram);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.add(egui::Button::new("Split at Playhead").shortcut_text(kb.display_for("split_at_playhead"))).clicked() {
                 cmds.push(AppCommand::SplitAtPlayhead);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(has_clip, egui::Button::new("Close Gap")).clicked() {
                 if let Some(cid) = state.selected_clip {
@@ -672,19 +672,19 @@ impl ToolbarPanel {
                         }
                     }
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             // Delete's key, which is what this runs; it showed the lift key.
             if ui.add_enabled(has_clip, egui::Button::new("Ripple Delete").shortcut_text(kb.display_for("delete_clip"))).clicked() {
                 if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::RemoveClip { clip_id }); }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.add_enabled(has_clip, egui::Button::new("Speed...")).clicked() {
                 if let Some(clip_id) = state.selected_clip {
                     cmds.push(AppCommand::OpenSpeedDialog { clip_id });
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.menu_rows("Motion Presets", |ui| {
                 for (label, preset) in [
@@ -693,7 +693,7 @@ impl ToolbarPanel {
                     ("Ken Burns: Pan Left", "ken_burns_pan_left"),
                 ] {
                     if let Some(cid) = state.selected_clip {
-                        if ui.button(label).clicked() { cmds.push(AppCommand::ApplyMotionPreset { clip_id: cid, preset: preset.into() }); ui.close_menu(); }
+                        if ui.button(label).clicked() { cmds.push(AppCommand::ApplyMotionPreset { clip_id: cid, preset: preset.into() }); ui.close_kind(egui::UiKind::Menu); }
                     }
                 }
                 ui.separator();
@@ -704,23 +704,23 @@ impl ToolbarPanel {
                     ("PiP: Bottom Right", "pip_bottom_right"),
                 ] {
                     if let Some(cid) = state.selected_clip {
-                        if ui.button(label).clicked() { cmds.push(AppCommand::ApplyMotionPreset { clip_id: cid, preset: preset.into() }); ui.close_menu(); }
+                        if ui.button(label).clicked() { cmds.push(AppCommand::ApplyMotionPreset { clip_id: cid, preset: preset.into() }); ui.close_kind(egui::UiKind::Menu); }
                     }
                 }
             });
             ui.separator();
             if ui.add_enabled(has_clip, egui::Button::new("Copy Attributes").shortcut_text(kb.display_for("copy_attributes"))).clicked() {
                 if let Some(cid) = state.selected_clip { cmds.push(AppCommand::CopyAttributes { clip_id: cid }); }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(state.attributes_clipboard.is_some() && has_clip, egui::Button::new("Paste Attributes...").shortcut_text(kb.display_for("paste_attributes"))).clicked() {
-                state.show_paste_attributes_dialog = true; ui.close_menu();
+                state.show_paste_attributes_dialog = true; ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             // Multicam
             if ui.button("Create Multicam Clip").clicked() {
                 cmds.push(AppCommand::CreateMulticamClip);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if has_clip {
                 let group = state.sequence().all_clips()
@@ -734,7 +734,7 @@ impl ToolbarPanel {
                             let label = format!("Angle {angle}");
                             if ui.add(egui::Button::new(&label).shortcut_text(kb.display_for(&format!("multicam_angle_{angle}")))).clicked() {
                                 cmds.push(AppCommand::SwitchMulticamAngle { angle });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                     });
@@ -749,7 +749,7 @@ impl ToolbarPanel {
                             for sound in choices {
                                 if ui.radio(sound == current, sound.label()).clicked() {
                                     cmds.push(AppCommand::SetMulticamSound { sound, at: None });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                         });
@@ -758,12 +758,12 @@ impl ToolbarPanel {
             }
             if has_clip && ui.button("Normalize Audio\u{2026}").on_hover_text("Bring the selected clips to a loudness or peak target by their gain").clicked() {
                 cmds.push(AppCommand::OpenNormalizeDialog { clip_id: None });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.button("Add Track Point").clicked() {
                 state.tracking_mode = !state.tracking_mode;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if has_clip {
                 let has_tracks = state.sequence().all_clips()
@@ -780,7 +780,7 @@ impl ToolbarPanel {
                         for i in 0..count {
                             cmds.push(AppCommand::AnalyzeTrackPoint { clip_id: cid, point_index: i });
                         }
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
             }
             ui.separator();
@@ -792,19 +792,19 @@ impl ToolbarPanel {
                         state.show_browser_panel = true;
                     }
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add(egui::Button::new("Open in Colour Panel").shortcut_text(kb.display_for("toggle_color_panel"))).clicked() {
                 state.show_color_panel = !state.show_color_panel;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         });
     }
 
     fn timeline_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, kb: &crate::keybindings::KeyBindings) {
         ui.menu_rows(egui::RichText::new("Timeline").size(crate::theme::type_scale::CONTROL), |ui| {
-            if ui.button("Add Video Track").clicked() { cmds.push(AppCommand::AddVideoTrack); ui.close_menu(); }
-            if ui.button("Add Audio Track").clicked() { cmds.push(AppCommand::AddAudioTrack); ui.close_menu(); }
+            if ui.button("Add Video Track").clicked() { cmds.push(AppCommand::AddVideoTrack); ui.close_kind(egui::UiKind::Menu); }
+            if ui.button("Add Audio Track").clicked() { cmds.push(AppCommand::AddAudioTrack); ui.close_kind(egui::UiKind::Menu); }
             // The selected clip's track; without one there is nothing to
             // say which, so the item waits for a selection (#911).
             let delete_track = ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Delete Track"));
@@ -815,31 +815,31 @@ impl ToolbarPanel {
                         cmds.push(AppCommand::RemoveTrack { track_id: track.id });
                     }
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
-            if ui.button("Apply Brand Kit\u{2026}").on_hover_text("Take a brand kit's look, captions, intro, outro or logo into this sequence").clicked() { cmds.push(AppCommand::OpenApplyBrandKit); ui.close_menu(); }
+            if ui.button("Apply Brand Kit\u{2026}").on_hover_text("Take a brand kit's look, captions, intro, outro or logo into this sequence").clicked() { cmds.push(AppCommand::OpenApplyBrandKit); ui.close_kind(egui::UiKind::Menu); }
             ui.separator();
             // The edits from the source viewer, with nothing loaded there.
             let (has_source, no_source) = (state.source_media_id.is_some(), crate::source_edit::NO_SOURCE);
-            if ui.add_enabled(has_source, egui::Button::new("Insert Edit").shortcut_text(kb.display_for("insert_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::InsertEdit); ui.close_menu(); }
-            if ui.add_enabled(has_source, egui::Button::new("Overwrite Edit").shortcut_text(kb.display_for("overwrite_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::OverwriteEdit); ui.close_menu(); }
-            if ui.add_enabled(has_source, egui::Button::new("Fit to Fill").shortcut_text(kb.display_for("fit_to_fill_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::FitToFillEdit); ui.close_menu(); }
-            if ui.add_enabled(has_source, egui::Button::new("Place on Top").shortcut_text(kb.display_for("place_on_top_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::PlaceOnTopEdit); ui.close_menu(); }
+            if ui.add_enabled(has_source, egui::Button::new("Insert Edit").shortcut_text(kb.display_for("insert_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::InsertEdit); ui.close_kind(egui::UiKind::Menu); }
+            if ui.add_enabled(has_source, egui::Button::new("Overwrite Edit").shortcut_text(kb.display_for("overwrite_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::OverwriteEdit); ui.close_kind(egui::UiKind::Menu); }
+            if ui.add_enabled(has_source, egui::Button::new("Fit to Fill").shortcut_text(kb.display_for("fit_to_fill_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::FitToFillEdit); ui.close_kind(egui::UiKind::Menu); }
+            if ui.add_enabled(has_source, egui::Button::new("Place on Top").shortcut_text(kb.display_for("place_on_top_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::PlaceOnTopEdit); ui.close_kind(egui::UiKind::Menu); }
             if ui.add(egui::Button::new("Append to End").shortcut_text(kb.display_for("append_edit"))).on_hover_text("The clips selected in the media pool, else the source, at the end of the main track").clicked() {
                 let targets = state.append_targets();
                 if targets.is_empty() {
                     state.toast.show("Select a clip in the media pool, or load one in the source viewer, to append it");
                 }
                 cmds.extend(targets.into_iter().map(|media_id| AppCommand::ImportMediaLinked { media_id, on_new_tracks: false }));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
-            if ui.add_enabled(has_source, egui::Button::new("Replace Edit").shortcut_text(kb.display_for("replace_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::ReplaceEdit); ui.close_menu(); }
-            if ui.add_enabled(has_source, egui::Button::new("Ripple Overwrite")).on_disabled_hover_text(no_source).on_hover_text("Replace the clip under the playhead with the source's marked range; what follows moves by the change in length").clicked() { cmds.push(AppCommand::RippleOverwriteEdit); ui.close_menu(); }
-            if ui.button("Lift Edit").clicked() { cmds.push(AppCommand::LiftEdit); ui.close_menu(); }
-            if ui.button("Extract Edit").clicked() { cmds.push(AppCommand::ExtractEdit); ui.close_menu(); }
+            if ui.add_enabled(has_source, egui::Button::new("Replace Edit").shortcut_text(kb.display_for("replace_edit"))).on_disabled_hover_text(no_source).clicked() { cmds.push(AppCommand::ReplaceEdit); ui.close_kind(egui::UiKind::Menu); }
+            if ui.add_enabled(has_source, egui::Button::new("Ripple Overwrite")).on_disabled_hover_text(no_source).on_hover_text("Replace the clip under the playhead with the source's marked range; what follows moves by the change in length").clicked() { cmds.push(AppCommand::RippleOverwriteEdit); ui.close_kind(egui::UiKind::Menu); }
+            if ui.button("Lift Edit").clicked() { cmds.push(AppCommand::LiftEdit); ui.close_kind(egui::UiKind::Menu); }
+            if ui.button("Extract Edit").clicked() { cmds.push(AppCommand::ExtractEdit); ui.close_kind(egui::UiKind::Menu); }
             if ui.add(egui::Button::new("Freeze Frame").shortcut_text(kb.display_for("freeze_frame"))).clicked() {
                 cmds.push(AppCommand::InsertFreezeFrame { duration_secs: 2.0 });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             let joinable = state.through_edit_at_playhead();
             let item = ui.add_enabled(joinable.is_some(), egui::Button::new("Join Through Edit at Playhead"));
@@ -852,7 +852,7 @@ impl ToolbarPanel {
                 if let Some(clip_id) = joinable {
                     cmds.push(AppCommand::JoinThroughEdit { clip_id, next: true });
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             // Render In to Out, or the whole timeline without them, and
@@ -864,7 +864,7 @@ impl ToolbarPanel {
                     ui.label(format!("Rendering\u{2026} {done} of {total} frames"));
                     if ui.small_button("Cancel").clicked() {
                         cmds.push(AppCommand::CancelRenderRange);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 });
             } else {
@@ -873,14 +873,14 @@ impl ToolbarPanel {
                     let from = seq_in.unwrap_or(klipp_core::Timecode { value: 0, rate: state.fps.rate() });
                     let to = seq_out.unwrap_or_else(|| state.sequence_duration());
                     cmds.push(AppCommand::RenderRange { from, to });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 let span = selection_span(state);
                 if ui.add_enabled(span.is_some(), egui::Button::new("Render Selection")).on_disabled_hover_text("Select the clips to render").clicked() {
                     if let Some((from, to)) = span {
                         cmds.push(AppCommand::RenderRange { from, to });
                     }
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
             // The render cache for In to Out, or the whole timeline without
@@ -890,7 +890,7 @@ impl ToolbarPanel {
                 let from = seq_in.unwrap_or(klipp_core::Timecode { value: 0, rate: state.fps.rate() });
                 let to = seq_out.unwrap_or_else(|| state.sequence_duration());
                 cmds.push(AppCommand::ClearRenderCache { from, to });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             // Detect Scene Cuts (#616): the selected clip split at its
@@ -904,7 +904,7 @@ impl ToolbarPanel {
                         ui.label(format!("Finding scene cuts\u{2026} {pct}%"));
                         if ui.small_button("Cancel").clicked() {
                             cmds.push(AppCommand::CancelSceneDetect { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     });
                 }
@@ -922,67 +922,67 @@ impl ToolbarPanel {
                         if let Some(clip_id) = selected {
                             cmds.push(AppCommand::DetectSceneCuts { clip_id });
                         }
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             }
             ui.separator();
-            if ui.button("Add Adjustment Layer").clicked() { cmds.push(AppCommand::CreateAdjustmentLayer); ui.close_menu(); }
+            if ui.button("Add Adjustment Layer").clicked() { cmds.push(AppCommand::CreateAdjustmentLayer); ui.close_kind(egui::UiKind::Menu); }
             ui.menu_rows("Add Generator", |ui| {
                 if ui.button("Solid Colour").clicked() {
                     cmds.push(AppCommand::CreateGeneratorClip { track_index: None, at: None, data: klipp_core::GeneratorData::SolidColor { color: [128, 128, 128, 255] } });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Colour Bars").clicked() {
                     cmds.push(AppCommand::CreateGeneratorClip { track_index: None, at: None, data: klipp_core::GeneratorData::ColorBars });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Black").clicked() {
                     cmds.push(AppCommand::CreateGeneratorClip { track_index: None, at: None, data: klipp_core::GeneratorData::SolidColor { color: [0, 0, 0, 255] } });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             });
             if ui.button("Create Compound Clip").clicked() {
                 cmds.push(AppCommand::CreateCompoundClip { name: "Compound Clip".into() });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Create Multicam Clip").clicked() {
                 cmds.push(AppCommand::CreateMulticamClip);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
-            if menu_toggle(ui, "Snapping", &kb.display_for("toggle_snap"), state.snap.master).clicked() { cmds.push(AppCommand::SetSnapMaster(!state.snap.master)); ui.close_menu(); }
-            if menu_toggle(ui, "Linked Selection", "", state.linked_selection).on_hover_text("Picture and sound trim and move together").clicked() { state.linked_selection = !state.linked_selection; ui.close_menu(); }
-            if ui.add(egui::Button::new("Fit to Window").shortcut_text(kb.display_for("fit_to_window"))).clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
-            if ui.add_enabled(state.selected_clip.is_some() || !state.selected_clips.is_empty(), egui::Button::new("Zoom to Selection").shortcut_text(kb.display_for("zoom_to_selection"))).clicked() { cmds.push(AppCommand::ZoomToSelection); ui.close_menu(); }
+            if menu_toggle(ui, "Snapping", &kb.display_for("toggle_snap"), state.snap.master).clicked() { cmds.push(AppCommand::SetSnapMaster(!state.snap.master)); ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Linked Selection", "", state.linked_selection).on_hover_text("Picture and sound trim and move together").clicked() { state.linked_selection = !state.linked_selection; ui.close_kind(egui::UiKind::Menu); }
+            if ui.add(egui::Button::new("Fit to Window").shortcut_text(kb.display_for("fit_to_window"))).clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_kind(egui::UiKind::Menu); }
+            if ui.add_enabled(state.selected_clip.is_some() || !state.selected_clips.is_empty(), egui::Button::new("Zoom to Selection").shortcut_text(kb.display_for("zoom_to_selection"))).clicked() { cmds.push(AppCommand::ZoomToSelection); ui.close_kind(egui::UiKind::Menu); }
             ui.separator();
             if ui.add_enabled(!state.compound_clip_stack.is_empty(), egui::Button::new("Leave Compound Clip").shortcut_text(kb.display_for("leave_compound"))).clicked() {
                 cmds.push(AppCommand::CloseCompoundClip);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         });
     }
 
     fn mark_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, kb: &crate::keybindings::KeyBindings) {
         ui.menu_rows(egui::RichText::new("Mark").size(crate::theme::type_scale::CONTROL), |ui| {
-            if ui.add(egui::Button::new("Set In Point").shortcut_text(kb.display_for("set_in_point"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: Some(Some(state.playhead)), out_point: None }); ui.close_menu(); }
-            if ui.add(egui::Button::new("Set Out Point").shortcut_text(kb.display_for("set_out_point"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: None, out_point: Some(Some(state.playhead)) }); ui.close_menu(); }
-            if ui.add(egui::Button::new("Clear In Point").shortcut_text(kb.display_for("clear_in_point"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: Some(None), out_point: None }); ui.close_menu(); }
-            if ui.add(egui::Button::new("Clear Out Point").shortcut_text(kb.display_for("clear_out_point"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: None, out_point: Some(None) }); ui.close_menu(); }
-            if ui.add(egui::Button::new("Clear In and Out").shortcut_text(kb.display_for("clear_in_out"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: Some(None), out_point: Some(None) }); ui.close_menu(); }
+            if ui.add(egui::Button::new("Set In Point").shortcut_text(kb.display_for("set_in_point"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: Some(Some(state.playhead)), out_point: None }); ui.close_kind(egui::UiKind::Menu); }
+            if ui.add(egui::Button::new("Set Out Point").shortcut_text(kb.display_for("set_out_point"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: None, out_point: Some(Some(state.playhead)) }); ui.close_kind(egui::UiKind::Menu); }
+            if ui.add(egui::Button::new("Clear In Point").shortcut_text(kb.display_for("clear_in_point"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: Some(None), out_point: None }); ui.close_kind(egui::UiKind::Menu); }
+            if ui.add(egui::Button::new("Clear Out Point").shortcut_text(kb.display_for("clear_out_point"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: None, out_point: Some(None) }); ui.close_kind(egui::UiKind::Menu); }
+            if ui.add(egui::Button::new("Clear In and Out").shortcut_text(kb.display_for("clear_in_out"))).clicked() { cmds.push(AppCommand::MarkRange { in_point: Some(None), out_point: Some(None) }); ui.close_kind(egui::UiKind::Menu); }
             // The selected clip's span, else the one under the playhead
             // (#3127): it was only on X, so a walkthrough looking for a
             // way to mark a clip's range in this menu found none.
-            if ui.add(egui::Button::new("Set Range to Clip").shortcut_text(kb.display_for("set_range_to_clip"))).on_hover_text("Mark the selected clip's start and end as the In and Out points (the clip under the playhead when none is selected)").clicked() { cmds.push(AppCommand::SetRangeToClip); ui.close_menu(); }
+            if ui.add(egui::Button::new("Set Range to Clip").shortcut_text(kb.display_for("set_range_to_clip"))).on_hover_text("Mark the selected clip's start and end as the In and Out points (the clip under the playhead when none is selected)").clicked() { cmds.push(AppCommand::SetRangeToClip); ui.close_kind(egui::UiKind::Menu); }
             ui.separator();
-            if ui.add(egui::Button::new("Go to In Point")).clicked() { if let Some(inp) = state.sequence().in_point { cmds.push(AppCommand::SeekTo(inp)); } ui.close_menu(); }
-            if ui.add(egui::Button::new("Go to Out Point")).clicked() { if let Some(outp) = state.sequence().out_point { cmds.push(AppCommand::SeekTo(outp)); } ui.close_menu(); }
-            if ui.add(egui::Button::new("Go to Timecode\u{2026}").shortcut_text(kb.display_for("go_to_timecode"))).on_hover_text("Type a time to go to in the program viewer's timecode: a timecode, frames, seconds, or +/- that far from the playhead").clicked() { cmds.push(AppCommand::GoToTimecode); ui.close_menu(); }
-            if ui.add(egui::Button::new("Play In to Out").shortcut_text(kb.display_for("play_in_to_out"))).clicked() { cmds.push(AppCommand::PlayInToOut); ui.close_menu(); }
+            if ui.add(egui::Button::new("Go to In Point")).clicked() { if let Some(inp) = state.sequence().in_point { cmds.push(AppCommand::SeekTo(inp)); } ui.close_kind(egui::UiKind::Menu); }
+            if ui.add(egui::Button::new("Go to Out Point")).clicked() { if let Some(outp) = state.sequence().out_point { cmds.push(AppCommand::SeekTo(outp)); } ui.close_kind(egui::UiKind::Menu); }
+            if ui.add(egui::Button::new("Go to Timecode\u{2026}").shortcut_text(kb.display_for("go_to_timecode"))).on_hover_text("Type a time to go to in the program viewer's timecode: a timecode, frames, seconds, or +/- that far from the playhead").clicked() { cmds.push(AppCommand::GoToTimecode); ui.close_kind(egui::UiKind::Menu); }
+            if ui.add(egui::Button::new("Play In to Out").shortcut_text(kb.display_for("play_in_to_out"))).clicked() { cmds.push(AppCommand::PlayInToOut); ui.close_kind(egui::UiKind::Menu); }
             ui.separator();
             if ui.add(egui::Button::new("Add Marker").shortcut_text(kb.display_for("add_marker"))).clicked() {
                 cmds.push(AppCommand::AddMarker { position: state.playhead, label: String::new(), color: klipp_core::MarkerColor::Blue });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             // No shortcut of its own: Shift+M, shown here before, adds a
             // clip marker (#909).
@@ -996,7 +996,7 @@ impl ToolbarPanel {
                     .min_by(|a, b| (a.position.to_secs_f64() - at).abs().total_cmp(&(b.position.to_secs_f64() - at).abs()))
                     .map(|m| m.id);
                 state.show_markers_panel = true;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             let (at_playhead, any) = marker_deletes(state.sequence(), state.playhead);
             if ui.add_enabled(at_playhead, egui::Button::new("Delete Marker")).clicked() {
@@ -1005,12 +1005,12 @@ impl ToolbarPanel {
                 if let Some(marker) = state.sequence().markers.iter().find(|m| m.position == ph) {
                     cmds.push(AppCommand::RemoveMarker { marker_id: marker.id });
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(any, egui::Button::new("Delete All Markers")).clicked() {
                 let ids: Vec<_> = state.sequence().markers.iter().map(|m| m.id).collect();
                 for id in ids { cmds.push(AppCommand::RemoveMarker { marker_id: id }); }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             let source_media = state.source_media_id.and_then(|id| state.media_pool.get(&id));
@@ -1019,7 +1019,7 @@ impl ToolbarPanel {
                 if let Some(id) = state.source_media_id {
                     cmds.push(AppCommand::AddMediaMarker { media_id: id, marker: klipp_core::MediaMarker::note(state.source_playhead.to_secs_f64()) });
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             for (label, key, kind) in [("Favourite Source Range", "Shift+F", klipp_core::MediaMarkerKind::Favourite), ("Reject Source Range", "Shift+R", klipp_core::MediaMarkerKind::Reject)] {
                 if ui.add_enabled(in_source, egui::Button::new(label).shortcut_text(key)).on_hover_text("The stretch between the source in and out points, or the whole clip when none are set.").clicked() {
@@ -1030,7 +1030,7 @@ impl ToolbarPanel {
                             cmds.push(AppCommand::AddMediaMarker { media_id: id, marker: klipp_core::MediaMarker::range(kind, from, to) });
                         }
                     }
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
             ui.separator();
@@ -1038,13 +1038,13 @@ impl ToolbarPanel {
                 if let Some(next) = crate::navigation::marker_from(state.sequence(), state.playhead, true) {
                     cmds.push(AppCommand::SeekTo(next));
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add(egui::Button::new("Previous Marker").shortcut_text(kb.display_for("prev_marker"))).clicked() {
                 if let Some(prev) = crate::navigation::marker_from(state.sequence(), state.playhead, false) {
                     cmds.push(AppCommand::SeekTo(prev));
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         });
     }
@@ -1059,7 +1059,7 @@ impl ToolbarPanel {
                 let v = state.view_for_mut(focused);
                 let current = if v.zoom <= 0.0 { 1.0 } else { v.zoom };
                 v.zoom = (current * 1.25).clamp(0.05, 16.0);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add(egui::Button::new("Zoom Out").shortcut_text(kb.display_for("zoom_out"))).clicked() {
                 let v = state.view_for_mut(focused);
@@ -1071,7 +1071,7 @@ impl ToolbarPanel {
                 } else {
                     v.zoom = next;
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             // The whole interface, not the picture: on a 4K screen the
             // default could be too small to read, and the setting was
@@ -1085,7 +1085,7 @@ impl ToolbarPanel {
                 for (label, pct) in crate::welcome::INTERFACE_SIZES {
                     if menu_toggle(ui, label, "", state.ui_scale_percent == pct).clicked() {
                         state.ui_scale_request = Some(pct);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });
@@ -1096,7 +1096,7 @@ impl ToolbarPanel {
                         let v = state.view_for_mut(focused);
                         v.zoom = zoom;
                         if zoom == 0.0 { v.pan = egui::Vec2::ZERO; }
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });
@@ -1105,16 +1105,16 @@ impl ToolbarPanel {
             // always have, so it needs somewhere to be clicked.
             if menu_toggle(ui, "Fullscreen Viewer", &kb.display_for("toggle_fullscreen"), state.fullscreen_viewer).clicked() {
                 cmds.push(AppCommand::ToggleFullscreen);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if menu_toggle(ui, "Zebras", &kb.display_for("toggle_zebra"), state.viewer_overlays.zebras).clicked() {
                 state.viewer_overlays.zebras = !state.viewer_overlays.zebras;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if menu_toggle(ui, "False Colour", &kb.display_for("toggle_false_color"), state.viewer_overlays.false_color).clicked() {
                 state.viewer_overlays.false_color = !state.viewer_overlays.false_color;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             // The palette quick-switcher, a row of its own under the
             // toggle rather than a button beside it (#2632).
@@ -1127,27 +1127,27 @@ impl ToolbarPanel {
                     if menu_toggle(ui, &preset.name, "", is_current).clicked() {
                         state.pending_false_color_palette = Some(preset.clone());
                         state.viewer_overlays.false_color = true;
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 ui.separator();
                 if ui.button("Edit palette\u{2026}").clicked() {
                     state.show_preferences = true;
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             });
             if menu_toggle(ui, "Focus Peaking", "", state.viewer_overlays.focus_peaking).clicked() {
                 state.viewer_overlays.focus_peaking = !state.viewer_overlays.focus_peaking;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if menu_toggle(ui, "Safe Areas", &kb.display_for("toggle_safe_areas"), state.viewer_overlays.safe_areas).clicked() {
                 state.viewer_overlays.safe_areas = !state.viewer_overlays.safe_areas;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if menu_toggle(ui, "Grid Overlay", &kb.display_for("toggle_grid_overlay"), state.viewer_overlays.grid).clicked() {
                 state.viewer_overlays.grid = !state.viewer_overlays.grid;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.add_enabled_ui(false, |ui| {
                 menu_toggle(ui, "Checkerboard", "", state.viewer_overlays.checkerboard);
@@ -1168,44 +1168,44 @@ impl ToolbarPanel {
                         if !state.scopes_shown() {
                             state.toggle_scopes();
                         }
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 ui.separator();
                 if ui.button("Hide Scopes").clicked() {
                     state.show_scopes = false;
                     state.scope_window.open = false;
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
-                if menu_toggle(ui, "Overlay on Viewer", "", state.scope_overlay_mode).clicked() { state.scope_overlay_mode = !state.scope_overlay_mode; ui.close_menu(); }
+                if menu_toggle(ui, "Overlay on Viewer", "", state.scope_overlay_mode).clicked() { state.scope_overlay_mode = !state.scope_overlay_mode; ui.close_kind(egui::UiKind::Menu); }
             });
             if menu_toggle(ui, "Colour Panel", &kb.display_for("toggle_color_panel"), state.show_color_panel).clicked() {
                 state.show_color_panel = !state.show_color_panel;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.add(egui::Button::new("Extract Frame to File\u{2026}").shortcut_text(kb.display_for("extract_frame_to_file"))).clicked() {
                 cmds.push(AppCommand::FrameGrab);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add(egui::Button::new("Extract Frame to Bin").shortcut_text(kb.display_for("extract_frame_to_bin"))).clicked() {
                 cmds.push(AppCommand::ExtractFrameToBin);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if menu_toggle(ui, "Skimming", &kb.display_for("toggle_skimming"), state.skimming_enabled).clicked() {
                 state.skimming_enabled = !state.skimming_enabled;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if menu_toggle(ui, "Dual Viewers", "", state.viewers_side_by_side()).on_hover_text("Remembered per workspace").clicked() {
                 state.toggle_viewer_layout();
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if menu_toggle(ui, "Performance Overlay", "", state.show_perf_overlay).clicked() {
                 state.show_perf_overlay = !state.show_perf_overlay;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             let rec_label = if state.perf_recording_active {
                 "Stop Performance Recording"
@@ -1214,7 +1214,7 @@ impl ToolbarPanel {
             };
             if ui.add(egui::Button::new(rec_label).shortcut_text(kb.display_for("toggle_perf_recording"))).clicked() {
                 state.pending_perf_recording_toggle = true;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if let Some(ref p) = state.perf_last_session_path {
                 let short = p.file_name()
@@ -1225,7 +1225,7 @@ impl ToolbarPanel {
                     // revealing in the file manager would need an
                     // extra dependency we don't currently ship.
                     state.toast.show(format!("Perf session: {}", p.display()));
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
         });
@@ -1243,7 +1243,7 @@ impl ToolbarPanel {
             // you in Export — and the other two disagree with the tabs
             // for no reason a user can see.
             for (ws, label) in &[(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Export, "Export")] {
-                if menu_toggle(ui, label, "", state.active_workspace == *ws).clicked() { state.active_workspace = *ws; ui.close_menu(); }
+                if menu_toggle(ui, label, "", state.active_workspace == *ws).clicked() { state.active_workspace = *ws; ui.close_kind(egui::UiKind::Menu); }
             }
             ui.separator();
 
@@ -1254,7 +1254,7 @@ impl ToolbarPanel {
             for (i, layout) in crate::state::builtin_workspace_layouts().iter().enumerate() {
                 if ui.button(layout.display_name()).clicked() {
                     cmds.push(AppCommand::ApplyBuiltinWorkspaceLayout { index: i });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
 
@@ -1265,7 +1265,7 @@ impl ToolbarPanel {
                 for ws in state.custom_workspaces.clone().iter() {
                     if ui.button(&ws.name).clicked() {
                         cmds.push(AppCommand::ApplyCustomWorkspaceLayout { name: ws.name.clone() });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             }
@@ -1274,32 +1274,32 @@ impl ToolbarPanel {
             if ui.button("Save Workspace...").clicked() {
                 state.save_workspace_name = "My Workspace".into();
                 state.show_save_workspace_dialog = true;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Manage Workspaces\u{2026}").clicked() {
                 state.show_workspace_manager = true;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             // Panels
             menu_heading(ui, "PANELS");
-            if menu_toggle(ui, "Nodes", "", state.graph_dock_open).clicked() { cmds.push(AppCommand::ToggleGraphDock); ui.close_menu(); }
-            if menu_toggle(ui, "Inspector", &kb.display_for("toggle_inspector_panel"), state.show_inspector_panel).clicked() { cmds.push(AppCommand::ToggleInspectorPanel); ui.close_menu(); }
-            if menu_toggle(ui, "Browser", &kb.display_for("toggle_browser_panel"), state.show_browser_panel).clicked() { cmds.push(AppCommand::ToggleBrowserPanel); ui.close_menu(); }
-            if menu_toggle(ui, "Curve Editor", &kb.display_for("toggle_keyframe_editor"), state.show_curve_editor).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }
-            if menu_toggle(ui, "Audio Mixer", &kb.display_for("toggle_audio_mixer"), state.show_audio_mixer).clicked() { state.show_audio_mixer = !state.show_audio_mixer; ui.close_menu(); }
-            if menu_toggle(ui, "History", "", state.show_history_panel).clicked() { state.show_history_panel = !state.show_history_panel; ui.close_menu(); }
-            if menu_toggle(ui, "Markers", "", state.show_markers_panel).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_menu(); }
-            if menu_toggle(ui, "Edit List", "", state.show_edit_list).on_hover_text("Every clip, transition and marker in a table: sort it, filter it by name, click a row to go there.").clicked() { state.show_edit_list = !state.show_edit_list; ui.close_menu(); }
-            if menu_toggle(ui, "Subtitle Editor", &kb.display_for("toggle_subtitle_editor"), state.show_subtitle_editor).clicked() { state.show_subtitle_editor = !state.show_subtitle_editor; ui.close_menu(); }
-            if menu_toggle(ui, "Transcript", "", state.show_transcript_panel).clicked() { state.show_transcript_panel = !state.show_transcript_panel; ui.close_menu(); }
-            if menu_toggle(ui, "Project Notes", &kb.display_for("toggle_project_notes"), state.show_project_notes).clicked() { state.show_project_notes = !state.show_project_notes; ui.close_menu(); }
-            if menu_toggle(ui, "Edit Plan", "", state.show_edit_plan).on_hover_text("The paper edit an assistant proposed: read it, approve it, build it.").clicked() { state.show_edit_plan = !state.show_edit_plan; ui.close_menu(); }
-            if menu_toggle(ui, "Colour Check", "", state.show_colour_check).on_hover_text("The frame on screen read the way a colourist reads it: skin against its band, neutrals, exposure, noise, banding, gamut — each fault named with the knob to turn.").clicked() { state.show_colour_check = !state.show_colour_check; ui.close_menu(); }
-            if menu_toggle(ui, "Delivery Check", "", state.show_delivery_check).on_hover_text("The check before a piece goes out: the cut against the craft's rules and the brief, colour and loudness on request. Accept a finding on purpose with a reason, or mark it to fix.").clicked() { state.show_delivery_check = !state.show_delivery_check; ui.close_menu(); }
-            if menu_toggle(ui, "Sound Over Time", "", state.show_sound_over_time).on_hover_text("A whole file's sound as frequency against time: where a hum starts, when a hiss creeps in. The scrolling analyser shows what is playing; this shows the file.").clicked() { state.show_sound_over_time = !state.show_sound_over_time; ui.close_menu(); }
-            if menu_toggle(ui, "Narrate", "", state.show_narrate).on_hover_text("A scratch voice from text, made on this machine: choose a voice, a speed and the pauses, hear it, and place it on the Voice track.").clicked() { state.show_narrate = !state.show_narrate; ui.close_menu(); }
-            if menu_toggle(ui, "AI Tools", &kb.display_for("toggle_ai_tools_panel"), state.ai_tools_state.panel_visible).clicked() { state.ai_tools_state.panel_visible = !state.ai_tools_state.panel_visible; ui.close_menu(); }
+            if menu_toggle(ui, "Nodes", "", state.graph_dock_open).clicked() { cmds.push(AppCommand::ToggleGraphDock); ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Inspector", &kb.display_for("toggle_inspector_panel"), state.show_inspector_panel).clicked() { cmds.push(AppCommand::ToggleInspectorPanel); ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Browser", &kb.display_for("toggle_browser_panel"), state.show_browser_panel).clicked() { cmds.push(AppCommand::ToggleBrowserPanel); ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Curve Editor", &kb.display_for("toggle_keyframe_editor"), state.show_curve_editor).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Audio Mixer", &kb.display_for("toggle_audio_mixer"), state.show_audio_mixer).clicked() { state.show_audio_mixer = !state.show_audio_mixer; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "History", "", state.show_history_panel).clicked() { state.show_history_panel = !state.show_history_panel; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Markers", "", state.show_markers_panel).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Edit List", "", state.show_edit_list).on_hover_text("Every clip, transition and marker in a table: sort it, filter it by name, click a row to go there.").clicked() { state.show_edit_list = !state.show_edit_list; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Subtitle Editor", &kb.display_for("toggle_subtitle_editor"), state.show_subtitle_editor).clicked() { state.show_subtitle_editor = !state.show_subtitle_editor; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Transcript", "", state.show_transcript_panel).clicked() { state.show_transcript_panel = !state.show_transcript_panel; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Project Notes", &kb.display_for("toggle_project_notes"), state.show_project_notes).clicked() { state.show_project_notes = !state.show_project_notes; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Edit Plan", "", state.show_edit_plan).on_hover_text("The paper edit an assistant proposed: read it, approve it, build it.").clicked() { state.show_edit_plan = !state.show_edit_plan; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Colour Check", "", state.show_colour_check).on_hover_text("The frame on screen read the way a colourist reads it: skin against its band, neutrals, exposure, noise, banding, gamut — each fault named with the knob to turn.").clicked() { state.show_colour_check = !state.show_colour_check; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Delivery Check", "", state.show_delivery_check).on_hover_text("The check before a piece goes out: the cut against the craft's rules and the brief, colour and loudness on request. Accept a finding on purpose with a reason, or mark it to fix.").clicked() { state.show_delivery_check = !state.show_delivery_check; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Sound Over Time", "", state.show_sound_over_time).on_hover_text("A whole file's sound as frequency against time: where a hum starts, when a hiss creeps in. The scrolling analyser shows what is playing; this shows the file.").clicked() { state.show_sound_over_time = !state.show_sound_over_time; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "Narrate", "", state.show_narrate).on_hover_text("A scratch voice from text, made on this machine: choose a voice, a speed and the pauses, hear it, and place it on the Voice track.").clicked() { state.show_narrate = !state.show_narrate; ui.close_kind(egui::UiKind::Menu); }
+            if menu_toggle(ui, "AI Tools", &kb.display_for("toggle_ai_tools_panel"), state.ai_tools_state.panel_visible).clicked() { state.ai_tools_state.panel_visible = !state.ai_tools_state.panel_visible; ui.close_kind(egui::UiKind::Menu); }
             ui.separator();
             // Modal dialogs — distinct from panels because they
             // overlay the editor instead of docking.
@@ -1309,7 +1309,7 @@ impl ToolbarPanel {
             // modal dialog and a dockable panel got worse as more were
             // added. This note used to send the reader to a top-level
             // "Plugins" menu, which has never existed.
-            if ui.add(egui::Button::new("Command Palette").shortcut_text(kb.display_for("command_palette"))).clicked() { state.show_command_palette = true; ui.close_menu(); }
+            if ui.add(egui::Button::new("Command Palette").shortcut_text(kb.display_for("command_palette"))).clicked() { state.show_command_palette = true; ui.close_kind(egui::UiKind::Menu); }
         });
     }
 
@@ -1330,29 +1330,29 @@ impl ToolbarPanel {
             if ui.button("Audio Plugins\u{2026}").clicked() {
                 state.show_audio_plugins_dialog = true;
                 state.audio_plugins_dialog.last_scanned_secs = None;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("AI Models\u{2026}").clicked() {
                 state.show_ai_models_dialog = true;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.button("Cache Manager\u{2026}").clicked() {
                 cmds.push(AppCommand::OpenCacheManager);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Render Queue").clicked() {
                 cmds.push(AppCommand::ShowRenderQueue);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.button("Project Doctor\u{2026}").clicked() {
                 cmds.push(AppCommand::OpenProjectDoctor);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("System Probe\u{2026}").clicked() {
                 cmds.push(AppCommand::OpenSystemProbe);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         });
     }
@@ -1368,33 +1368,33 @@ impl ToolbarPanel {
                 } else {
                     let _ = crate::ui_util::open_external("https://github.com/davidkodar/klipp");
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Welcome\u{2026}").on_hover_text("The keyboard layout, a short tour, and editing with an AI assistant").clicked() {
                 state.show_welcome = true;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Set Up AI Assistants\u{2026}").on_hover_text("Connect an AI assistant on this computer to Klipp").clicked() {
                 state.show_assistant_setup = true;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Keyboard Shortcuts").clicked() {
                 // Open preferences on the Keyboard tab
                 state.show_preferences = true;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.button("Report a Bug...").clicked() {
                 // Open GitHub issues page
                 let _ = crate::ui_util::open_external("https://github.com/davidkodar/klipp/issues");
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Release Notes").clicked() {
                 let _ = crate::ui_util::open_external("https://github.com/davidkodar/klipp/releases");
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
-            if ui.button("About Klipp").clicked() { state.show_about_dialog = true; ui.close_menu(); }
+            if ui.button("About Klipp").clicked() { state.show_about_dialog = true; ui.close_kind(egui::UiKind::Menu); }
         });
     }
 }
@@ -1452,7 +1452,7 @@ fn draw_roles_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
 
 pub(crate) fn draw_scopes_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_rect(btn);
-    painter.rect_stroke(ir, 2.0, egui::Stroke::new(1.2_f32, c));
+    painter.rect_stroke(ir, 2.0, egui::Stroke::new(1.2_f32, c), egui::StrokeKind::Outside);
     let pts = vec![
         egui::pos2(ir.min.x + 2.0, ir.center().y + 3.0),
         egui::pos2(ir.min.x + 5.0, ir.center().y - 4.0),
@@ -1524,7 +1524,7 @@ fn menu_titles_width(ui: &egui::Ui) -> f32 {
     let font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
     let pad = ui.spacing().button_padding.x * 2.0;
     let gap = ui.spacing().item_spacing.x;
-    ui.fonts(|f| MENU_TITLES.iter().map(|t| f.layout_no_wrap((*t).to_owned(), font.clone(), egui::Color32::WHITE).size().x + pad + gap).sum())
+    ui.fonts_mut(|f| MENU_TITLES.iter().map(|t| f.layout_no_wrap((*t).to_owned(), font.clone(), egui::Color32::WHITE).size().x + pad + gap).sum())
 }
 
 /// The narrowest drop-down the switcher shrinks to.
@@ -1566,7 +1566,7 @@ mod graph_menu_tests {
                     time += 0.1;
                     let mut cmds = Vec::new();
                     let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
-                        egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
+                        egui::Panel::top("toolbar").exact_size(MENU_BAR_HEIGHT).show(ctx, |ui| {
                             cmds = panel.show(ui, state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
                         });
                     });
@@ -1722,7 +1722,7 @@ pub(crate) mod narrow_bar_tests {
         for i in 0..3 {
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0))), time: Some(f64::from(i) * 0.1), ..Default::default() };
             let output = ctx.run(input, |ctx| {
-                egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
+                egui::Panel::top("toolbar").exact_size(MENU_BAR_HEIGHT).show(ctx, |ui| {
                     panel.show(ui, &mut state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
                 });
             });
@@ -1777,7 +1777,7 @@ pub(crate) mod narrow_bar_tests {
         let mut frame = |state: &mut AppState, events| {
             time += 0.1;
             let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
-                egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
+                egui::Panel::top("toolbar").exact_size(MENU_BAR_HEIGHT).show(ctx, |ui| {
                     panel.show(ui, state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
                 });
             });
@@ -1819,7 +1819,7 @@ pub(crate) mod narrow_bar_tests {
         let mut frame = |state: &mut AppState, events| {
             time += 0.1;
             ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
-                egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
+                egui::Panel::top("toolbar").exact_size(MENU_BAR_HEIGHT).show(ctx, |ui| {
                     panel.show(ui, state, &[], &theme, &crate::keybindings::KeyBindings::default());
                 });
             })
@@ -1892,7 +1892,7 @@ mod menu_row_tests {
         let mut frame = |state: &mut AppState, events| {
             time += 0.1;
             let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
-                egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
+                egui::Panel::top("toolbar").exact_size(MENU_BAR_HEIGHT).show(ctx, |ui| {
                     panel.show(ui, state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
                 });
             });
@@ -1933,7 +1933,7 @@ mod assistant_setup_menu_tests {
         let mut frame = |state: &mut AppState, events| {
             time += 0.1;
             let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
-                egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
+                egui::Panel::top("toolbar").exact_size(MENU_BAR_HEIGHT).show(ctx, |ui| {
                     panel.show(ui, state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
                 });
             });
@@ -2017,7 +2017,7 @@ mod folded_menu_tests {
         let mut frame = |events| {
             time += 0.1;
             let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 600.0))), time: Some(time), events, ..Default::default() }, |ctx| {
-                egui::TopBottomPanel::top("toolbar").exact_height(MENU_BAR_HEIGHT).show(ctx, |ui| {
+                egui::Panel::top("toolbar").exact_size(MENU_BAR_HEIGHT).show(ctx, |ui| {
                     panel.show(ui, &mut state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
                 });
             });
@@ -2031,6 +2031,11 @@ mod folded_menu_tests {
         for _ in 0..3 { texts = frame(Vec::new()); }
         for click in clicks {
             let at = texts.iter().rev().find(|(s, _)| s == click).unwrap_or_else(|| panic!("{click} at {width}: {texts:?}")).1.center();
+            // The pointer reaches the spot a frame before it presses, as a hand
+            // does. Pressed in the frame it arrived, a submenu it opened by
+            // hover was still at egui 0.34's first, size-unknown place, and
+            // egui read the click as outside the menu and closed it.
+            frame(vec![egui::Event::PointerMoved(at)]);
             frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
             frame(vec![button(at, false)]);
             for _ in 0..3 { texts = frame(Vec::new()); }

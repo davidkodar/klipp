@@ -3,6 +3,8 @@
 //! what it does, its full controls folded under Details. The range's
 //! start, end and offset key through the title layer keyframe commands.
 
+use crate::colour32::Colour029;
+use crate::widgets::colour_field::ColourField;
 use klipp_core::title_motion::{Animator, Easing, RangeSelector, SelectOrder, SelectShape, SelectUnit};
 use klipp_core::{AppCommand, ClipId, Keyframe};
 use klipp_timeline::{LayerFx, TitleObjectId};
@@ -260,9 +262,9 @@ fn details(ui: &mut egui::Ui, theme: &KlippTheme, i: usize, a: &mut Animator, ke
             changed = true;
         }
         if let Some(c) = &mut p.colour {
-            let mut col = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            if ui.color_edit_button_srgba(&mut col).changed() {
-                *c = col.to_srgba_unmultiplied();
+            let mut col = crate::colour32::rgba(c[0], c[1], c[2], c[3]);
+            if ui.colour_srgba(&mut col).changed() {
+                *c = col.unmul();
                 changed = true;
             }
         }

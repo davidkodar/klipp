@@ -358,18 +358,18 @@ impl DeliveryCheckPanel {
                     crate::widgets::menu::menu_body(ui, |ui| {
                         if ui.button("Accept on purpose…").clicked() {
                             self.draft = Some(Draft { id: id.to_string(), decision: "accepted", text: String::new() });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.button("To fix…").clicked() {
                             self.draft = Some(Draft { id: id.to_string(), decision: "to_fix", text: String::new() });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if reviewed && ui.button("Clear the decision").clicked() {
                             if let Ok(request) = review_request(id, "clear", "") {
                                 self.running_review = true;
                                 *action = DeliveryAction::Run { request, check: false };
                             }
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     });
                 });

@@ -637,7 +637,7 @@ impl NodeInspectorPanel {
                         // so the rail keeps its length.
                         let key_w = if keys.state(&param).has_any_keyframes { 36.0 } else { 16.0 };
                         let strip_at = egui::Rect::from_min_size(egui::pos2(title_rect.right() + 2.0, title_rect.center().y - 9.0), egui::vec2(key_w, 18.0));
-                        let strip = col_ui.allocate_new_ui(egui::UiBuilder::new().max_rect(strip_at), |ui| crate::widgets::scrubby_param::key_strip(ui, keys.state(&param))).inner;
+                        let strip = col_ui.scope_builder(egui::UiBuilder::new().max_rect(strip_at), |ui| crate::widgets::scrubby_param::key_strip(ui, keys.state(&param))).inner;
                         keys.strip_commands(cmds, clip_id, node_id, &param, &[shown], strip);
                         label_y = track_y + slider_h + 4.0;
                     }
@@ -688,7 +688,7 @@ impl NodeInspectorPanel {
                         ..Default::default()
                     });
                     masks_changed = true;
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Rectangle").clicked() {
                     masks.masks.push(klipp_core::Mask {
@@ -699,7 +699,7 @@ impl NodeInspectorPanel {
                         ..Default::default()
                     });
                     masks_changed = true;
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Linear Gradient").clicked() {
                     masks.masks.push(klipp_core::Mask {
@@ -710,14 +710,14 @@ impl NodeInspectorPanel {
                         ..Default::default()
                     });
                     masks_changed = true;
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Radial Gradient").clicked() {
                     masks.masks.push(klipp_core::Mask::new(klipp_core::MaskShape::RadialGradient {
                         center_x: 0.5, center_y: 0.5, inner: 0.1, outer: 0.4,
                     }));
                     masks_changed = true;
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Bezier").clicked() {
                     masks.masks.push(klipp_core::Mask {
@@ -728,7 +728,7 @@ impl NodeInspectorPanel {
                         ..Default::default()
                     });
                     masks_changed = true;
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             });
             if !masks.masks.is_empty() {
@@ -807,20 +807,20 @@ impl NodeInspectorPanel {
                     header.context_menu_rows(|ui| crate::widgets::menu::menu_body(ui, |ui| {
                         if crate::widgets::menu::menu_item(ui, "Duplicate", "").clicked() {
                             duplicate_this = true;
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if mask_idx > 0 && crate::widgets::menu::menu_item(ui, "Move Up", "").clicked() {
                             move_to = Some(mask_idx - 1);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if mask_idx + 1 < mask_count && crate::widgets::menu::menu_item(ui, "Move Down", "").clicked() {
                             move_to = Some(mask_idx + 1);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         // Its keys on the clip's key lane (#1947).
                         if !mask.keyed_tracks().is_empty() && crate::widgets::menu::menu_item(ui, "Show Keys on Timeline", "").clicked() {
                             cmds.push(AppCommand::ShowMaskKeysOnTimeline { clip_id, node_id, mask_index: mask_idx });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1063,7 +1063,7 @@ impl NodeInspectorPanel {
                                     clip_id, node_id, mask_index: mask_idx,
                                     param: info.name.to_string(),
                                 });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         });
                     }
@@ -1629,7 +1629,7 @@ impl NodeInspectorPanel {
                                     center_x: 0.5, center_y: 0.5, radius: 0.2,
                                 },
                             });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.button("Rectangle").clicked() {
                             cmds.push(AppCommand::AddMaskShape {
@@ -1639,7 +1639,7 @@ impl NodeInspectorPanel {
                                     width: 0.4, height: 0.3, rotation: 0.0,
                                 },
                             });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.button("Linear Gradient").clicked() {
                             cmds.push(AppCommand::AddMaskShape {
@@ -1649,7 +1649,7 @@ impl NodeInspectorPanel {
                                     end_x: 0.8, end_y: 0.5,
                                 },
                             });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.button("Radial Gradient").clicked() {
                             cmds.push(AppCommand::AddMaskShape {
@@ -1658,7 +1658,7 @@ impl NodeInspectorPanel {
                                     center_x: 0.5, center_y: 0.5, inner: 0.1, outer: 0.4,
                                 },
                             });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.button("Bezier").clicked() {
                             cmds.push(AppCommand::AddMaskShape {
@@ -1668,7 +1668,7 @@ impl NodeInspectorPanel {
                                         (0.5, 0.65), (0.35, 0.5),
                                     ]),
                             });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     });
                     ui.label(egui::RichText::new(
@@ -1719,8 +1719,8 @@ impl NodeInspectorPanel {
                 ui, "node_idt_log_format", clip_id, current, detected, cmds,
             );
         });
-        egui::Frame::none()
-            .inner_margin(egui::Margin { left: 12.0, right: 12.0, top: 4.0, bottom: 0.0 })
+        egui::Frame::NONE
+            .inner_margin(egui::Margin { left: 12, right: 12, top: 4, bottom: 0 })
             .show(ui, |ui| {
                 ui.label(egui::RichText::new("The encoding the file is converted from. Applies to every clip of this file.")
                     .size(10.0).color(theme.text_dim));
@@ -1774,7 +1774,7 @@ impl NodeInspectorPanel {
                 // a pixel moves a puck as far in either view.
                 let mut rect = ui.available_rect_before_wrap();
                 rect.min.x -= ui.spacing().indent;
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                     let avail_w = ui.available_width();
                     let columns = if avail_w >= 252.0 { 2 } else { 1 };
                     let cell_w = ((avail_w - 12.0 * (columns - 1) as f32) / columns as f32).min(194.0);
@@ -2091,7 +2091,7 @@ impl NodeInspectorPanel {
                 let text_color = if active { theme.text_on_accent } else { color };
                 ui.painter().rect_filled(rect, 4.0, bg);
                 ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32,
-                    theme.overlay(30)));
+                    theme.overlay(30)), egui::StrokeKind::Outside);
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER,
                     label, egui::FontId::proportional(11.0), text_color);
                 if resp.clicked() { self.active_curve_channel = ch; }
@@ -2300,7 +2300,7 @@ impl NodeInspectorPanel {
                         );
                         if let Some(k) = keys {
                             let at = ui.allocate_exact_size(egui::vec2(key_w, 14.0), egui::Sense::hover()).0;
-                            strip = Some(ui.allocate_new_ui(egui::UiBuilder::new().max_rect(at.expand2(egui::vec2(0.0, 2.0))), |ui| crate::widgets::scrubby_param::key_strip(ui, k.state(&[param.as_str()]))).inner);
+                            strip = Some(ui.scope_builder(egui::UiBuilder::new().max_rect(at.expand2(egui::vec2(0.0, 2.0))), |ui| crate::widgets::scrubby_param::key_strip(ui, k.state(&[param.as_str()]))).inner);
                         }
                         r
                     }).inner;
@@ -2478,7 +2478,7 @@ impl NodeInspectorPanel {
         let at = ui.cursor().min;
         let cell = egui::Rect::from_min_size(egui::pos2(at.x.ceil(), at.y.ceil()), egui::vec2(width - 2.0, ui.available_height().max(1.0)));
         let resp = ui
-            .allocate_new_ui(egui::UiBuilder::new().max_rect(cell).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+            .scope_builder(egui::UiBuilder::new().max_rect(cell).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
                 color_wheel::color_wheel_spanned(ui, &mut self.hdr_zone_wheel, theme, "Colour", &mut offset, &mut exposure, wheel_d, Some(width - 2.0), keys.map(|k| k.state(&parts)), 4.0)
             })
             .inner;
@@ -3955,7 +3955,7 @@ impl NodeInspectorPanel {
                             for preset in presets.iter() {
                                 if ui.button(&preset.name).clicked() {
                                     to_delete = Some(preset.name.clone());
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                             if let Some(name) = to_delete {
@@ -4187,7 +4187,7 @@ pub(crate) fn lut_picker(ui: &mut egui::Ui, params: &NodeParams, node_id: NodeId
                                 let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                                 if ui.selectable_label(params.lut_path.as_ref() == Some(&path), name).clicked() {
                                     cmds.push(AppCommand::SetNodeLut { clip_id, node_id, path: Some(path) });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                         });
@@ -4420,12 +4420,12 @@ fn bypass_keys(ui: &mut egui::Ui, keys: &[klipp_core::Keyframe], effective_on: b
                 let step = key.interpolation == klipp_core::Interpolation::Step;
                 if ui.button(format!("{}Step (Hold)", if step { "  * " } else { "    " })).clicked() {
                     cmds.push(AppCommand::SetKeyframeInterpolation { clip_id, node_id, param: param(), time_secs: key_time, interpolation: klipp_core::Interpolation::Step });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
             if ui.button("Clear bypass keyframes").clicked() {
                 cmds.push(AppCommand::ClearKeyframes { clip_id, node_id, param: param() });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         });
     }
@@ -4453,17 +4453,17 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
 
     // Background card
     let rounding = if is_open {
-        egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
+        egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }
     } else {
-        egui::Rounding::same(4.0)
+        egui::CornerRadius::same(4)
     };
     ui.painter().rect_filled(rect, rounding, theme.bg_deep);
 
     // Left accent bar
     let accent_rounding = if is_open {
-        egui::Rounding { nw: 6.0, ne: 0.0, sw: 0.0, se: 0.0 }
+        egui::CornerRadius { nw: 6, ne: 0, sw: 0, se: 0 }
     } else {
-        egui::Rounding { nw: 6.0, ne: 0.0, sw: 6.0, se: 0.0 }
+        egui::CornerRadius { nw: 6, ne: 0, sw: 6, se: 0 }
     };
     ui.painter().rect_filled(
         egui::Rect::from_min_size(rect.min, egui::vec2(3.0, header_h)),
@@ -5486,7 +5486,7 @@ mod sends_on_change {
             let frame = crate::inspector::keyframe_selection::FrameSelection::new(klipp_core::Timecode::zero(), klipp_core::Timecode::zero(), 0.02);
             let (panel, graph, sent) = (&mut self.panel, &mut self.graph, &mut self.sent);
             let out = self.ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     *sent = panel.show(ui, &selected, graph, ClipId::new(), &theme, frame);
                 });
             });
@@ -5687,7 +5687,7 @@ mod slider_behaviour {
             let theme = KlippTheme::default();
             let (value, cmds) = (&mut self.value, &mut self.cmds);
             let _ = self.ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     inspector_row(ui, "Blacks", value, -1.0..=1.0, 0.0, "", &theme, cmds, ClipId::new());
                 });
             });
@@ -6133,7 +6133,7 @@ mod wheel_layout_tests {
                         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 2000.0))),
                         ..Default::default()
                     }, |ctx| {
-                        egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                             panel.show_inspector_layout(ui, NodeId::new_v4(), &NodeKind::ColorWheels,
                                 &mut true, &mut params, &mut Default::default(), ClipId::new(),
                                 &mut Vec::new(), &KlippTheme::default(),
@@ -6176,9 +6176,9 @@ mod wheel_layout_tests {
 fn render_wheel_layout_review(ctx: &egui::Context, out: &egui::FullOutput, textures: &egui::TexturesDelta, width: u32, path: &str) {
     let instance = klipp_effects::gpu_context::instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).unwrap();
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut renderer = eframe::egui_wgpu::Renderer::new(&device, format, None, 1, false);
+    let mut renderer = eframe::egui_wgpu::Renderer::new(&device, format, eframe::egui_wgpu::RendererOptions { msaa_samples: 1, depth_stencil_format: None, dithering: false, ..Default::default() });
     for (id, delta) in &textures.set { renderer.update_texture(&device, &queue, *id, delta); }
     let jobs = ctx.tessellate(out.shapes.clone(), out.pixels_per_point);
     let screen = eframe::egui_wgpu::ScreenDescriptor { size_in_pixels: [width, 2000], pixels_per_point: 1.0 };
@@ -6196,17 +6196,17 @@ fn render_wheel_layout_review(ctx: &egui::Context, out: &egui::FullOutput, textu
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, resolve_target: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
-            depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+            depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
         }).forget_lifetime();
         renderer.render(&mut pass, &jobs, &screen);
     }
-    encoder.copy_texture_to_buffer(texture.as_image_copy(), wgpu::ImageCopyBuffer { buffer: &buffer,
-        layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: None } }, size);
+    encoder.copy_texture_to_buffer(texture.as_image_copy(), wgpu::TexelCopyBufferInfo { buffer: &buffer,
+        layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: None } }, size);
     queue.submit(commands.into_iter().chain(std::iter::once(encoder.finish())));
     buffer.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
-    device.poll(wgpu::Maintain::Wait);
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
     let mapped = buffer.slice(..).get_mapped_range();
     let pixels: Vec<u8> = mapped.chunks(stride as usize).flat_map(|row| row[..width as usize * 4].iter().copied()).collect();
     image::save_buffer(path, &pixels, width, 2000, image::ColorType::Rgba8).unwrap();

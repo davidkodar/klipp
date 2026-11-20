@@ -116,7 +116,7 @@ fn driver_from(info: &wgpu::AdapterInfo) -> String {
         wgpu::Backend::Dx12 => "DirectX 12",
         wgpu::Backend::Gl => "OpenGL",
         wgpu::Backend::BrowserWebGpu => "WebGPU",
-        wgpu::Backend::Empty => "none",
+        wgpu::Backend::Noop => "none",
     };
     let driver = [info.driver.trim(), info.driver_info.trim()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
     if driver.is_empty() { backend.to_string() } else { format!("{backend}, {driver}") }
@@ -183,6 +183,10 @@ mod tests {
             driver: driver.into(),
             driver_info: driver_info.into(),
             backend: wgpu::Backend::Vulkan,
+            device_pci_bus_id: String::new(),
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: false,
         };
         assert_eq!(driver_from(&info("NVIDIA", "580.95.05")), "Vulkan, NVIDIA 580.95.05");
         assert_eq!(driver_from(&info("", "")), "Vulkan");

@@ -1,3 +1,5 @@
+use crate::colour32::Colour029;
+use crate::widgets::colour_field::ColourField;
 use klipp_timeline::GradeAccess;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -406,8 +408,8 @@ fn show_clip_video(
         }
 
         if col_state.is_open() {
-            let frame = egui::Frame::none()
-                .inner_margin(egui::Margin { left: pad, right: pad, top: 4.0, bottom: 4.0 });
+            let frame = egui::Frame::NONE
+                .inner_margin(egui::Margin { left: pad as i8, right: pad as i8, top: 4, bottom: 4 });
             frame.show(ui, |ui| {
                 crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Video(VideoParam::PositionX));
                 r_px_out = Some(param_row(ui, theme, "Position X", &mut pos_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_x_ks)));
@@ -931,7 +933,7 @@ fn show_clip_video(
     // ── SPEED RAMP ──
     section_card(ui, "SPEED RAMP", theme, |ui| {
         egui::Frame::default()
-            .inner_margin(egui::Margin::symmetric(pad, 6.0))
+            .inner_margin(egui::Margin::symmetric(pad as i8, 6))
             .show(ui, |ui| {
                 let has_ramp = !clip.speed_keyframes.is_empty();
 
@@ -992,7 +994,7 @@ fn show_clip_video(
 
                     // Background
                     gp.rect_filled(graph_rect, 4.0, theme.bg_deep);
-                    gp.rect_stroke(graph_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border));
+                    gp.rect_stroke(graph_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
 
                     let clip_dur = clip.duration().to_secs_f64();
                     if clip_dur > 0.0 {
@@ -1023,14 +1025,14 @@ fn show_clip_video(
                             let alpha = if (speed_line - 1.0).abs() < 0.01 { 50 } else { 20 };
                             gp.line_segment(
                                 [egui::pos2(inner.left(), y), egui::pos2(inner.right(), y)],
-                                egui::Stroke::new(0.5_f32, egui::Color32::from_white_alpha(alpha)),
+                                egui::Stroke::new(0.5_f32, crate::colour32::white(alpha)),
                             );
                             gp.text(
                                 egui::pos2(inner.left() + 2.0, y - 9.0),
                                 egui::Align2::LEFT_BOTTOM,
                                 format!("{}x", speed_line as i32),
                                 egui::FontId::proportional(10.0),
-                                egui::Color32::from_white_alpha(60),
+                                crate::colour32::white(60),
                             );
                         }
 
@@ -1051,7 +1053,7 @@ fn show_clip_video(
                             fill_pts.push(egui::pos2(inner.left(), inner.bottom()));
                             gp.add(egui::Shape::convex_polygon(
                                 fill_pts,
-                                egui::Color32::from_rgba_unmultiplied(theme.marker_info.r(), theme.marker_info.g(), theme.marker_info.b(), 15),
+                                crate::colour32::rgba(theme.marker_info.r(), theme.marker_info.g(), theme.marker_info.b(), 15),
                                 egui::Stroke::NONE,
                             ));
                         }
@@ -1195,7 +1197,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Ramp Up"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                            .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("0.5x to 2x over clip duration").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1208,7 +1210,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Ramp Down"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                            .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("2x to 0.5x over clip duration").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1221,7 +1223,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Slow-Mo"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                            .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("1x -> 0.25x -> 1x (center slow-mo)").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1236,7 +1238,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Speed Burst"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                            .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("1x -> 3x -> 1x (center speed burst)").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1251,7 +1253,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Reset"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.marker_error))
-                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                            .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("Clear all speed keyframes").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1343,7 +1345,7 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
     section_card(ui, "TRACKING", theme, |ui| {
         ui.add_space(6.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin::symmetric(pad, 6.0))
+            .inner_margin(egui::Margin::symmetric(pad as i8, 6))
             .show(ui, |ui| {
                 // "Place Tracker" button
                 let btn_color = if state.tracking_mode {
@@ -1432,7 +1434,7 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
                     let is_selected = selected_tp == Some(*idx);
                     let _row_resp = ui.horizontal(|ui| {
                         // Colored dot
-                        let dot_color = egui::Color32::from_rgba_unmultiplied(
+                        let dot_color = crate::colour32::rgba(
                             color[0], color[1], color[2], color[3],
                         );
                         let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
@@ -1544,7 +1546,7 @@ fn show_color_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, c
     section_card(ui, "COLOUR", theme, |ui| {
         ui.add_space(6.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
@@ -1578,14 +1580,14 @@ fn show_color_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, c
                         )
                         .fill(theme.bg_raised)
                         .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(4.0),
+                        .corner_radius(4.0),
                     ).clicked() {
                         cmds.push(AppCommand::ToggleColorPanel);
                     }
 
                     // C shortcut badge
                     let (badge_rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
-                    ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5_f32, theme.border));
+                    ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
                     ui.painter().text(
                         badge_rect.center(), egui::Align2::CENTER_CENTER,
                         "C", egui::FontId::monospace(10.0), theme.text_dim,
@@ -1618,7 +1620,7 @@ fn show_compositing_section(
     section_card(ui, "COMPOSITING", theme, |ui| {
         ui.add_space(6.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: pad as i8, right: pad as i8, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .show(ui, |ui| {
@@ -1995,7 +1997,7 @@ fn show_compositing_section(
                     // Subtle frame so the preview reads as a "tile"
                     // rather than free-floating pixels.
                     ui.painter().rect_filled(preview_rect, 4.0, theme.bg_deep);
-                    ui.painter().rect_stroke(preview_rect, 4.0, egui::Stroke::new(0.5_f32, theme.border));
+                    ui.painter().rect_stroke(preview_rect, 4.0, egui::Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
                     if state.matte_thumb_for == Some(clip_id) {
                         if let Some(tex) = state.matte_thumb_handle.as_ref() {
                             ui.painter().image(
@@ -2028,7 +2030,7 @@ fn show_compositing_section(
                         )
                         .fill(theme.bg_raised)
                         .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(4.0)).clicked()
+                        .corner_radius(4.0)).clicked()
                     {
                         cmds.push(AppCommand::ClearClipMatte { clip_id });
                     }
@@ -2063,7 +2065,7 @@ fn show_transform_link_section(
     section_card(ui, "TRANSFORM LINK", theme, |ui| {
         ui.add_space(6.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: pad as i8, right: pad as i8, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .show(ui, |ui| {
@@ -2296,7 +2298,7 @@ fn show_transform_link_section(
                         )
                         .fill(theme.bg_raised)
                         .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(4.0)).clicked()
+                        .corner_radius(4.0)).clicked()
                     {
                         cmds.push(AppCommand::ClearClipTransformLink { clip_id });
                     }
@@ -2367,7 +2369,7 @@ fn show_hyperzoom_section(
         }
         ui.add_space(6.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: pad as i8, right: pad as i8, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .show(ui, |ui| {
@@ -2543,7 +2545,7 @@ fn show_hyperzoom_section(
                         // aesthetic in the COMPOSITING section.
                         ui.painter().rect_filled(preview_rect, 4.0, theme.bg_deep);
                         ui.painter().rect_stroke(preview_rect, 4.0,
-                            egui::Stroke::new(0.5_f32, theme.border));
+                            egui::Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
 
                         let frame_w = preview_w as u32;
                         let frame_h = preview_h as u32;
@@ -3074,7 +3076,7 @@ fn show_hyperzoom_section(
                                 .color(theme.text_on_accent),
                         )
                         .fill(theme.accent)
-                        .rounding(4.0),
+                        .corner_radius(4.0),
                     )
                     .on_hover_text(
                         "Writes anchor + scale keyframes on this clip and the chosen target. \
@@ -3186,7 +3188,7 @@ fn show_hyperzoom_section(
                         )
                         .fill(theme.bg_raised)
                         .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(4.0),
+                        .corner_radius(4.0),
                     )
                     .on_hover_text(
                         "Auto-set transform_link on every clip beneath this one within the \
@@ -3383,7 +3385,7 @@ fn show_frame_glide_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
     let free = klipp_timeline::frame_glide::keys_are_free(clip, w, h);
     let framing = state.frame_glide_clip == Some(clip_id);
     section_card(ui, "FRAME GLIDE", theme, |ui| {
-        egui::Frame::default().inner_margin(egui::Margin::symmetric(14.0, 8.0)).show(ui, |ui| {
+        egui::Frame::default().inner_margin(egui::Margin::symmetric(14, 8)).show(ui, |ui| {
             let set = |glide: FrameGlide, replace: bool| AppCommand::SetFrameGlide { clip_id, glide: Some(glide), replace_animation: replace };
             if !free && clip.frame_glide.is_none() {
                 ui.label(egui::RichText::new("This clip's position or scale is animated already. Frame Glide would replace that animation.").size(11.0).color(theme.text_secondary));
@@ -3442,14 +3444,14 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
             || !lane(clip, "pos_y").is_empty();
 
         egui::Frame::default()
-            .inner_margin(egui::Margin::symmetric(pad, 8.0))
+            .inner_margin(egui::Margin::symmetric(pad as i8, 8))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                     let btn_text = |label: &str| egui::RichText::new(label).size(11.0);
                     if ui.add(egui::Button::new(btn_text("Zoom In"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                        .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Scale 1.0 to 1.3, centered").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
                             clip_id, start_scale: 1.0, end_scale: 1.3,
@@ -3458,7 +3460,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     }
                     if ui.add(egui::Button::new(btn_text("Zoom Out"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                        .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Scale 1.3 to 1.0, centered").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
                             clip_id, start_scale: 1.3, end_scale: 1.0,
@@ -3467,7 +3469,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     }
                     if ui.add(egui::Button::new(btn_text("Pan L>R"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                        .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Pan left to right, 1.2\u{00d7} zoom").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
                             clip_id, start_scale: 1.2, end_scale: 1.2,
@@ -3476,7 +3478,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     }
                     if ui.add(egui::Button::new(btn_text("Pan R>L"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                        .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Pan right to left, 1.2\u{00d7} zoom").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
                             clip_id, start_scale: 1.2, end_scale: 1.2,
@@ -3485,7 +3487,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     }
                     if has_transform_kfs && ui.add(egui::Button::new(btn_text("Remove"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                        .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Clear all transform keyframes").clicked() {
                         cmds.push(AppCommand::ClearTransformKeyframes { clip_id });
                     }
@@ -3499,7 +3501,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
     let pad = 14.0;
     section_card(ui, "SPEED", theme, |ui| {
         egui::Frame::default()
-            .inner_margin(egui::Margin::symmetric(pad, 6.0))
+            .inner_margin(egui::Margin::symmetric(pad as i8, 6))
             .show(ui, |ui| {
                 // The rate is the magnitude; a reversed clip keeps its
                 // direction through a change of rate (#617).
@@ -3541,7 +3543,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                     let btn_text = |label: &str| egui::RichText::new(label).size(11.0);
                     for (label, speed_val) in [("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0), ("400%", 4.0)] {
                         let is_active = (clip.speed.abs() - speed_val).abs() < 0.001;
-                        let fill = if is_active { theme.accent.linear_multiply(0.25) } else { theme.bg_raised };
+                        let fill = if is_active { theme.accent.lin_mul(0.25) } else { theme.bg_raised };
                         let stroke = if is_active {
                             egui::Stroke::new(1.0_f32, theme.accent)
                         } else {
@@ -3549,7 +3551,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                         };
                         if ui.add(egui::Button::new(btn_text(label))
                             .fill(fill).stroke(stroke)
-                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                            .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).clicked() {
                             cmds.push(AppCommand::SetClipSpeed { clip_id, speed: speed_val * sign, ripple: true });
                         }
@@ -3575,7 +3577,7 @@ fn show_color_fade_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, c
     section_card(ui, "COLOUR FADE", theme, |ui| {
         ui.add_space(4.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
@@ -3648,7 +3650,7 @@ fn color_fade_row(
             ui.add_space(4.0);
             // Colour picker — reads/writes on change.
             let mut c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 cmds.push(update(idx, BuiltinEffect::ColorFade { color: [c.r(), c.g(), c.b(), c.a()], duration_secs: duration, mode, progress: 0.0 }));
             }
         }
@@ -3734,7 +3736,7 @@ fn show_behaviors_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
     section_card(ui, "BEHAVIORS", theme, |ui| {
         ui.add_space(4.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
@@ -3758,7 +3760,7 @@ fn show_role_section(ui: &mut egui::Ui, theme: &KlippTheme, roles: &klipp_core::
     section_card(ui, "ROLE", theme, |ui| {
         ui.add_space(8.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
@@ -4052,7 +4054,7 @@ fn opacity_presets(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip
             if ui.add_enabled(!name.trim().is_empty(), egui::Button::new("Save")).clicked() {
                 cmds.push(AppCommand::SaveBuiltinEffectPreset { name: name.trim().to_owned(), description: String::new(), effect_key: OPACITY.to_owned(), effect: BuiltinEffect::Opacity { value: current } });
                 ui.data_mut(|d| d.remove::<String>(buffer));
-                ui.memory_mut(|m| m.close_popup());
+                egui::Popup::close_all(ui.ctx());
             }
         });
     });
@@ -4187,10 +4189,7 @@ mod frame_glide_section_tests {
         let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 9000.0))), events, ..Default::default() }, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| show(ui, &KlippTheme::default(), &state, Some((clip, 0.0, true)), None, &mut cmds));
         });
-        let texts = out.shapes.iter().filter_map(|s| match &s.shape {
-            egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-            _ => None,
-        }).collect();
+        let texts = crate::screen_texts::screen_texts(&out.shapes);
         (cmds, texts)
     }
 

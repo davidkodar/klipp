@@ -249,7 +249,7 @@ pub fn key_menu(ui: &mut egui::Ui, current: Option<klipp_core::Interpolation>, e
             pick = Some(KeyMenuPick::Interpolation(Interpolation::Step));
         }
         if pick.is_some() {
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
         pick
     })

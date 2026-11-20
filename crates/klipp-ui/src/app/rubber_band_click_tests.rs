@@ -29,7 +29,7 @@ impl Timeline {
         let (state, panel, old) = (&mut self.state, &mut self.panel, &mut self.old);
         let mut cmds = Vec::new();
         let _ = self.ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                 cmds = panel.show(ui, state, &theme, old, &kb, false);
             });
         });

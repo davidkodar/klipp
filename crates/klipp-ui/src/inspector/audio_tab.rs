@@ -1,3 +1,4 @@
+use crate::colour32::Colour029;
 use crate::widgets::menu::MenuRows;
 use crate::icons::Icon;
 use crate::state::AppState;
@@ -339,34 +340,34 @@ fn slider_row(
                 ui.label(egui::RichText::new("Interpolation").size(11.0).color(theme.text_dim));
                 if ui.selectable_label(ks.current_interpolation == Some(klipp_core::Interpolation::Linear), "Linear").clicked() {
                     resp.keyframe_set_interpolation = Some(klipp_core::Interpolation::Linear);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.selectable_label(ks.current_interpolation == Some(klipp_core::Interpolation::Step), "Step").clicked() {
                     resp.keyframe_set_interpolation = Some(klipp_core::Interpolation::Step);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.selectable_label(ks.current_interpolation == Some(klipp_core::Interpolation::Bezier), "Bezier").clicked() {
                     resp.keyframe_set_interpolation = Some(klipp_core::Interpolation::Bezier);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
                 ui.label(egui::RichText::new("Ease Preset").size(11.0).color(theme.text_dim));
                 if ui.button("Ease In").clicked() {
                     resp.keyframe_ease_preset = Some(EasePreset::EaseIn);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Ease Out").clicked() {
                     resp.keyframe_ease_preset = Some(EasePreset::EaseOut);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Ease Both").clicked() {
                     resp.keyframe_ease_preset = Some(EasePreset::EaseBoth);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             } else {
                 if ui.button("Add Keyframe").clicked() {
                     resp.keyframe_toggled = true;
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
         });
@@ -413,17 +414,17 @@ fn slider_row(
     );
 
     // Draw the bordered input box background
-    ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border));
+    ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
 
     // Place DragValue inside the input rect
-    let dv_resp = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(input_rect.shrink(2.0)), |ui| {
+    let dv_resp = ui.scope_builder(egui::UiBuilder::new().max_rect(input_rect.shrink(2.0)), |ui| {
         ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
         ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
         ui.style_mut().visuals.widgets.hovered.bg_fill = egui::Color32::TRANSPARENT;
         ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
         ui.style_mut().visuals.widgets.active.bg_fill = egui::Color32::TRANSPARENT;
         ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
-        ui.style_mut().visuals.selection.bg_fill = theme.accent.linear_multiply(0.3);
+        ui.style_mut().visuals.selection.bg_fill = theme.accent.lin_mul(0.3);
 
         let dv = crate::widgets::number_field(value)
             .range(min..=max)
@@ -698,7 +699,7 @@ fn show_clip_audio(
                 egui::pos2(row_rect.max.x - pad - combo_w, row_rect.center().y - 13.0),
                 egui::vec2(combo_w, 26.0),
             );
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
                 egui::ComboBox::from_id_salt("channel_config")
                     .selected_text(channel_config_label(channel_config))
                     .width(combo_w - 10.0)
@@ -782,7 +783,7 @@ fn show_clip_audio(
                 egui::pos2(row_rect.max.x - pad - combo_w, row_rect.center().y - 13.0),
                 egui::vec2(combo_w, 26.0),
             );
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
                 egui::ComboBox::from_id_salt("fade_in_curve")
                     .selected_text(fade_curve_label(fade_in_curve))
                     .width(combo_w - 10.0)
@@ -823,7 +824,7 @@ fn show_clip_audio(
                 egui::pos2(row_rect.max.x - pad - combo_w, row_rect.center().y - 13.0),
                 egui::vec2(combo_w, 26.0),
             );
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
                 egui::ComboBox::from_id_salt("fade_out_curve")
                     .selected_text(fade_curve_label(fade_out_curve))
                     .width(combo_w - 10.0)
@@ -850,7 +851,7 @@ fn show_clip_audio(
     section_card(ui, "BEHAVIORS", theme, |ui| {
         ui.add_space(4.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
@@ -868,7 +869,7 @@ fn show_clip_audio(
     section_card(ui, "LEVEL", theme, |ui| {
         ui.add_space(6.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
@@ -884,7 +885,7 @@ fn show_clip_audio(
     section_card(ui, "WAVEFORM", theme, |ui| {
         ui.add_space(6.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
@@ -892,8 +893,8 @@ fn show_clip_audio(
         egui::Frame::default()
             .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(1.0_f32, theme.border))
-            .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(4.0, 4.0))
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(4, 4))
             .show(ui, |ui| {
                 // Measured inside the frame's margin: from outside it, the
                 // waveform came out 8 points wider than the column.
@@ -930,7 +931,7 @@ fn show_clip_audio(
     section_card(ui, "AUDIO EFFECTS", theme, |ui| {
         ui.add_space(4.0);
         egui::Frame::default()
-            .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 })
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
@@ -1020,7 +1021,7 @@ fn show_clip_audio(
                     egui::Button::new(
                         egui::RichText::new("Apply Auto Duck").size(11.0).color(theme.text_primary),
                     )
-                    .fill(theme.accent.linear_multiply(0.3))
+                    .fill(theme.accent.lin_mul(0.3))
                     .stroke(egui::Stroke::new(1.0_f32, theme.accent))
                     .min_size(egui::vec2(ui.available_width() - 14.0, 24.0)),
                 );
@@ -1363,7 +1364,7 @@ fn draw_stereo_meter(ui: &mut egui::Ui, theme: &KlippTheme, peak_l: f32, peak_r:
     let tick_left = tick_rect.left() + label_w + 4.0;
     let tick_w = meter_w - label_w - 4.0;
     let font = egui::FontId::monospace(10.0);
-    let text_w = |label: &str| ui.fonts(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme.text_dim).size().x);
+    let text_w = |label: &str| ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font.clone(), theme.text_dim).size().x);
     for (x, label) in tick_labels(tick_left, tick_w, max_level, text_w) {
         ui.painter().text(egui::pos2(x, tick_rect.center().y), egui::Align2::CENTER_CENTER, label, font.clone(), theme.text_dim);
     }
@@ -1776,7 +1777,7 @@ mod clip_audio_tests {
         run(vec![key(egui::Key::A, ctrl)], true);
         let range = egui::TextEdit::load_state(&ctx, field).and_then(|s| s.cursor.char_range()).expect("a selection");
         assert_eq!((range.primary.index.min(range.secondary.index), range.primary.index.max(range.secondary.index)), (0, "1.00".len()), "Ctrl+A selected the field's text");
-        assert!(ctx.wants_keyboard_input(), "and the field still has the keys, so Select All is not read");
+        assert!(ctx.egui_wants_keyboard_input(), "and the field still has the keys, so Select All is not read");
         run(vec![egui::Event::Text("0.5".into())], false);
         let (_, cmds) = run(vec![key(egui::Key::Enter, egui::Modifiers::NONE)], false);
         let set: Vec<_> = cmds.iter().filter_map(|c| match c {

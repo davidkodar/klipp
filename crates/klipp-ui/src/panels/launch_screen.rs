@@ -585,7 +585,7 @@ impl LaunchScreen {
         );
 
         // Draw sidebar
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
             ui.painter()
                 .rect_filled(sidebar_rect, 0.0, theme.bg_deep);
             ui.painter().vline(
@@ -598,7 +598,7 @@ impl LaunchScreen {
         });
 
         // Draw main area with project grid
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(main_rect), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(main_rect), |ui| {
             self.draw_main_area(ctx, ui, &shown, projects_folder, theme, &mut cmds);
         });
 
@@ -793,7 +793,7 @@ impl LaunchScreen {
         let open_resp = ui.allocate_rect(open_rect, egui::Sense::click());
         let open_bg = if open_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
         ui.painter().rect_filled(open_rect, 4.0, open_bg);
-        ui.painter().rect_stroke(open_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
+        ui.painter().rect_stroke(open_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light), egui::StrokeKind::Outside);
         ui.painter().text(
             open_rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -920,21 +920,21 @@ impl LaunchScreen {
                     crate::widgets::menu::menu_body(ui, |ui| {
                         if crate::widgets::menu::menu_item(ui, "Open", "").clicked() {
                             cmds.push(AppCommand::OpenProject { path: rp.path.clone() });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         let pin = if rp.pinned { "Unpin" } else { "Pin to Top" };
                         if crate::widgets::menu::menu_item(ui, pin, "").clicked() {
                             cmds.push(AppCommand::PinRecentProject { path: rp.path.clone(), pinned: !rp.pinned });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if crate::widgets::menu::menu_item(ui, "Show in Files", "").clicked() {
                             cmds.push(AppCommand::RevealInFileManager { path: rp.path.clone() });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         ui.separator();
                         if crate::widgets::menu::menu_item(ui, "Remove from Recent", "").clicked() {
                             cmds.push(AppCommand::RemoveRecentProject { path: rp.path.clone() });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     });
                 });
@@ -1129,7 +1129,7 @@ impl LaunchScreen {
             egui::pos2(header_x, header_y),
             egui::vec2((area.max.x - pad - header_x).max(0.0), crate::theme::control::REGULAR),
         );
-        let choose_clicked = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(choose_rect), |ui| {
+        let choose_clicked = ui.scope_builder(egui::UiBuilder::new().max_rect(choose_rect), |ui| {
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add(egui::Button::new(
                     egui::RichText::new(choose).size(crate::theme::type_scale::CONTROL).color(theme.text_secondary),
@@ -1185,7 +1185,7 @@ impl LaunchScreen {
             egui::pos2(area.min.x + pad, controls_y - 2.0),
             egui::vec2(search_w, 26.0),
         );
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(search_rect), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(search_rect), |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.search_query)
                     .hint_text("Search projects\u{2026}")
@@ -1249,7 +1249,7 @@ impl LaunchScreen {
         let sort_resp = ui.allocate_rect(sort_rect, egui::Sense::click());
         let sort_bg = if sort_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
         ui.painter().rect_filled(sort_rect, 4.0, sort_bg);
-        ui.painter().rect_stroke(sort_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border));
+        ui.painter().rect_stroke(sort_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
         ui.painter().text(
             egui::pos2(sort_rect.center().x - 4.0, sort_rect.center().y),
             egui::Align2::CENTER_CENTER,
@@ -1278,7 +1278,7 @@ impl LaunchScreen {
                 for mode in GRID_SORTS {
                     if crate::widgets::menu::menu_choice(ui, mode.label(), "", self.sort_mode == mode).clicked() {
                         self.set_sort(mode);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });
@@ -1345,7 +1345,7 @@ impl LaunchScreen {
         let lines = filtered.iter().map(|rp| card_lines(rp).len()).max().unwrap_or(0);
         let (cols, card_w, card_h) = card_metrics(grid_width, lines);
 
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(scroll_area), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(scroll_area), |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // "New Project" card is first
                 let new_card_rect = egui::Rect::from_min_size(
@@ -1588,7 +1588,7 @@ impl LaunchScreen {
         if self.sort_chosen {
             sort_projects(&mut sorted, self.sort_mode, self.sort_descending);
         }
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
             egui::ScrollArea::vertical().id_salt("launch_list").show(ui, |ui| {
                 let row_h = 40.0;
                 for rp in &sorted {
@@ -1689,7 +1689,7 @@ impl LaunchScreen {
             ui.painter().rect_filled(
                 rect.shrink(1.0),
                 rounding,
-                egui::Color32::from_rgba_unmultiplied(220, 220, 228, 8),
+                crate::colour32::rgba(220, 220, 228, 8),
             );
         }
 
@@ -1746,14 +1746,14 @@ impl LaunchScreen {
         } else {
             egui::Stroke::new(1.0_f32, theme.border)
         };
-        ui.painter().rect(rect, 8.0, bg, stroke);
+        ui.painter().rect(rect, 8.0, bg, stroke, egui::StrokeKind::Outside);
 
         // The thumbnail: 16:9, the card's full width.
         let thumb_rect = egui::Rect::from_min_size(
             rect.min + egui::vec2(1.0, 1.0),
             egui::vec2(rect.width() - 2.0, (rect.width() - 2.0) * 9.0 / 16.0),
         );
-        let thumb_rounding = egui::Rounding { nw: 7.0, ne: 7.0, sw: 0.0, se: 0.0 };
+        let thumb_rounding = egui::CornerRadius { nw: 7, ne: 7, sw: 0, se: 0 };
 
         let poster = self.poster(ctx, rp);
         // Across the thumbnail the pointer scrubs through the project,
@@ -1916,31 +1916,31 @@ impl LaunchScreen {
         menu_body(ui, |ui| {
             if menu_item(ui, "Open", "").clicked() {
                 cmds.push(AppCommand::OpenProject { path: rp.path.clone() });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if menu_item(ui, "Duplicate", "").clicked() {
                 cmds.push(AppCommand::DuplicateProject { path: rp.path.clone() });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if menu_item(ui, "Rename\u{2026}", "").clicked() {
                 self.renaming_project = Some((rp.path.clone(), rp.name.clone()));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if menu_item(ui, "Show in Files", "").clicked() {
                 cmds.push(AppCommand::RevealInFileManager { path: rp.path.clone() });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if menu_item(ui, "Remove from Recent", "").clicked() {
                 cmds.push(AppCommand::RemoveRecentProject { path: rp.path.clone() });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui
                 .add(egui::Button::new(egui::RichText::new("Move to Trash\u{2026}").color(ui.visuals().error_fg_color)))
                 .clicked()
             {
                 self.confirm_trash = Some(rp.path.clone());
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         });
     }
@@ -2119,7 +2119,7 @@ fn sort_projects(list: &mut [&RecentProject], mode: SortMode, descending: bool) 
 fn draw_poster(painter: &egui::Painter, rect: egui::Rect, poster: Option<&Poster>, crop: Option<egui::Rect>, theme: &KlippTheme) {
     let Some(poster) = poster else {
         painter.rect_filled(rect, 3.0, theme.bg_raised);
-        painter.rect_stroke(rect, 3.0, egui::Stroke::new(1.0_f32, theme.border));
+        painter.rect_stroke(rect, 3.0, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
         return;
     };
     let uv = crop.unwrap_or(egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)));
@@ -2176,7 +2176,7 @@ fn soften(img: &egui::ColorImage, across: usize) -> egui::ColorImage {
             pixels.push(egui::Color32::from_rgb((sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8));
         }
     }
-    egui::ColorImage { size: [sw, sh], pixels }
+    egui::ColorImage::new([sw, sh], pixels)
 }
 
 /// Draw one sidebar mark centred on `c`.
@@ -2478,15 +2478,12 @@ fn image_from_png(data: &[u8]) -> Result<egui::ColorImage, String> {
             .collect(),
         png::ColorType::Rgba => bytes
             .chunks_exact(4)
-            .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+            .map(|c| crate::colour32::rgba(c[0], c[1], c[2], c[3]))
             .collect(),
         _ => return Err("Unsupported PNG colour type".into()),
     };
 
-    Ok(egui::ColorImage {
-        size: [w, h],
-        pixels,
-    })
+    Ok(egui::ColorImage::new([w, h], pixels))
 }
 
 #[cfg(test)]
@@ -2514,7 +2511,7 @@ mod tests {
         let mut cmds = Vec::new();
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))), events, ..Default::default() };
         let out = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                 cmds = screen.show(ctx, ui, recent, folder, &theme);
             });
         });
@@ -2613,7 +2610,7 @@ mod tests {
             (trip.path.clone(), ProjectStatus { newer_autosave: true, open_by: Some("ann@studio".into()) }),
         ]);
         let ctx = egui::Context::default();
-        ctx.style_mut(|s| {
+        ctx.global_style_mut(|s| {
             s.interaction.tooltip_delay = 0.0;
             s.interaction.show_tooltips_only_when_still = false;
         });
@@ -2725,7 +2722,7 @@ mod tests {
         assert!(details.iter().any(|(t, _)| t.starts_with("1920\u{00D7}1080 \u{00B7} 24 fps \u{00B7} 1:55")), "{details:?}");
         assert!(details.iter().all(|(_, f)| *f == egui::FontFamily::Proportional), "{details:?}");
         // Its figures are tabular, so they still line up.
-        let width = |s: &str| ctx.fonts(|f| f.layout_no_wrap(s.into(), egui::FontId::proportional(10.0), egui::Color32::WHITE).size().x);
+        let width = |s: &str| ctx.fonts_mut(|f| f.layout_no_wrap(s.into(), egui::FontId::proportional(10.0), egui::Color32::WHITE).size().x);
         let ones = width("1111");
         for d in ["0000", "4444", "8888"] {
             assert!((width(d) - ones).abs() < 0.01, "{d}: {} vs {ones}", width(d));

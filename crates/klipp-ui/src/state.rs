@@ -8323,7 +8323,7 @@ mod log_format_undo_tests {
         state.sequences[0].tracks[0].clips.push(clip);
         state.set_clip_log_format(id, klipp_core::LogFormat::SLog3);
         let ctx = egui::Context::default();
-        let texture = |name: &str| ctx.load_texture(name, egui::ColorImage::new([1, 1], egui::Color32::BLACK), Default::default());
+        let texture = |name: &str| ctx.load_texture(name, egui::ColorImage::filled([1, 1], egui::Color32::BLACK), Default::default());
         let active = state.active_sequence_idx;
         for undo in [true, false] {
             // The pictures made for the encoding the step leaves.

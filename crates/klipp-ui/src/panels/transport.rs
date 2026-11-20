@@ -413,7 +413,7 @@ impl TransportBar {
                         .size(10.0)
                         .strong()
                         .color(theme.marker_error)
-                        .background_color(egui::Color32::from_rgba_unmultiplied(theme.marker_error.r(), theme.marker_error.g(), theme.marker_error.b(), 30)),
+                        .background_color(crate::colour32::rgba(theme.marker_error.r(), theme.marker_error.g(), theme.marker_error.b(), 30)),
                 )
                 .on_hover_text(
                     "Klipp's audio is muted at the OS level.\n\
@@ -508,13 +508,13 @@ impl TransportBar {
         if state.project_path.is_none()
             || state.field_keys_held
             || state.editing_timecode
-            || ctx.wants_keyboard_input()
+            || ctx.egui_wants_keyboard_input()
             || state.has_modal_open()
         {
             return cmds;
         }
 
-        let text_editing = ctx.wants_keyboard_input() || state.editing_timecode || state.viewer_text_edit;
+        let text_editing = ctx.egui_wants_keyboard_input() || state.editing_timecode || state.viewer_text_edit;
         // What Shift+Left and Shift+Right move, in frames (what
         // SeekRelative counts): the preference, or one second. Not
         // `fps.rate()`, the numerator: 30000 at 29.97 (#921).

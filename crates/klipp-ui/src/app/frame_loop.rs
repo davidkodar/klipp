@@ -156,9 +156,9 @@ impl KlippApp {
         // value drifted, so the style is not marked dirty every frame.
         {
             let target = self.theme.selection_fill();
-            let needs_fix = ctx.style().visuals.selection.bg_fill != target;
+            let needs_fix = ctx.global_style().visuals.selection.bg_fill != target;
             if needs_fix {
-                ctx.style_mut(|style| {
+                ctx.global_style_mut(|style| {
                     style.visuals.selection.bg_fill = target;
                 });
             }
@@ -242,14 +242,14 @@ impl KlippApp {
         let wayland_drag = false;
         if wayland_drag || !ctx.input(|i| i.raw.hovered_files.is_empty()) {
             // Paint a subtle overlay to indicate drop target
-            let screen = ctx.screen_rect();
+            let screen = ctx.content_rect();
             egui::Area::new(egui::Id::new("drop_overlay"))
                 .fixed_pos(screen.min)
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 0.0, self.theme.accent_subtle);
-                    ui.painter().rect_stroke(rect.shrink(4.0), 4.0, egui::Stroke::new(2.0_f32, self.theme.accent_glow));
+                    ui.painter().rect_stroke(rect.shrink(4.0), 4.0, egui::Stroke::new(2.0_f32, self.theme.accent_glow), egui::StrokeKind::Outside);
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -1223,7 +1223,7 @@ impl KlippApp {
                 // (fullscreen). Avoids recomputing layout, which would be wrong in
                 // fullscreen mode where compute_layout is never called.
                 let viewer = self.state.viewer_panel_rect;
-                let screen = ctx.screen_rect();
+                let screen = ctx.content_rect();
                 let dim = egui::Color32::from_black_alpha(alpha as u8);
 
                 ctx.layer_painter(egui::LayerId::new(
@@ -1388,7 +1388,7 @@ impl KlippApp {
             // visual treatment. Captures click + drag so timeline
             // / browser interactions behind don't fire while the
             // user is typing a command.
-            let screen_rect = ctx.screen_rect();
+            let screen_rect = ctx.content_rect();
             egui::Area::new(egui::Id::new("command_palette_scrim"))
                 .order(egui::Order::Middle)
                 .fixed_pos(screen_rect.min)
@@ -1429,15 +1429,15 @@ impl KlippApp {
 
             egui::Area::new(egui::Id::new("command_palette"))
                 .fixed_pos(egui::pos2(
-                    ctx.screen_rect().center().x - 200.0,
-                    ctx.screen_rect().top() + 80.0,
+                    ctx.content_rect().center().x - 200.0,
+                    ctx.content_rect().top() + 80.0,
                 ))
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     egui::Frame::window(ui.style())
                         .fill(self.theme.bg_panel)
                         .stroke(egui::Stroke::new(1.0_f32, self.theme.border))
-                        .rounding(4.0)
+                        .corner_radius(4.0)
                         .inner_margin(8.0)
                         .show(ui, |ui| {
                             ui.set_min_width(400.0);
@@ -1942,11 +1942,11 @@ impl KlippApp {
                     .fixed_pos(pos + egui::vec2(12.0, 12.0))
                     .interactable(false)
                     .show(ctx, |ui| {
-                        egui::Frame::none()
+                        egui::Frame::NONE
                             .fill(theme.bg_raised)
                             .stroke(egui::Stroke::new(1.0_f32, theme.accent))
-                            .rounding(4.0)
-                            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                            .corner_radius(4.0)
+                            .inner_margin(egui::Margin::symmetric(8, 4))
                             .show(ui, |ui| {
                                 ui.label(
                                     egui::RichText::new(label)
@@ -2019,8 +2019,8 @@ impl KlippApp {
                             egui::Frame::popup(ui.style())
                                 .fill(self.theme.bg_raised)
                                 .stroke(egui::Stroke::new(1.0_f32, self.theme.border))
-                                .rounding(4.0)
-                                .inner_margin(egui::Margin::symmetric(16.0, 10.0))
+                                .corner_radius(4.0)
+                                .inner_margin(egui::Margin::symmetric(16, 10))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         if is_generating {

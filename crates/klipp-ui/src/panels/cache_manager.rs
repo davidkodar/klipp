@@ -139,7 +139,7 @@ fn render_category_row(
             egui::Stroke::new(
                 1.0_f32,
                 egui::Color32::from_black_alpha(60),
-            ),
+            ), egui::StrokeKind::Outside,
         );
         ui.add_space(6.0);
 

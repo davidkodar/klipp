@@ -437,7 +437,7 @@ fn readback_buffer(
     slice.map_async(wgpu::MapMode::Read, move |res| {
         let _ = tx.send(res);
     });
-    // Non-blocking poll loop instead of `Maintain::Wait` — see
+    // Non-blocking poll loop instead of `PollType::wait_indefinitely()` — see
     // `klipp_effects::gpu::poll_until_mapped` for why Wait
     // deadlocks on a UI-shared device. Falls back to a zero-filled
     // buffer if the map times out (engine treats as device-lost-
@@ -815,7 +815,7 @@ mod readback_cost {
             mapped_at_creation: false,
         }));
         ctx.queue.write_buffer(&buf, 0, &bytes);
-        ctx.device.poll(wgpu::Maintain::Wait);
+        let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
 
         let gpu = std::sync::Arc::new(crate::frame::GpuFrame::new(
             ctx.device(),

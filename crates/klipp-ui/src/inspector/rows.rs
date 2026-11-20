@@ -208,15 +208,7 @@ pub(crate) mod test_frame {
                 egui::CentralPanel::default().show(ctx, |ui| draw(ui, &theme, &mut cmds));
             },
         );
-        let texts = out
-            .shapes
-            .iter()
-            .filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
-                _ => None,
-            })
-            .collect();
-        (texts, cmds)
+        (crate::screen_texts::screen_texts(&out.shapes), cmds)
     }
 
     /// A press and release at `at`, over two frames.

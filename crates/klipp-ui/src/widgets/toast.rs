@@ -97,7 +97,7 @@ impl ToastState {
             0.0
         };
 
-        let lift = above.map_or(40.0, |top| (ctx.screen_rect().bottom() - top + 8.0).max(40.0));
+        let lift = above.map_or(40.0, |top| (ctx.content_rect().bottom() - top + 8.0).max(40.0));
         egui::Area::new(egui::Id::new("klipp_toast"))
             .anchor(
                 egui::Align2::CENTER_BOTTOM,
@@ -127,15 +127,15 @@ impl ToastState {
                     (255.0 * alpha) as u8,
                 );
 
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(bg)
                     .stroke(egui::Stroke::new(1.0_f32, border))
-                    .rounding(4.0)
-                    .inner_margin(egui::Margin::symmetric(16.0, 8.0))
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin::symmetric(16, 8))
                     .shadow(egui::Shadow {
-                        spread: 0.0,
-                        blur: 20.0,
-                        offset: egui::vec2(0.0, 4.0),
+                        spread: 0,
+                        blur: 20,
+                        offset: [0, 4],
                         color: egui::Color32::from_rgba_premultiplied(
                             0,
                             0,

@@ -205,7 +205,7 @@ fn composite_multi_detection(
         }
     }
 
-    egui::ColorImage { size: [w, h], pixels }
+    egui::ColorImage::new([w, h], pixels)
 }
 
 /// Build the `ColorImage` that backs the overlay texture. Public for
@@ -235,10 +235,7 @@ pub fn colorize_mask(mask: &MaskBuffer, color: egui::Color32) -> egui::ColorImag
         ));
     }
 
-    egui::ColorImage {
-        size: [mask.width as usize, mask.height as usize],
-        pixels,
-    }
+    egui::ColorImage::new([mask.width as usize, mask.height as usize], pixels)
 }
 
 /// Suggested default overlay colour: orange at ~50% alpha. Matches

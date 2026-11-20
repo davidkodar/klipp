@@ -51,7 +51,7 @@ impl CustomEditor for LutFileEditor {
                                     let file = portable(&file);
                                     if ui.selectable_label(file == path, name).clicked() {
                                         ctx.cmds.push(with(ctx.addr.clone(), file));
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                 }
                             });

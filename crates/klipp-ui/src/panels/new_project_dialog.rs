@@ -181,7 +181,7 @@ impl NewProjectDialog {
         let mut result = None;
         let mut close = false;
 
-        let screen_width = ctx.screen_rect().width();
+        let screen_width = ctx.content_rect().width();
         let control_scale = (screen_width / 1920.0).clamp(1.0, 1.5);
         let dialog_width = (screen_width * 0.34).clamp(560.0, 760.0);
         crate::widgets::window("New Project")
@@ -299,7 +299,7 @@ impl NewProjectDialog {
                                     }
                                     Err(e) => {
                                         let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                                        ui.add_enabled(false, egui::SelectableLabel::new(false, format!("{name} (unreadable)"))).on_disabled_hover_text(e.as_str());
+                                        ui.add_enabled(false, egui::Button::selectable(false, format!("{name} (unreadable)"))).on_disabled_hover_text(e.as_str());
                                     }
                                 }
                             }

@@ -323,7 +323,7 @@ fn plain_slider_escape_cancels_rail_and_number_drags() {
             run.frame(Vec::new(), egui::Modifiers::NONE);
             let (_, number) = run.row(label).expect("slider row");
             let at = if rail {
-                number - egui::vec2(run.ctx.style().spacing.slider_width * 0.6, 0.0)
+                number - egui::vec2(run.ctx.global_style().spacing.slider_width * 0.6, 0.0)
             } else { number };
             run.button(at, egui::PointerButton::Primary, true);
             for dx in [6.0, 12.0, 18.0] {

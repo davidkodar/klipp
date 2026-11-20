@@ -44,6 +44,14 @@
 //! * The engine never knows about egui. All communication flows
 //!   through `AppCommand` / `AppEvent` (defined in `klipp-core`).
 
+// egui 0.34 marks as deprecated some calls Klipp still makes on purpose,
+// each of which still does what it did in egui 0.29: `Context::run` for
+// test frames, panels shown on the context (`show` rather than
+// `show_inside`), the old popup function and popup memory calls, and
+// `show_tooltip_at`. Moving them changes layout code and is measured on
+// its own, not folded into the version move.
+#![allow(deprecated)]
+
 pub mod app;
 pub mod project_paths;
 pub mod auto_align;
@@ -85,6 +93,8 @@ pub mod subject_track;
 pub mod graded_thumbs;
 pub mod icons;
 pub mod inspector;
+#[cfg(test)]
+pub(crate) mod screen_texts;
 pub mod spelling;
 pub mod auditions;
 pub mod role_badge;
@@ -131,6 +141,7 @@ pub mod hardware;
 pub mod ui_util;
 pub mod viewer_lut;
 pub mod widgets;
+pub mod colour32;
 
 pub use app::KlippApp;
 pub use prefs::Preferences;

@@ -1,3 +1,4 @@
+use crate::widgets::colour_field::ColourField;
 pub(crate) mod keyframe_selection;
 mod vector_path;
 pub mod key_column;
@@ -35,12 +36,12 @@ use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 
 fn inspector_scope_banner(ui: &mut egui::Ui, theme: &KlippTheme, scope: &str, detail: &str) {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.accent_subtle)
         .stroke(egui::Stroke::new(1.0_f32, theme.accent))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 5.0))
-        .outer_margin(egui::Margin::symmetric(0.0, 4.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(8, 5))
+        .outer_margin(egui::Margin::symmetric(0, 4))
         .show(ui, |ui| {
             // Wrapped, so a narrow column takes it on more lines rather
             // than widening to fit it and pushing every row after it off
@@ -218,7 +219,7 @@ impl NewInspectorPanel {
                 ui.cursor().min,
                 egui::vec2(ui.available_width(), banner_h),
             );
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(banner_rect), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(banner_rect), |ui| {
                 // Amber background
                 ui.painter().rect_filled(banner_rect, 0.0, theme.bg_panel_alt);
                 ui.painter().hline(banner_rect.x_range(), banner_rect.max.y, egui::Stroke::new(1.0_f32, theme.border));
@@ -313,7 +314,7 @@ impl NewInspectorPanel {
                     let chip = egui::Button::new(egui::RichText::new(format!("\u{25C6} {label}")).size(10.0).color(accent))
                         .fill(accent.gamma_multiply(0.12))
                         .stroke(egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.45)))
-                        .rounding(8.0)
+                        .corner_radius(8.0)
                         .small();
                     if ui.add(chip).on_hover_text("Show it here and its curve in the Curve Editor").clicked() {
                         *active_tab = *tab;
@@ -411,7 +412,7 @@ impl NewInspectorPanel {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let text = egui::RichText::new("\u{25C6} Keyframes").size(10.0);
-                    let toggle = ui.add_enabled(fits, egui::SelectableLabel::new(self.key_column && fits, text));
+                    let toggle = ui.add_enabled(fits, egui::Button::selectable(self.key_column && fits, text));
                     let toggle = if fits { toggle.on_hover_text("Show each parameter's keys beside it") } else { toggle.on_disabled_hover_text("Widen the Inspector to show each parameter's keys beside it") };
                     if toggle.clicked() {
                         self.key_column = !self.key_column;
@@ -568,9 +569,9 @@ impl NewInspectorPanel {
                             // 12 px horizontal content rail — every row in
                             // show_title_editor inherits the same horizontal
                             // inset, so nothing touches the inspector edges.
-                            egui::Frame::none()
+                            egui::Frame::NONE
                                 .inner_margin(egui::Margin {
-                                    left: 12.0, right: 12.0, top: 0.0, bottom: 0.0,
+                                    left: 12, right: 12, top: 0, bottom: 0,
                                 })
                                 .show(ui, |ui| {
                                     let full = |ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, chips: &mut title_tab::TitleChips| {
@@ -626,7 +627,7 @@ impl NewInspectorPanel {
             if let (true, Some((_, clip))) = (column_w > 0.0, clip_info) {
                 let seen = ui.clip_rect();
                 // Never past the panel's visible edge, or the last keys are cut.
-                let right = (top.x + full).min(seen.max.x).min(ui.ctx().screen_rect().max.x);
+                let right = (top.x + full).min(seen.max.x).min(ui.ctx().content_rect().max.x);
                 let column = egui::Rect::from_x_y_ranges(top.x + content_width..=right, seen.min.y.max(top.y)..=seen.max.y.min(rows_drawn.response.rect.max.y));
                 let edge = egui::Rect::from_x_y_ranges(column.min.x - 3.0..=column.min.x + 3.0, column.y_range());
                 let grip = ui.interact(edge, ui.id().with("key_column_edge"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
@@ -721,7 +722,7 @@ fn show_template_controls(
                         });
                 }
                 crate::parameterized_templates::TemplateValue::Color(color) => {
-                    changed = ui.color_edit_button_rgba_unmultiplied(color).changed();
+                    changed = ui.colour_rgba_unmultiplied(color).changed();
                 }
             }
         });
@@ -2044,16 +2045,16 @@ fn show_title_pinned_core_textbox(
     // Its misspelt words underlined, a right-click on one offering what
     // it might have been (#3236).
     let language = crate::spelling::language_of(state.sequence(), clip_id, None);
-    let (text_resp, respelt) = egui::Frame::none()
+    let (text_resp, respelt) = egui::Frame::NONE
         .fill(theme.bg_raised)
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             let (out, respelt) = crate::spelling::show(
                 ui,
                 &state.spelling,
                 &mut text_buf,
-                |e| e.desired_width(f32::INFINITY).desired_rows(2).frame(false),
+                |e| e.desired_width(f32::INFINITY).desired_rows(2).frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2))),
                 &language,
                 egui::FontId::proportional(13.0),
                 ui.visuals().text_color(),
@@ -2158,10 +2159,10 @@ fn show_title_pinned_core_textbox(
         }
         ui.add_space(8.0);
         let mut size = display_size;
-        let size_resp = egui::Frame::none()
+        let size_resp = egui::Frame::NONE
             .fill(theme.bg_raised)
-            .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
                 ui.add(
                     crate::widgets::number_field(&mut size)
@@ -2491,12 +2492,12 @@ fn show_title_pinned_core_textbox(
     let mut color_key_toggled = false;
     ui.horizontal(|ui| {
         // Larger swatch to match the reference (~44x28 px). egui's
-        // default color_edit_button is tiny; bumping interact_size
+        // default colour swatch is tiny; bumping interact_size
         // in a scoped Ui sizes the swatch up without custom popup code.
         let swatch_changed = ui
             .scope(|ui| {
                 ui.spacing_mut().interact_size = egui::vec2(44.0, 28.0);
-                ui.color_edit_button_srgba(&mut col).changed()
+                ui.colour_srgba(&mut col).changed()
             })
             .inner;
         if swatch_changed {
@@ -2517,10 +2518,10 @@ fn show_title_pinned_core_textbox(
             if color_is_mixed {
                 ui.label(egui::RichText::new("Mixed").size(rows::TEXT).color(theme.text_secondary));
             }
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(theme.bg_raised)
-                .rounding(4.0)
-                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
                     ui.label(
                         egui::RichText::new(format!("{}%", opacity_pct as u32))
@@ -2533,10 +2534,10 @@ fn show_title_pinned_core_textbox(
             // it, so the swatch / slider / % row reads as three
             // equal-height components.
             let slider_outer_w = ui.available_width().max(36.0);
-            let slider_changed = egui::Frame::none()
+            let slider_changed = egui::Frame::NONE
                 .fill(theme.bg_raised)
-                .rounding(4.0)
-                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
                     ui.set_width(slider_outer_w - 16.0);
                     ui.spacing_mut().slider_width = slider_outer_w - 16.0;
@@ -2771,7 +2772,7 @@ fn show_title_quick_style_subsection(
             ("P", [180, 80, 220, 255]),
         ];
         for (label, c) in preset_colors {
-            let btn_color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+            let btn_color = crate::colour32::rgba(c[0], c[1], c[2], c[3]);
             let resp = ui.add(
                 egui::Button::new(egui::RichText::new(*label).size(10.0).color(
                     if c[0] as u16 + c[1] as u16 + c[2] as u16 > 400 {
@@ -3069,7 +3070,7 @@ fn show_title_effects_group(
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(g.color[0], g.color[1], g.color[2], g.color[3]);
-                    if ui.color_edit_button_srgba(&mut col).changed() {
+                    if ui.colour_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleGlowLayer {
                             clip_id,
                             index: i as u32,
@@ -3220,7 +3221,7 @@ fn show_title_effects_group(
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(ol.color[0], ol.color[1], ol.color[2], ol.color[3]);
-                    if ui.color_edit_button_srgba(&mut col).changed() {
+                    if ui.colour_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleOutlineLayer {
                             clip_id,
                             index: i as u32,
@@ -3404,7 +3405,7 @@ fn show_title_effects_group(
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(sh.color[0], sh.color[1], sh.color[2], sh.color[3]);
-                    if ui.color_edit_button_srgba(&mut col).changed() {
+                    if ui.colour_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleShadowLayer {
                             clip_id,
                             index: i as u32,
@@ -3617,7 +3618,7 @@ fn show_title_effects_group(
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(sh.color[0], sh.color[1], sh.color[2], sh.color[3]);
-                    if ui.color_edit_button_srgba(&mut col).changed() {
+                    if ui.colour_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleInnerShadowLayer {
                             clip_id,
                             index: i as u32,
@@ -4186,7 +4187,7 @@ fn show_title_shape_editor(
             let mut c = egui::Color32::from_rgba_premultiplied(
                 cur_fill[0], cur_fill[1], cur_fill[2], cur_fill[3],
             );
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 cmds.push(AppCommand::SetTitleShapeFill {
                     clip_id,
                     object_id: object_id.0,
@@ -4220,7 +4221,7 @@ fn show_title_shape_editor(
             let mut c = egui::Color32::from_rgba_premultiplied(
                 cur_stroke_color[0], cur_stroke_color[1], cur_stroke_color[2], cur_stroke_color[3],
             );
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 cmds.push(AppCommand::SetTitleShapeStroke {
                     clip_id,
                     object_id: object_id.0,
@@ -4285,11 +4286,11 @@ fn show_title_layers_panel(
 
     // Iterate top-down (last in objects = front layer = top of list).
     let total = td.objects.len();
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_panel)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(6.0, 6.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(6, 6))
         .show(ui, |ui| {
             if total == 0 {
                 ui.label(
@@ -4349,7 +4350,7 @@ fn show_title_layers_panel(
                 if resp.clicked() {
                     ui.memory_mut(|m| m.toggle_popup(popup_id));
                 }
-                egui::popup::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                egui::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
                     ui.set_min_width(140.0);
                     for (shape_kind, name) in TITLE_SHAPES {
                         if ui.button(*name).clicked() {
@@ -4395,10 +4396,10 @@ fn compact_axis_input(
     crate::param_focus::tag_keys(ui, keyframes);
     let tag = crate::param_focus::take_tag(ui);
     let mut picked = false;
-    let framed = egui::Frame::none()
+    let framed = egui::Frame::NONE
         .fill(theme.bg_raised)
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.set_width(col_w - 16.0);
             ui.horizontal(|ui| {
@@ -4499,7 +4500,7 @@ fn effect_color_row(
         let swatch_changed = ui
             .scope(|ui| {
                 ui.spacing_mut().interact_size = egui::vec2(swatch_w, row_h);
-                ui.color_edit_button_srgba(color).changed()
+                ui.colour_srgba(color).changed()
             })
             .inner;
         if swatch_changed {
@@ -4511,15 +4512,15 @@ fn effect_color_row(
         let mut hex_buf: String = ui.ctx().data_mut(|d| {
             d.get_temp::<String>(buf_id).unwrap_or_else(|| current_hex.clone())
         });
-        let hex_resp = egui::Frame::none()
+        let hex_resp = egui::Frame::NONE
             .fill(theme.bg_raised)
-            .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width().max(40.0));
                 ui.add(
                     egui::TextEdit::singleline(&mut hex_buf)
-                        .frame(false)
+                        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2)))
                         .desired_width(f32::INFINITY)
                         .font(egui::FontId::monospace(11.0)),
                 )
@@ -4664,10 +4665,10 @@ fn effect_param_row(
         }
 
         // Value pill — framed, right-aligned text.
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(theme.bg_raised)
-            .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
                 ui.set_width(pill_w - 16.0);
                 ui.with_layout(
@@ -4734,7 +4735,7 @@ fn pill_toggle_button(
     let btn = egui::Button::new(rich)
         .fill(fill)
         .min_size(egui::vec2(28.0, 28.0))
-        .rounding(4.0);
+        .corner_radius(4.0);
     ui.add(btn)
 }
 
@@ -4756,13 +4757,13 @@ fn pill_toggle_icon_button(
         egui::Sense::click(),
     );
     let painter = ui.painter();
-    painter.rect_filled(rect, egui::Rounding::same(4.0), fill);
+    painter.rect_filled(rect, egui::CornerRadius::same(4), fill);
     let icon_size = 14.0;
     let icon_rect = egui::Rect::from_center_size(
         rect.center(),
         egui::vec2(icon_size, icon_size),
     );
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(icon_rect), |ui| {
         ui.add(icon.image(icon_size).tint(tint));
     });
     resp
@@ -4976,12 +4977,12 @@ fn show_title_editor(
                     }
                 }
             }
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(theme.accent_subtle)
                 .stroke(egui::Stroke::new(1.0_f32, theme.accent))
-                .rounding(4.0)
-                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-                .outer_margin(egui::Margin::symmetric(0.0, 4.0))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .outer_margin(egui::Margin::symmetric(0, 4))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let icon_size = 12.0;
@@ -5690,7 +5691,7 @@ fn show_title_editor(
     }
     if bg_kind > 0 {
         let mut bg_col = egui::Color32::from_rgba_premultiplied(bg_color[0], bg_color[1], bg_color[2], bg_color[3]);
-        if ui.color_edit_button_srgba(&mut bg_col).changed() {
+        if ui.colour_srgba(&mut bg_col).changed() {
             cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind, color: [bg_col.r(), bg_col.g(), bg_col.b(), bg_col.a()] });
         }
         // Round-trip stable: convert alpha to percentage and back to ensure the slider
@@ -5816,11 +5817,11 @@ fn show_title_editor(
         let mut color_changed = false;
         ui.horizontal(|ui| {
             ui.label("Face:");
-            color_changed |= ui.color_edit_button_srgba(&mut face_col).changed();
+            color_changed |= ui.colour_srgba(&mut face_col).changed();
         });
         ui.horizontal(|ui| {
             ui.label("Side:");
-            color_changed |= ui.color_edit_button_srgba(&mut side_col).changed();
+            color_changed |= ui.colour_srgba(&mut side_col).changed();
         });
         crate::param_focus::tag_keys(ui, kfs_lighting);
         let resp_lighting = rows::param_row(
@@ -6036,7 +6037,7 @@ fn show_transition_inspector(
         ui.cursor().min,
         egui::vec2(ui.available_width(), 42.0),
     );
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(header_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| {
         ui.painter().rect_filled(header_rect, 0.0, theme.bg_deep);
         ui.painter().hline(
             header_rect.x_range(),
@@ -6071,9 +6072,9 @@ fn show_transition_inspector(
         .map(|(_, n)| *n)
         .unwrap_or("Unknown");
 
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_raised)
-        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(if is_crossfade { "CROSSFADE" } else { "TRANSITION" })
@@ -6279,7 +6280,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -6330,7 +6331,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -6403,7 +6404,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -6908,7 +6909,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -7042,7 +7043,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -7317,7 +7318,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -7560,7 +7561,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -8184,7 +8185,7 @@ fn show_generator_editor(
                 let mut c = egui::Color32::from_rgba_premultiplied(
                     color[0], color[1], color[2], color[3],
                 );
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     cmds.push(AppCommand::UpdateGeneratorData {
                         clip_id,
                         data: klipp_core::GeneratorData::SolidColor {
@@ -8262,7 +8263,7 @@ fn show_generator_editor(
                         corners.top_right[0], corners.top_right[1],
                         corners.top_right[2], corners.top_right[3],
                     );
-                    if ui.color_edit_button_srgba(&mut tl).changed() {
+                    if ui.colour_srgba(&mut tl).changed() {
                         let mut new_corners = corners;
                         new_corners.top_left = [tl.r(), tl.g(), tl.b(), tl.a()];
                         cmds.push(AppCommand::UpdateGeneratorData {
@@ -8276,7 +8277,7 @@ fn show_generator_editor(
                     }
                     ui.label(egui::RichText::new("TL").size(10.0).color(theme.text_dim));
                     ui.add_space(8.0);
-                    if ui.color_edit_button_srgba(&mut tr).changed() {
+                    if ui.colour_srgba(&mut tr).changed() {
                         let mut new_corners = corners;
                         new_corners.top_right = [tr.r(), tr.g(), tr.b(), tr.a()];
                         cmds.push(AppCommand::UpdateGeneratorData {
@@ -8300,7 +8301,7 @@ fn show_generator_editor(
                         corners.bottom_right[0], corners.bottom_right[1],
                         corners.bottom_right[2], corners.bottom_right[3],
                     );
-                    if ui.color_edit_button_srgba(&mut bl).changed() {
+                    if ui.colour_srgba(&mut bl).changed() {
                         let mut new_corners = corners;
                         new_corners.bottom_left = [bl.r(), bl.g(), bl.b(), bl.a()];
                         cmds.push(AppCommand::UpdateGeneratorData {
@@ -8314,7 +8315,7 @@ fn show_generator_editor(
                     }
                     ui.label(egui::RichText::new("BL").size(10.0).color(theme.text_dim));
                     ui.add_space(8.0);
-                    if ui.color_edit_button_srgba(&mut br).changed() {
+                    if ui.colour_srgba(&mut br).changed() {
                         let mut new_corners = corners;
                         new_corners.bottom_right = [br.r(), br.g(), br.b(), br.a()];
                         cmds.push(AppCommand::UpdateGeneratorData {
@@ -8334,7 +8335,7 @@ fn show_generator_editor(
                     let mut c = egui::Color32::from_rgba_premultiplied(
                         top[0], top[1], top[2], top[3],
                     );
-                    if ui.color_edit_button_srgba(&mut c).changed() {
+                    if ui.colour_srgba(&mut c).changed() {
                         cmds.push(AppCommand::UpdateGeneratorData {
                             clip_id,
                             data: klipp_core::GeneratorData::Gradient {
@@ -8353,7 +8354,7 @@ fn show_generator_editor(
                     let mut c = egui::Color32::from_rgba_premultiplied(
                         bottom[0], bottom[1], bottom[2], bottom[3],
                     );
-                    if ui.color_edit_button_srgba(&mut c).changed() {
+                    if ui.colour_srgba(&mut c).changed() {
                         cmds.push(AppCommand::UpdateGeneratorData {
                             clip_id,
                             data: klipp_core::GeneratorData::Gradient {
@@ -8508,14 +8509,14 @@ fn show_generator_editor(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Text").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(new_text[0], new_text[1], new_text[2], new_text[3]);
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     new_text = [c.r(), c.g(), c.b(), c.a()];
                 }
             });
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Background").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(new_bg[0], new_bg[1], new_bg[2], new_bg[3]);
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     new_bg = [c.r(), c.g(), c.b(), c.a()];
                 }
             });
@@ -8578,7 +8579,7 @@ fn show_generator_editor(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Text").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(new_text[0], new_text[1], new_text[2], new_text[3]);
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     new_text = [c.r(), c.g(), c.b(), c.a()];
                     changed = true;
                 }
@@ -8586,7 +8587,7 @@ fn show_generator_editor(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Background").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(new_bg[0], new_bg[1], new_bg[2], new_bg[3]);
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     new_bg = [c.r(), c.g(), c.b(), c.a()];
                     changed = true;
                 }
@@ -8632,9 +8633,9 @@ fn show_generator_editor(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Colours").strong().size(11.0));
                 let mut ca = egui::Color32::from_rgba_premultiplied(a2[0], a2[1], a2[2], a2[3]);
-                if ui.color_edit_button_srgba(&mut ca).changed() { a2 = [ca.r(), ca.g(), ca.b(), ca.a()]; changed = true; }
+                if ui.colour_srgba(&mut ca).changed() { a2 = [ca.r(), ca.g(), ca.b(), ca.a()]; changed = true; }
                 let mut cb = egui::Color32::from_rgba_premultiplied(b2[0], b2[1], b2[2], b2[3]);
-                if ui.color_edit_button_srgba(&mut cb).changed() { b2 = [cb.r(), cb.g(), cb.b(), cb.a()]; changed = true; }
+                if ui.colour_srgba(&mut cb).changed() { b2 = [cb.r(), cb.g(), cb.b(), cb.a()]; changed = true; }
             });
             if ui.add(egui::Slider::new(&mut angle, 0.0..=360.0).text("Angle").suffix("\u{00b0}")).changed() { changed = true; }
             if ui.add(egui::Slider::new(&mut drift, -30.0..=30.0).text("Drift").suffix("\u{00b0}/s")).changed() { changed = true; }
@@ -8656,7 +8657,7 @@ fn show_generator_editor(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Colour").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(col[0], col[1], col[2], col[3]);
-                if ui.color_edit_button_srgba(&mut c).changed() { col = [c.r(), c.g(), c.b(), c.a()]; changed = true; }
+                if ui.colour_srgba(&mut c).changed() { col = [c.r(), c.g(), c.b(), c.a()]; changed = true; }
             });
             if ui.add(egui::Slider::new(&mut amt, 0.0..=1.0).text("Amount")).changed() { changed = true; }
             if ui.add(egui::Slider::new(&mut size, 1.0..=8.0).text("Size").suffix(" px")).changed() { changed = true; }
@@ -8682,7 +8683,7 @@ fn show_generator_editor(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Colour").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(col[0], col[1], col[2], col[3]);
-                if ui.color_edit_button_srgba(&mut c).changed() { col = [c.r(), c.g(), c.b(), c.a()]; changed = true; }
+                if ui.colour_srgba(&mut c).changed() { col = [c.r(), c.g(), c.b(), c.a()]; changed = true; }
             });
             if changed {
                 cmds.push(AppCommand::UpdateGeneratorData {
@@ -8715,7 +8716,7 @@ fn show_generator_editor(
                 let mut c = egui::Color32::from_rgba_premultiplied(
                     color[0], color[1], color[2], color[3],
                 );
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     cmds.push(AppCommand::UpdateGeneratorData {
                         clip_id,
                         data: klipp_core::GeneratorData::Polygon {
@@ -8788,7 +8789,7 @@ fn show_generator_editor(
                 let mut c = egui::Color32::from_rgba_premultiplied(
                     color[0], color[1], color[2], color[3],
                 );
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     cmds.push(AppCommand::UpdateGeneratorData {
                         clip_id,
                         data: klipp_core::GeneratorData::Star {
@@ -8894,10 +8895,7 @@ mod selection_underline_tests {
                 });
             },
         );
-        let texts = out.shapes.iter().filter_map(|s| match &s.shape {
-            egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-            _ => None,
-        }).collect();
+        let texts = crate::screen_texts::screen_texts(&out.shapes);
         (cmds, texts)
     }
 
@@ -8955,10 +8953,7 @@ mod selection_underline_tests {
                     });
                 },
             );
-            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-                _ => None,
-            }).collect();
+            let texts: Vec<(String, egui::Pos2)> = crate::screen_texts::screen_texts(&out.shapes);
             (cmds, texts)
         };
         frame(Vec::new());
@@ -9005,10 +9000,7 @@ mod selection_underline_tests {
                     });
                 },
             );
-            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-                _ => None,
-            }).collect();
+            let texts: Vec<(String, egui::Pos2)> = crate::screen_texts::screen_texts(&out.shapes);
             (cmds, texts)
         };
         frame(Vec::new());
@@ -9155,10 +9147,7 @@ mod title_row_style_tests {
                 egui::CentralPanel::default().show(ctx, |ui| show_title_editor(ui, &KlippTheme::default(), clip, state, &mut cmds, &mut chips));
             },
         );
-        let texts = out.shapes.iter().filter_map(|s| match &s.shape {
-            egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-            _ => None,
-        }).collect();
+        let texts = crate::screen_texts::screen_texts(&out.shapes);
         let rules = out.shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::LineSegment { points, .. } if points[0].y == points[1].y && (points[1].x - points[0].x).abs() > 100.0 => Some(points[0].y),
             _ => None,
@@ -9237,7 +9226,7 @@ mod title_row_style_tests {
             }
             frame(&ctx, &clip, &state, Vec::new());
             let focused = ctx.memory(|m| m.focused()).expect("a field has the keys");
-            assert!(ctx.wants_keyboard_input(), "one click, typing");
+            assert!(ctx.egui_wants_keyboard_input(), "one click, typing");
             // Ctrl+A: the field's text, start to end.
             let ctrl = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
             frame(&ctx, &clip, &state, vec![egui::Event::Key { key: egui::Key::A, physical_key: Some(egui::Key::A), pressed: true, repeat: false, modifiers: ctrl }]);
@@ -9433,6 +9422,10 @@ mod fits_its_column_tests {
         state.sequences[0].tracks[v].clips.push(clip);
         let prefs = crate::prefs::Preferences::default();
         let ctx = egui::Context::default();
+        // Only what Klipp draws: egui 0.34's debug builds outline a widget
+        // whose rect changed id between the two frames (here the scroll
+        // bar's strip as the layout settles), in red past the column.
+        ctx.all_styles_mut(|s| s.debug.warn_if_rect_changes_id = false);
         crate::icons::install(&ctx);
         let mut panel = NewInspectorPanel { key_column: keys, key_column_w: 150.0, ..Default::default() };
         let mut right = 0.0_f32;
@@ -9442,14 +9435,18 @@ mod fits_its_column_tests {
         for _ in 0..2 {
             let mut active = tab;
             let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1600.0))), ..Default::default() }, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     edge = ui.max_rect().right();
                     let _ = panel.show(ui, &state, &prefs, &KlippTheme::default(), &mut active);
                 });
             });
-            right = out.shapes.iter().map(|s| s.shape.visual_bounding_rect()).filter(|r| r.is_finite()).map(|r| r.right()).fold(0.0, f32::max);
+            // What is drawn, as far as it shows: a shape's part outside its
+            // clip is never seen (egui 0.34's scroll-edge fade spans 3 px
+            // past the column, clipped there).
+            let shown = |s: &egui::epaint::ClippedShape| s.shape.visual_bounding_rect().intersect(s.clip_rect);
+            right = out.shapes.iter().map(shown).filter(|r| r.is_finite() && r.is_positive()).map(|r| r.right()).fold(0.0, f32::max);
             // What runs over, by its text where it has one.
-            over = out.shapes.iter().filter(|s| s.shape.visual_bounding_rect().right() > edge + 1.0).map(|s| match &s.shape {
+            over = out.shapes.iter().filter(|s| shown(s).is_positive() && shown(s).right() > edge + 1.0).map(|s| match &s.shape {
                 egui::Shape::Text(t) => format!("text {:?} to {:.0}", t.galley.text(), s.shape.visual_bounding_rect().right()),
                 other => format!("{} to {:.0}", match other { egui::Shape::Rect(_) => "rect", egui::Shape::LineSegment { points, .. } => return format!("line {points:?}"), egui::Shape::Path(_) => "path", _ => "shape" }, s.shape.visual_bounding_rect().right()),
             }).collect();
@@ -9478,7 +9475,7 @@ mod fits_its_column_tests {
         for _ in 0..2 {
             let mut active = InspectorTab::Effects;
             let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 1600.0))), ..Default::default() }, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     let _ = panel.show(ui, &state, &prefs, &KlippTheme::default(), &mut active);
                 });
             });

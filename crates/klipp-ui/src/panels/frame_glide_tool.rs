@@ -194,7 +194,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, frame: egui::Rect, cmds: &m
         egui::Align2::CENTER_BOTTOM,
         "Drag to move \u{00b7} corner to size \u{00b7} Esc: done",
         egui::FontId::proportional(12.0),
-        egui::Color32::from_white_alpha(220),
+        crate::colour32::white(220),
     );
     painter.rect_filled(done_at, 3.0, if over_done { egui::Color32::from_gray(70) } else { egui::Color32::from_black_alpha(190) });
     painter.text(done_at.center(), egui::Align2::CENTER_CENTER, "Done", egui::FontId::proportional(13.0), egui::Color32::WHITE);

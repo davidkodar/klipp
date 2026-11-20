@@ -192,7 +192,7 @@ impl GpuEffectsPipeline {
             dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
-        self.device.poll(wgpu::Maintain::Poll);
+        let _ = self.device.poll(wgpu::PollType::Poll);
     }
 
     /// Apply qualifier (secondary color correction) on GPU.

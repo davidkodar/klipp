@@ -38,7 +38,7 @@ pub const SMALL_SCREEN_NOTE_ID: &str = "klipp_small_screen_note";
 /// dismiss it. Never a blocking dialog.
 pub fn show_small_screen_note(ctx: &egui::Context, state: &mut AppState, theme: &KlippTheme) {
     let Some(pct) = state.small_screen_note else { return };
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     let open_id = egui::Id::new("klipp_small_screen_sizes");
     let mut sizes_open = ctx.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
     egui::Area::new(egui::Id::new(SMALL_SCREEN_NOTE_ID))
@@ -245,11 +245,11 @@ pub fn show_tour(ctx: &egui::Context, state: &mut AppState, kb: &KeyBindings, th
         return;
     };
     let step = &steps[at];
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     let target = anchor_rect(ctx, &step.anchor);
     if let Some(r) = target {
         ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("klipp_tour_ring")))
-            .rect_stroke(r.expand(3.0), 4.0_f32, egui::Stroke::new(2.0_f32, theme.accent));
+            .rect_stroke(r.expand(3.0), 4.0_f32, egui::Stroke::new(2.0_f32, theme.accent), egui::StrokeKind::Outside);
     }
     const WIDTH: f32 = 300.0;
     const HEIGHT: f32 = 150.0;
@@ -469,7 +469,7 @@ mod tests {
         let mut drawn = |state: &mut AppState| -> bool {
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 600.0))), ..Default::default() };
             let out = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     let _ = panel.show(ui, state, &theme, &mut old, &kb, false);
                 });
             });

@@ -399,7 +399,7 @@ impl KlippApp {
     pub(super) fn serve_window_capture(&mut self, ctx: &egui::Context) {
         let Some((path, max_width, asked)) = self.state.window_capture.clone() else { return };
         if !asked {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
             ctx.request_repaint();
             self.state.window_capture = Some((path, max_width, true));
             return;
@@ -415,7 +415,7 @@ impl KlippApp {
             return;
         };
         self.state.window_capture = None;
-        let size = ctx.input(|i| i.screen_rect().size());
+        let size = ctx.input(|i| i.content_rect().size());
         *self.state.control_shared.window_view.lock().unwrap_or_else(|e| e.into_inner()) = Some(klipp_core::WindowView { width_points: size.x, height_points: size.y, zoom: ctx.zoom_factor() });
         let [w, h] = image.size;
         let rgba: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();

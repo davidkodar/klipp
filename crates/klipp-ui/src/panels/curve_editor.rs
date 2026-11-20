@@ -292,7 +292,7 @@ fn start_track_menu(ui: &mut egui::Ui, state: &AppState, clip_id: klipp_core::Cl
                         for (label, param, value) in params {
                             if menu_item(ui, &label, "").clicked() {
                                 picked = Some((param, value));
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                     })
@@ -641,7 +641,7 @@ impl CurveEditorPanel {
     fn curve_list(&mut self, ui: &mut egui::Ui, rect: Rect, theme: &KlippTheme) {
         let mut activate = None;
         let mut remove = None;
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
             for (i, curve) in self.curves.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     let colour = Self::curve_colour(i, theme);
@@ -948,7 +948,7 @@ impl CurveEditorPanel {
         let scope = self.scope(state);
 
         // Header content
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(header_rect), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(8.0);
 
@@ -1045,7 +1045,7 @@ impl CurveEditorPanel {
                         for (label, curve) in addable {
                             if ui.button(label).clicked() {
                                 self.show_with(curve);
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                     })
@@ -1688,7 +1688,7 @@ impl CurveEditorPanel {
         }
 
         // ── Border ──
-        painter.rect_stroke(clip_rect, 0.0, Stroke::new(0.5_f32, theme.border));
+        painter.rect_stroke(clip_rect, 0.0, Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
     }
 
     /// The selected keys' exact time and value, typed (#2272), and their
@@ -1811,7 +1811,7 @@ impl CurveEditorPanel {
                         cmds.extend(crate::panels::timeline::key_interpolation_commands(state, m, i));
                     }
                     cmds.push(AppCommand::EndHistoryBatch);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             });
             if !masked {
@@ -1824,7 +1824,7 @@ impl CurveEditorPanel {
                                 cmds.extend(crate::panels::timeline::key_handles_commands(state, m, handles));
                             }
                             cmds.push(AppCommand::EndHistoryBatch);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });
@@ -1945,7 +1945,7 @@ impl CurveEditorPanel {
                         state.key_selection.keys = landed.iter().map(|t| crate::key_selection::KeyRef { param_kind: kind.clone(), time_secs: *t }).collect();
                         state.key_selection.clip_id = Some(clip_id);
                     }
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             });
         });
@@ -2334,7 +2334,7 @@ impl CurveEditorPanel {
             if let Some(pos) = pointer_pos {
                 let r = Rect::from_two_pos(from, pos);
                 painter.rect_filled(r, 0.0, theme.accent.gamma_multiply(0.12));
-                painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, theme.accent));
+                painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
                 if response.drag_stopped() {
                     let at = |p: egui::Pos2| (self.x_to_time(p.x, graph_rect, clip_duration), self.y_to_value(p.y, graph_rect, v_min, v_range));
                     let found = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();

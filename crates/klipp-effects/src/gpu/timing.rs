@@ -122,7 +122,7 @@ impl GpuEffectsPipeline {
                 None
             }
             Reading::Mapping(n, flag) => {
-                self.device.poll(wgpu::Maintain::Poll);
+                let _ = self.device.poll(wgpu::PollType::Poll);
                 let mapped = *flag.lock().unwrap_or_else(|e| e.into_inner());
                 match mapped {
                     None => {

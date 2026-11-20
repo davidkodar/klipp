@@ -172,17 +172,17 @@ pub fn color_slider_with_edit(
 
             // Background for edit field
             painter.rect_filled(edit_rect, 2.0, theme.bg_deep);
-            painter.rect_stroke(edit_rect, 2.0, egui::Stroke::new(1.0_f32, text_accent));
+            painter.rect_stroke(edit_rect, 2.0, egui::Stroke::new(1.0_f32, text_accent), egui::StrokeKind::Outside);
 
-            let edit_resp = ui.allocate_new_ui(
+            let edit_resp = ui.scope_builder(
                 egui::UiBuilder::new().max_rect(edit_rect),
                 |ui| {
                     let te = egui::TextEdit::singleline(&mut edit_state.edit_buf)
                         .font(egui::FontId::monospace(10.0))
                         .text_color(text_accent)
                         .desired_width(value_w - 4.0)
-                        .margin(egui::Margin::symmetric(2.0, 0.0))
-                        .frame(false);
+                        .margin(egui::Margin::symmetric(2, 0))
+                        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(2, 0)));
                     let r = ui.add(te);
                     // Auto-focus on first frame
                     if !r.has_focus() {

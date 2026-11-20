@@ -935,11 +935,11 @@ pub fn mark_gpu_stage(s: GpuStage) {
 /// result on the provided channel, or the 2-second timeout expires.
 ///
 /// Replaces the classic `submit → map_async → device.poll(Wait) →
-/// rx.recv()` pattern. On a UI-shared device `Maintain::Wait` never
+/// rx.recv()` pattern. On a UI-shared device `PollType::wait_indefinitely()` never
 /// returns (the UI's egui paint + present submits keep the queue
 /// non-empty), and even `WaitForSubmissionIndex` doesn't reliably
 /// drive the mapping callback past the submission's completion on
-/// the wgpu-22 Vulkan backend. Polling with `Maintain::Poll`
+/// the wgpu-22 Vulkan backend. Polling with `PollType::Poll`
 /// explicitly processes ready callbacks without blocking, so the
 /// engine thread can't get starved by UI traffic.
 ///
@@ -952,11 +952,11 @@ pub fn poll_until_mapped(
 ) -> Result<Result<(), wgpu::BufferAsyncError>, std::sync::mpsc::RecvTimeoutError> {
     let start = std::time::Instant::now();
     loop {
-        // Non-blocking poll. On wgpu-22, `Maintain::Poll` drives
+        // Non-blocking poll. On wgpu-22, `PollType::Poll` drives
         // completed submissions' map callbacks — critical because
         // without it the callback never fires even though the GPU
         // work is done.
-        device.poll(wgpu::Maintain::Poll);
+        let _ = device.poll(wgpu::PollType::Poll);
         match rx.try_recv() {
             Ok(v) => return Ok(v),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -1571,7 +1571,7 @@ impl GpuEffectsPipeline {
             let _ = tx.send(());
         });
         while t.elapsed() < std::time::Duration::from_secs(2) {
-            self.device.poll(wgpu::Maintain::Poll);
+            let _ = self.device.poll(wgpu::PollType::Poll);
             if rx.try_recv().is_ok() {
                 break;
             }

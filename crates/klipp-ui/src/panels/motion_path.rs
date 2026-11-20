@@ -70,7 +70,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, image_rect: Rect, frame_w: 
     let at = |t: f64| (klipp_core::keyframe::evaluate(&xs, t, now.position_x), klipp_core::keyframe::evaluate(&ys, t, now.position_y));
     let screen = |(x, y): (f32, f32)| pos2(centre.x + x * sx, centre.y + y * sy);
     let painter = ui.painter_at(image_rect);
-    let line = Color32::from_rgba_unmultiplied(255, 255, 255, 170);
+    let line = crate::colour32::rgba(255, 255, 255, 170);
     let (first, last) = (times[0], times[times.len() - 1]);
 
     // The path, and a tick at each frame.

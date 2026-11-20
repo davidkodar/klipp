@@ -210,7 +210,7 @@ fn contrast_typed_after_a_double_click_is_this_clips() {
     views.tab(vec![key(egui::Key::A, ctrl)]);
     let range = egui::TextEdit::load_state(&views.tab, field).and_then(|s| s.cursor.char_range()).expect("a selection");
     assert_eq!((range.primary.index.min(range.secondary.index), range.primary.index.max(range.secondary.index)), (0, "0.00".len()), "Ctrl+A selected the field's text");
-    assert!(views.tab.wants_keyboard_input(), "and the field still has the keys, so Select All is not read");
+    assert!(views.tab.egui_wants_keyboard_input(), "and the field still has the keys, so Select All is not read");
     views.busy = false;
     views.tab(vec![egui::Event::Text("0.4".into())]);
     views.tab(vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
@@ -242,7 +242,7 @@ fn every_row_of_the_colour_tab_shows_in_the_inspector() {
     for frame in 0..3 {
         let input = egui::RawInput { screen_rect: Some(screen), time: Some(frame as f64 * 0.1), ..Default::default() };
         out = Some(ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                 let mut tab = crate::layout_state::InspectorTab::Color;
                 let _ = panel.show(ui, &state, &prefs, &theme, &mut tab);
             });
@@ -284,7 +284,7 @@ fn each_tab_keeps_its_own_scroll() {
         time += 0.1;
         let input = egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() };
         let out = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                 let mut tab = tab;
                 let _ = panel.show(ui, &state, &prefs, &theme, &mut tab);
             });
@@ -303,7 +303,7 @@ fn each_tab_keeps_its_own_scroll() {
     }
     let at = screen.center();
     for _ in 0..10 {
-        frame(InspectorTab::Title, vec![egui::Event::PointerMoved(at), egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -400.0), modifiers: egui::Modifiers::NONE }]);
+        frame(InspectorTab::Title, vec![egui::Event::PointerMoved(at), egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -400.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move }]);
     }
     let mut shown = Vec::new();
     for _ in 0..3 {

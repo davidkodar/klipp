@@ -2614,7 +2614,7 @@ impl KlippApp {
             let draw_export = |ui: &mut egui::Ui| {
                 let btn = egui::Button::new(egui::RichText::new("Export").color(fg))
                     .fill(fill)
-                    .rounding(4.0)
+                    .corner_radius(4.0)
                     .min_size(egui::vec2(140.0, h));
                 ui.add_enabled(path_ok, btn)
                     .on_disabled_hover_text(disabled_reason)
@@ -2725,7 +2725,7 @@ impl KlippApp {
             // As tall as the window allows, no taller than it needs, with
             // the buttons pinned to its foot and the form scrolling above
             // (#2941): sized to its contents, it ran off a short screen.
-            let size = export_dialog_size(ctx.screen_rect());
+            let size = export_dialog_size(ctx.content_rect());
             crate::widgets::window("Export Sequence")
                 .collapsible(false)
                 .resizable(false)
@@ -3338,7 +3338,7 @@ mod export_foot_tests {
         for frame in 0..3 {
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)), time: Some(frame as f64 * 0.1), ..Default::default() };
             let out = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     export_column(ui, rect, "test", &theme, &mut |ui, part| match part {
                         ExportPart::Form => {
                             for i in 0..120 {

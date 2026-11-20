@@ -304,7 +304,7 @@ pub(crate) fn show_color_and_luts(
                                         egui::Color32::WHITE,
                                     );
                                     // Subtle border around thumbnail
-                                    ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(0.5_f32, theme.border));
+                                    ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
                                 }
                             }
                             // Text: white for active, dim for others

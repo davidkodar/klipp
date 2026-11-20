@@ -55,7 +55,7 @@ impl Viewer {
         let mut cmds = Vec::new();
         let (panel, state, theme, over) = (&mut self.panel, &mut self.state, &self.theme, self.window_over);
         let out = self.ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| cmds = panel.show(ui, state, theme, &crate::keybindings::KeyBindings::default()));
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| cmds = panel.show(ui, state, theme, &crate::keybindings::KeyBindings::default()));
             if let Some(over) = over {
                 crate::widgets::window("Over").fixed_pos(over.min).fixed_size(over.size()).show(ctx, |ui| { ui.allocate_space(ui.available_size()); });
             }
@@ -167,7 +167,7 @@ mod multicam_mode_program_tests {
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(v.clock), ..Default::default() };
         let (panel, state, theme) = (&mut v.panel, &mut v.state, &v.theme);
         let out = v.ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| { panel.show(ui, state, theme, &crate::keybindings::KeyBindings::default()); });
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| { panel.show(ui, state, theme, &crate::keybindings::KeyBindings::default()); });
         });
         out.shapes.iter().map(|s| match &s.shape {
             egui::Shape::Text(t) => format!("text {} at {:?}", t.galley.text(), t.pos),
