@@ -45,6 +45,7 @@ members = [
     "crates/klipp-audio-search",
     "crates/klipp-graph-format",
     "crates/klipp-graph-lift",
+    "crates/klipp-veylvik",
 ]
 resolver = "2"
 
