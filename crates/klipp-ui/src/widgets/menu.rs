@@ -115,6 +115,36 @@ fn paint_in_slot(ui: &egui::Ui, resp: &egui::Response, icon: Icon) {
 }
 
 /// Menus in the one row layout, opened from a widget or a submenu row.
+/// How Klipp's menus close: on a click outside them, and otherwise when
+/// the code says so, as every menu did in egui 0.29 (an item closes its
+/// menu with `close_kind(UiKind::Menu)`). egui 0.34 closes a menu on any
+/// click inside it by default, so a category header or a field in a menu
+/// closed the menu it was in. Submenus take their root's config.
+pub fn menu_config() -> egui::containers::menu::MenuConfig {
+    egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+}
+
+/// `response.context_menu(add)` with [`menu_config`]: its submenus and
+/// what is inside it keep it open until an item closes it.
+pub fn context_menu<R>(response: &egui::Response, add: impl FnOnce(&mut egui::Ui) -> R) -> Option<egui::InnerResponse<R>> {
+    let config = menu_config();
+    egui::Popup::context_menu(response)
+        .close_behavior(config.close_behavior)
+        .info(egui::UiStackInfo::new(egui::UiKind::Menu).with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config))
+        .show(add)
+}
+
+/// `ui.menu_button(title, add)` with [`menu_config`], in egui's own look.
+pub fn menu_button<R>(ui: &mut egui::Ui, title: impl Into<egui::WidgetText>, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {
+    let title = title.into();
+    let (response, inner) = if egui::containers::menu::is_in_menu(ui) {
+        egui::containers::menu::SubMenuButton::new(title).config(menu_config()).ui(ui, add)
+    } else {
+        egui::containers::menu::MenuButton::new(title).config(menu_config()).ui(ui, add)
+    };
+    egui::InnerResponse::new(inner.map(|i| i.inner), response)
+}
+
 pub trait MenuRows {
     /// `context_menu`, its rows in the menu style.
     fn context_menu_rows(&self, add: impl FnOnce(&mut egui::Ui)) -> Option<egui::InnerResponse<()>>;
@@ -122,7 +152,7 @@ pub trait MenuRows {
 
 impl MenuRows for egui::Response {
     fn context_menu_rows(&self, add: impl FnOnce(&mut egui::Ui)) -> Option<egui::InnerResponse<()>> {
-        self.context_menu(|ui| menu_body(ui, add))
+        context_menu(self, |ui| menu_body(ui, add))
     }
 }
 
@@ -136,7 +166,15 @@ pub trait SubmenuRows {
 
 impl SubmenuRows for egui::Ui {
     fn menu_rows<R>(&mut self, title: impl Into<egui::WidgetText>, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {
-        self.menu_button(title, |ui| menu_body(ui, add))
+        // egui's `menu_button`, with Klipp's close behaviour (see
+        // [`menu_config`]); a submenu in a menu, a menu elsewhere.
+        let title = title.into();
+        let (response, inner) = if egui::containers::menu::is_in_menu(self) {
+            egui::containers::menu::SubMenuButton::new(title).config(menu_config()).ui(self, |ui| menu_body(ui, add))
+        } else {
+            egui::containers::menu::MenuButton::new(title).config(menu_config()).ui(self, |ui| menu_body(ui, add))
+        };
+        egui::InnerResponse::new(inner.map(|i| i.inner), response)
     }
 
     fn menu_rows_with_icon<R>(&mut self, icon: Icon, title: impl Into<egui::WidgetText>, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {

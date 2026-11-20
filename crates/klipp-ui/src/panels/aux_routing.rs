@@ -233,7 +233,7 @@ pub fn bus_strip(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, cm
     // Its name; right-click to rename it or take it out.
     let name = ui.add(egui::Label::new(egui::RichText::new(&bus.name).size(10.0).color(theme.text_primary)).truncate().sense(egui::Sense::click()))
         .on_hover_text("An aux bus: the tracks that send to it mixed through its effects. Right-click to rename it or take it out.");
-    name.context_menu(|ui| {
+    crate::widgets::menu::context_menu(&name, |ui| {
         let key = ui.make_persistent_id(("bus_rename", bus.id));
         let mut text: String = ui.data_mut(|d| d.get_temp(key)).unwrap_or_else(|| bus.name.clone());
         let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(120.0));
@@ -407,7 +407,7 @@ pub fn sends_popup(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, 
         ui.separator();
         let free: Vec<&AuxBus> = routing.buses.iter().filter(|b| !sends.iter().any(|s| s.bus == b.id)).collect();
         ui.add_enabled_ui(sends.len() < MAX_SENDS, |ui| {
-            ui.menu_button("Send to", |ui| {
+            crate::widgets::menu::menu_button(ui, "Send to", |ui| {
                 for b in &free {
                     if ui.button(&b.name).clicked() {
                         let bus = b.id;

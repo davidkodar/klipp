@@ -395,7 +395,7 @@ pub fn show(
     }
     let mut replacement = None;
     if let Some(target) = ui.data(|d| d.get_temp::<Target>(id)) {
-        output.response.context_menu(|ui| {
+        crate::widgets::menu::context_menu(&output.response, |ui| {
             if let Some(choice) = menu(ui, &target) {
                 replacement = act(choice, &target, &text, cmds);
             }

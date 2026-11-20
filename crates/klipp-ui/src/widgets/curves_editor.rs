@@ -480,7 +480,7 @@ pub fn curves_editor_in(
         ui.data_mut(|d| d.insert_temp(menu_id, at));
     }
     let menu_point: Option<usize> = ui.data(|d| d.get_temp(menu_id)).flatten();
-    response.context_menu(|ui| match menu_point.filter(|&i| i > 0 && i + 1 < points.len()) {
+    crate::widgets::menu::context_menu(&response, |ui| match menu_point.filter(|&i| i > 0 && i + 1 < points.len()) {
         Some(i) => {
             if ui.button("Delete point").clicked() {
                 points.remove(i);

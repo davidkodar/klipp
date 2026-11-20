@@ -2095,7 +2095,7 @@ impl ViewerPanel {
         if let Some(target) = ui.data(|d| d.get_temp::<crate::spelling::Target>(target_id)) {
             let text = state.viewer_text_edit_buffer.clone();
             let mut respelt = None;
-            hit.context_menu(|ui| {
+            crate::widgets::menu::context_menu(&hit, |ui| {
                 if let Some(choice) = crate::spelling::menu(ui, &target) {
                     respelt = crate::spelling::act(choice, &target, &text, cmds);
                 }
