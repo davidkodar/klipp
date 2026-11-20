@@ -247,7 +247,10 @@ impl Compositor {
             }
             None => Composed::new(&self.device, &self.queue, w, h),
         };
-        let at = crate::time_from_secs(secs);
+        // The frame's own start, exactly: a time rounded on the way (to
+        // microseconds, say) can fall a hair before it, and Veylvik then
+        // asks for the frame before, which Klipp hasn't given it.
+        let at = frame_time(index, live.fps);
         let rendered = live.source.render(at, [w, h], &out.buffer, &working_pixels(working)).map_err(|e| e.to_string());
         // Klipp's frame is the footage of this render only.
         *live.current.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -440,6 +443,13 @@ fn salt(key: &LiveKey) -> u64 {
 
 fn frame_index(secs: f64, fps: f64) -> i64 {
     (secs * fps + 1e-6).floor() as i64
+}
+
+/// The start of frame `index` at `fps`, exact: the frame Veylvik's
+/// footage reads at it is `index` again.
+fn frame_time(index: i64, fps: f64) -> Time {
+    let rate = rate_of(fps);
+    Time { ticks: index * i64::from(rate.rate), rate: rate.ticks as u32 }
 }
 
 /// `fps` as Veylvik's exact rate: whole rates as they are, NTSC's as
@@ -678,6 +688,21 @@ mod tests {
         assert_eq!(parts(rate_of(30000.0 / 1001.0)), (30000, 1001));
         assert_eq!(parts(rate_of(24000.0 / 1001.0)), (24000, 1001));
         assert_eq!(parts(rate_of(12.5)), (12500, 1000));
+    }
+
+    /// A frame's time names that frame again where Veylvik's footage reads
+    /// it, at every rate and far into a clip. In microseconds, every third
+    /// frame at 23.976 named the frame before.
+    #[test]
+    fn a_frames_time_names_that_frame() {
+        for fps in [24000.0 / 1001.0, 30000.0 / 1001.0, 60000.0 / 1001.0, 25.0, 24.0, 12.5] {
+            for index in (0..20_000).chain([1_000_000, 10_000_000]) {
+                let secs = frame_time(index, fps).seconds().unwrap();
+                assert_eq!(frame_index(secs, fps), index, "{fps} fps, frame {index}");
+            }
+        }
+        let rounded = crate::time_from_secs(1.0 / (24000.0 / 1001.0)).seconds().unwrap();
+        assert_eq!(frame_index(rounded, 24000.0 / 1001.0), 0, "what microseconds did");
     }
 
     /// The wrapper answers every question the trait asks: a method the

@@ -300,7 +300,7 @@ fn main() -> Result<()> {
                      klipp_nodes=debug,klipp_compose=debug,\
                      klipp_ml=debug,klipp_ml_candle=debug,klipp_ml_ort=debug,\
                      klipp_render=debug,klipp_export=debug,klipp_analysis=debug,\
-                     klipp_control=debug,klipp_document=debug,\
+                     klipp_control=debug,klipp_document=debug,klipp_veylvik=debug,\
                      wgpu=warn,naga=warn",
                 )
             }),
