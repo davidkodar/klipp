@@ -285,6 +285,20 @@ type FrameStamp = (u64, bool, u64);
 /// the picture the engine made.
 pub const GPU_VIEWER_SAMPLE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
+/// The view of the viewer texture to sample: through
+/// [`GPU_VIEWER_SAMPLE_FORMAT`], and for sampling only. A view takes all
+/// of its texture's usages unless given its own (wgpu 23 and later, as
+/// WebGPU does), and the viewer texture is a storage texture too, which
+/// an sRGB view can't be: without the usage the view was invalid and the
+/// viewer drew nothing while playing.
+pub fn gpu_viewer_sample_view(texture: &wgpu::Texture) -> wgpu::TextureView {
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        format: Some(GPU_VIEWER_SAMPLE_FORMAT),
+        usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+        ..Default::default()
+    })
+}
+
 impl FrameBuffer {
     /// Publish a complete answer, including an empty answer. A nearby
     /// filmstrip image must not replace the same request's viewer render.

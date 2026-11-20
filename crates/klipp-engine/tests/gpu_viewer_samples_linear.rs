@@ -6,7 +6,7 @@
 //! too bright beside the paused frame and the export (#455). Skips
 //! without a GPU.
 
-use klipp_engine::texture::{FrameBuffer, GPU_VIEWER_SAMPLE_FORMAT};
+use klipp_engine::texture::{gpu_viewer_sample_view, FrameBuffer};
 
 /// Read texel (0,0) of `view` in a compute pass, as the fragment shader
 /// would sample it.
@@ -79,7 +79,7 @@ fn the_viewer_texture_samples_as_the_linear_light_it_encodes() {
         wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(16), rows_per_image: Some(4) },
         wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
     );
-    let view = tex.create_view(&wgpu::TextureViewDescriptor { format: Some(GPU_VIEWER_SAMPLE_FORMAT), ..Default::default() });
+    let view = gpu_viewer_sample_view(&tex);
     let got = load(&device, &queue, &view);
     let want = klipp_color::transfer::srgb_to_linear(128.0 / 255.0);
     for c in 0..3 {

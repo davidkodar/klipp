@@ -555,10 +555,7 @@ impl KlippApp {
             let source = {
                 let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.gpu_output.as_ref().map(|t| {
-                    let view = t.create_view(&wgpu::TextureViewDescriptor {
-                        format: Some(klipp_engine::texture::GPU_VIEWER_SAMPLE_FORMAT),
-                        ..Default::default()
-                    });
+                    let view = klipp_engine::texture::gpu_viewer_sample_view(t);
                     (view, (t.width(), t.height()))
                 })
             };
@@ -623,10 +620,7 @@ impl KlippApp {
         // encodes it for the screen. A plain view encoded the picture a
         // second time, so playback looked washed out beside the paused
         // frame and the export (#455).
-        let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(klipp_engine::texture::GPU_VIEWER_SAMPLE_FORMAT),
-            ..Default::default()
-        });
+        let view = klipp_engine::texture::gpu_viewer_sample_view(&texture);
 
         let mut renderer = render_state.renderer.write();
         // Order matters here. egui-wgpu's `register_native_texture`
