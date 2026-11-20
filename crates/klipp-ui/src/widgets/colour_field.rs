@@ -88,6 +88,9 @@ fn edit(ui: &mut Ui, value: &mut [u8; 4], alpha: bool) -> Response {
     Popup::from_toggle_button_response(&button)
         .id(popup_id)
         .align(RectAlign { parent: Align2::RIGHT_BOTTOM, child: Align2::LEFT_TOP })
+        // No other side to flip to: near the window's edge it is pushed
+        // back inside, overlapping the swatch, as egui 0.29's was.
+        .align_alternatives(&[])
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.spacing_mut().slider_width = SLIDER_WIDTH;
