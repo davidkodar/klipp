@@ -53,6 +53,7 @@ klipp-ml-ort = { workspace = true, optional = true }
 klipp-title = { workspace = true }
 klipp-spelling = { workspace = true }
 klipp-project = { workspace = true }
+klipp-veylvik = { workspace = true }
 klipp-graph-lift = { workspace = true }
 klipp-graph-format = { workspace = true }
 egui = { workspace = true }

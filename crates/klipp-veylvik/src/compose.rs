@@ -43,6 +43,7 @@ pub struct Compositor {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     state: Mutex<State>,
+    renders: std::sync::atomic::AtomicU64,
 }
 
 /// A composition's bytes and what reading them gave.
@@ -89,7 +90,7 @@ impl Compositor {
     /// Veylvik's renderer on `device`.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, adapter: wgpu::AdapterInfo) -> Result<Self, String> {
         let renderer = Renderer::from_device((*device).clone(), (*queue).clone(), adapter).map_err(|e| e.to_string())?;
-        Ok(Self { renderer: Arc::new(renderer), device, queue, state: Mutex::new(State::default()) })
+        Ok(Self { renderer: Arc::new(renderer), device, queue, state: Mutex::new(State::default()), renders: Default::default() })
     }
 
     /// The one compositor of this process, on Klipp's shared GPU context:
@@ -100,7 +101,12 @@ impl Compositor {
             .get_or_init(|| {
                 let ctx = klipp_effects::gpu_context::GpuContext::shared()?;
                 match Compositor::new(ctx.device(), ctx.queue(), ctx.adapter_info()?.clone()) {
-                    Ok(c) => Some(Arc::new(c)),
+                    Ok(c) => {
+                        if let Some(held) = PROJECT.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                            c.set_compositions(held);
+                        }
+                        Some(Arc::new(c))
+                    }
                     Err(why) => {
                         tracing::warn!("Veylvik compositions are shown as their media: Veylvik's renderer could not start on Klipp's device ({why})");
                         None
@@ -108,6 +114,11 @@ impl Compositor {
                 }
             })
             .clone()
+    }
+
+    /// Pictures asked of Veylvik so far, rendered or failed.
+    pub fn renders(&self) -> u64 {
+        self.renders.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -145,8 +156,8 @@ impl Compositor {
 
     /// `inner` with every clip that names a composition shown through it,
     /// in `working`.
-    pub fn source<'a>(self: &'a Arc<Self>, inner: &'a mut dyn FrameSource, working: WorkingColorspace) -> CompositionSource<'a> {
-        CompositionSource { compositor: self, inner, working }
+    pub fn source<'a>(self: &Arc<Self>, inner: &'a mut dyn FrameSource, working: WorkingColorspace) -> CompositionSource<'a> {
+        CompositionSource { compositor: Arc::clone(self), inner, working }
     }
 
     /// The composition `id`, read from its bytes once.
@@ -167,6 +178,7 @@ impl Compositor {
     /// `clip`'s picture at `secs` in its media through composition `id`,
     /// `frame` being Klipp's own frame of it there. `Err` says why not.
     fn render(&self, clip: &Clip, id: CompositionId, secs: f64, fps: f64, frame: &SourceFrame, working: WorkingColorspace) -> Result<SourceFrame, String> {
+        self.renders.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let footage = self.on_gpu(frame)?;
         let mut state = self.state();
         let composition = Self::composition(&mut state, id)?;
@@ -245,6 +257,62 @@ impl Compositor {
         if self.state().told.insert(id) {
             tracing::warn!("a clip's Veylvik composition {id} is shown as its media: {why}");
         }
+    }
+}
+
+/// The open project's compositions, as the app last said: what every
+/// render's clips are shown through once [`install`] has run.
+static PROJECT: Mutex<Option<Compositions>> = Mutex::new(None);
+
+/// The open project's compositions now: on open, on a save that gave a
+/// copied clip its own, on a new project (none). Veylvik's renderer starts
+/// with the first frame that needs it, never for a project without any.
+pub fn set_project_compositions(compositions: Compositions) {
+    let mut project = PROJECT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(Some(compositor)) = SHARED.get() {
+        compositor.set_compositions(compositions.clone());
+    }
+    *project = (!compositions.is_empty()).then_some(compositions);
+}
+
+/// The media under the clips changed: Veylvik's footage frames of it are
+/// not used again.
+pub fn media_changed() {
+    if let Some(Some(compositor)) = SHARED.get() {
+        compositor.media_changed();
+    }
+}
+
+/// Show clips through their compositions in every Klipp render from now
+/// on. Once, at start-up; `false` when something else was installed.
+pub fn install() -> bool {
+    klipp_compose::source_wrap::install(Arc::new(Wrap))
+}
+
+struct Wrap;
+
+impl klipp_compose::source_wrap::SourceWrap for Wrap {
+    fn active(&self) -> bool {
+        // The lock let go before the renderer starts: starting reads it.
+        let any = PROJECT.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        any && Compositor::shared().is_some()
+    }
+
+    fn wrap<'a>(&self, inner: &'a mut dyn FrameSource, working: WorkingColorspace) -> Box<dyn FrameSource + 'a> {
+        match Compositor::shared() {
+            Some(compositor) => Box::new(compositor.source(inner, working)),
+            None => Box::new(Unwrapped(inner)),
+        }
+    }
+}
+
+/// A source read as it is: only if the renderer went away between
+/// `active` and `wrap`, which it doesn't.
+struct Unwrapped<'a>(&'a mut dyn FrameSource);
+
+impl FrameSource for Unwrapped<'_> {
+    fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        self.0.frame(clip, source_secs, width, height)
     }
 }
 
@@ -361,7 +429,7 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &wgpu::Buffer) 
 
 /// A frame source whose clips with a composition are shown through it.
 pub struct CompositionSource<'a> {
-    compositor: &'a Arc<Compositor>,
+    compositor: Arc<Compositor>,
     inner: &'a mut dyn FrameSource,
     working: WorkingColorspace,
 }

@@ -302,6 +302,7 @@ impl KlippApp {
         self.sync_media_pool_to_engine();
         self.state.title_assets.clear();
         self.state.compositions.clear();
+        self.sync_compositions_to_engine();
         self.state.looks.clear();
         // A new project carries no fonts of its own (#3009).
         klipp_title::catalogue::set_project_fonts(Vec::new());
@@ -655,6 +656,7 @@ impl KlippApp {
         // A clip copied with its composition gets one of its own, so the
         // file never has two clips sharing one.
         if klipp_project::compositions::fork_shared(&mut self.state.sequences, &mut self.state.compositions) > 0 {
+            self.sync_compositions_to_engine();
             self.sync_sequence_to_engine();
         }
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
@@ -962,6 +964,7 @@ impl KlippApp {
                 // is said, and its clip shows its media.
                 let (compositions, unread) = klipp_project::compositions::load_compositions(path, &self.state.sequences);
                 self.state.compositions = compositions;
+                self.sync_compositions_to_engine();
                 if let Some(first) = unread.first() {
                     let more = if unread.len() > 1 { format!(" ({} more)", unread.len() - 1) } else { String::new() };
                     self.state.toast.show(format!("{first}{more}"));

@@ -149,6 +149,13 @@ impl KlippApp {
         *pool = self.state.media_pool.clone();
         drop(pool);
         self.sync_log_formats_to_decoders();
+        // A file replaced, relinked or proxied under a composed clip.
+        klipp_veylvik::media_changed();
+    }
+
+    /// Tell every render the project's Veylvik compositions as they are now.
+    pub(super) fn sync_compositions_to_engine(&self) {
+        klipp_veylvik::set_project_compositions(self.state.compositions.clone());
     }
 
     /// Tell the decoders each file's camera log format. The decoder is what

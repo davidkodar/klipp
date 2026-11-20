@@ -3927,6 +3927,7 @@ dependencies = [
  "klipp-title",
  "klipp-transitions",
  "klipp-validation",
+ "klipp-veylvik",
  "libc",
  "notify",
  "png 0.18.1",

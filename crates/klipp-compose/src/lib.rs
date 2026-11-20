@@ -19,6 +19,7 @@ mod title3d_gpu;
 mod still_title_scenes;
 pub mod render;
 pub mod resolve;
+pub mod source_wrap;
 pub mod selfcheck;
 pub mod subject_matte;
 

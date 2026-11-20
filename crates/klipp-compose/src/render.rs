@@ -1546,6 +1546,7 @@ impl Renderer {
         src: &mut dyn FrameSource,
         opts: RenderOptions,
     ) -> Vec<f32> {
+        crate::source_wrap::wrapped_source!(self, src);
         self.render_inspected(seq, time, width, height, src, opts, Inspect::default()).0
     }
 
@@ -1565,6 +1566,7 @@ impl Renderer {
         height: u32,
         src: &mut dyn FrameSource,
     ) -> Option<Vec<f32>> {
+        crate::source_wrap::wrapped_source!(self, src);
         if crate::freeze::live_reason(seq, track, time).is_some() || !seq.tracks.get(track).is_some_and(is_visual) {
             return None;
         }
@@ -1588,6 +1590,7 @@ impl Renderer {
         height: u32,
         src: &mut dyn FrameSource,
     ) -> Option<Vec<f32>> {
+        crate::source_wrap::wrapped_source!(self, src);
         if crate::freeze::live_reason(seq, track, time).is_some() || !seq.tracks.get(track).is_some_and(is_visual) {
             return None;
         }
@@ -1657,6 +1660,7 @@ impl Renderer {
         opts: RenderOptions,
         inspect: Inspect,
     ) -> (Vec<f32>, Inspection) {
+        crate::source_wrap::wrapped_source!(self, src);
         // Captions off the lines a title is on, while both are shown (#2567).
         let moved = crate::captions::captions_clear_of_titles(seq, time, width, height);
         let seq = moved.as_ref().unwrap_or(seq);
@@ -1826,6 +1830,7 @@ impl Renderer {
         opts: RenderOptions,
         target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)> {
+        crate::source_wrap::wrapped_source!(self, src);
         // Captions off the lines a title is on, while both are shown (#2567).
         let moved = crate::captions::captions_clear_of_titles(seq, time, width, height);
         let seq = moved.as_ref().unwrap_or(seq);
@@ -1923,6 +1928,7 @@ impl Renderer {
         src: &mut dyn FrameSource,
         opts: RenderOptions,
     ) -> Option<Vec<f32>> {
+        crate::source_wrap::wrapped_source!(self, src);
         // Captions off the lines a title is on, while both are shown (#2567).
         let moved = crate::captions::captions_clear_of_titles(seq, time, width, height);
         let seq = moved.as_ref().unwrap_or(seq);
@@ -2246,6 +2252,7 @@ impl Renderer {
         src: &mut dyn FrameSource,
         opts: RenderOptions,
     ) -> Option<(Vec<u8>, RenderStats)> {
+        crate::source_wrap::wrapped_source!(self, src);
         let out = DisplayDelivery { texture: None, bytes: true };
         self.render_display_on_gpu(seq, time, width, height, src, opts, out)
             .map(|(bytes, stats)| (bytes.unwrap_or_default(), stats))
@@ -2265,6 +2272,7 @@ impl Renderer {
         opts: RenderOptions,
         out: DisplayDelivery<'_>,
     ) -> Option<(Option<Vec<u8>>, RenderStats)> {
+        crate::source_wrap::wrapped_source!(self, src);
         // Captions off the lines a title is on, while both are shown (#2567).
         let moved = crate::captions::captions_clear_of_titles(seq, time, width, height);
         let seq = moved.as_ref().unwrap_or(seq);

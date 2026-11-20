@@ -29,6 +29,10 @@ impl KlippApp {
         // these files are written under.
         prune_ai_mask_cache();
 
+        // A clip shown through a Veylvik composition gets its picture in
+        // every render; nothing starts until a project holds one.
+        klipp_veylvik::install();
+
         let (thumb_tx, thumb_rx) = crossbeam_channel::unbounded();
         let (source_frame_tx, source_frame_rx) = crossbeam_channel::unbounded();
         let (filmstrip_tx, filmstrip_rx) = crossbeam_channel::unbounded();
