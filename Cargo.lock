@@ -3959,10 +3959,18 @@ name = "klipp-veylvik"
 version = "0.3.6"
 dependencies = [
  "bytemuck",
+ "klipp-analysis",
  "klipp-color",
+ "klipp-compose",
  "klipp-core",
  "klipp-effects",
  "klipp-nodes",
+ "klipp-plugin",
+ "klipp-timeline",
+ "klipp-title",
+ "serde_json",
+ "tracing",
+ "uuid",
  "veylvik-document",
  "veylvik-editor",
  "veylvik-render",

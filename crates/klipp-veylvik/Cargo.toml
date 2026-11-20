@@ -15,7 +15,15 @@ wgpu = { workspace = true }
 klipp-core = { workspace = true }
 klipp-color = { workspace = true }
 klipp-nodes = { workspace = true }
+klipp-compose = { workspace = true }
+klipp-timeline = { workspace = true }
+klipp-effects = { workspace = true }
+klipp-analysis = { workspace = true }
+klipp-plugin = { workspace = true }
+bytemuck = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-klipp-effects = { workspace = true }
-bytemuck = { workspace = true }
+klipp-title = { workspace = true }
+uuid = { workspace = true }

@@ -38,6 +38,9 @@ fn fault(message: impl Into<String>) -> veylvik_render::Error {
     veylvik_render::Error::Message(message.into())
 }
 
+pub mod compose;
+pub use compose::{Compositor, CompositionSource, Compositions, CLIP_MEDIA_KEY};
+
 /// Klipp's frames of one clip's media at a time in the media, on the GPU at
 /// the size it was made for: the clip's `temporal_frames_on_gpu`.
 pub type FrameFetch = Box<dyn FnMut(f64) -> Option<Arc<dyn GpuFramePixels>> + Send>;
@@ -45,24 +48,27 @@ pub type FrameFetch = Box<dyn FnMut(f64) -> Option<Arc<dyn GpuFramePixels>> + Se
 /// One clip's media as a Veylvik footage source: frames from Klipp's decoder
 /// on the shared device, never copied to the CPU.
 ///
-/// A frame's identity is the media's `generation` (bumped by Klipp when the
-/// file is replaced or relinked, a proxy is made, or the source grade
-/// changes) and the frame's index at the media's rate, so Veylvik keeps a
-/// picture exactly as long as Klipp's frame under it is the same.
+/// A frame's identity is made of `salt` and the frame's index at the
+/// media's rate. The salt names what the frames are of (the media, how
+/// Klipp delivers them, the session); Klipp gives a new one when the file
+/// is replaced or relinked, a proxy is made or the source grade changes,
+/// so Veylvik keeps a picture exactly as long as Klipp's frame under it is
+/// the same. Veylvik may keep pictures on disk under it: a salt never
+/// comes back to mean other frames in a later session.
 pub struct ClipFootage {
     info: SourceInfo,
     fps: f64,
     size: [u32; 2],
     pixels: HostPixels,
-    generation: u64,
+    salt: u64,
     fetch: Mutex<FrameFetch>,
 }
 
 impl ClipFootage {
     /// `fetch` gives frames `size` pixels in Klipp's working space
     /// (`pixels`); `fps` is the media's frame rate.
-    pub fn new(info: SourceInfo, fps: f64, size: [u32; 2], pixels: HostPixels, generation: u64, fetch: FrameFetch) -> Self {
-        Self { info, fps: if fps > 0.0 { fps } else { 25.0 }, size, pixels, generation, fetch: Mutex::new(fetch) }
+    pub fn new(info: SourceInfo, fps: f64, size: [u32; 2], pixels: HostPixels, salt: u64, fetch: FrameFetch) -> Self {
+        Self { info, fps: if fps > 0.0 { fps } else { 25.0 }, size, pixels, salt, fetch: Mutex::new(fetch) }
     }
 
     /// The index of the media frame shown at `secs`.
@@ -71,10 +77,18 @@ impl ClipFootage {
     }
 }
 
-/// `generation` in the top 24 bits, the frame index in the low 40: a
-/// million hours of frames at 300 fps before two could meet.
-fn identity(generation: u64, index: i64) -> u64 {
-    (generation << 40) | (index as u64 & ((1 << 40) - 1))
+/// `salt` and a frame index mixed into one 64-bit name (SplitMix64's
+/// finaliser): two salts or two frames meet by chance alone.
+fn identity(salt: u64, index: i64) -> u64 {
+    mix(salt ^ mix(index as u64))
+}
+
+/// SplitMix64's finaliser: every bit of `x` moves every bit out.
+pub fn mix(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 impl HostMedia for ClipFootage {
@@ -84,7 +98,7 @@ impl HostMedia for ClipFootage {
 
     fn identity(&self, time: Time) -> u64 {
         let secs = time.seconds().unwrap_or(0.0);
-        identity(self.generation, self.frame_index(secs))
+        identity(self.salt, self.frame_index(secs))
     }
 
     fn frame(&self, time: Time, _target: Option<[u32; 2]>) -> veylvik_render::Result<HostFrame> {
@@ -151,18 +165,20 @@ mod tests {
     }
 
     /// Every time inside a frame names that frame; the next frame and a new
-    /// generation name others.
+    /// salt name others.
     #[test]
-    fn a_frames_identity_is_its_generation_and_index() {
-        let footage = |generation| ClipFootage::new(
+    fn a_frames_identity_is_its_salt_and_index() {
+        let footage = |salt| ClipFootage::new(
             SourceInfo { width: 4, height: 4, duration: None, frame_rate: None, frames: None, description: String::new() },
-            25.0, [4, 4], working_pixels(WorkingColorspace::Rec709Linear), generation, Box::new(|_| None),
+            25.0, [4, 4], working_pixels(WorkingColorspace::Rec709Linear), salt, Box::new(|_| None),
         );
         let a = footage(1);
         let at = |secs: f64| a.identity(time_from_secs(secs));
         assert_eq!(at(0.0), at(0.039));
         assert_ne!(at(0.039), at(0.04));
         assert_eq!(at(1.0), identity(1, 25));
+        assert_ne!(identity(1, 25), identity(2, 25));
+        assert_ne!(identity(1, 25), identity(1, 26));
         assert_ne!(footage(2).identity(time_from_secs(1.0)), at(1.0));
     }
 
