@@ -236,7 +236,7 @@ fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &Kli
                 ui.set_min_width(180.0);
                 if menu_toggle(ui, "Snap (master)", "", cfg.master).clicked() {
                     cmds.push(AppCommand::SetSnapMaster(!cfg.master));
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
                 ui.add_enabled_ui(cfg.master, |ui| {
@@ -249,7 +249,7 @@ fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &Kli
                     for &(target, label, enabled) in rows {
                         if menu_toggle(ui, label, "", enabled).clicked() {
                             cmds.push(AppCommand::SetSnapTarget { target, enabled: !enabled });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     // The grid, one choice (#3056).
@@ -258,7 +258,7 @@ fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &Kli
                     for choice in crate::timeline::snap::Snapper::GRID_CHOICES {
                         if menu_toggle(ui, choice.label(), "", state.grid_snap_interval == choice).clicked() {
                             cmds.push(AppCommand::SetGridInterval(choice));
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });
@@ -473,7 +473,7 @@ fn show_transition_menu(
     ui.add_enabled_ui(enabled, |ui| {
         let response = ui.menu_rows("Transition", |ui| {
             ui.set_min_width(190.0);
-            let max_h = (ui.ctx().screen_rect().height() * 0.65).max(220.0);
+            let max_h = (ui.ctx().content_rect().height() * 0.65).max(220.0);
             egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
                 for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
                     if targets.len() == 1 {
@@ -486,7 +486,7 @@ fn show_transition_menu(
                                 kind_id,
                                 duration_frames: state.default_transition_frames,
                             });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     } else if ui.button(format!("{label} ({} cuts)", targets.len())).clicked() {
                         for &(track_index, clip_a_id, clip_b_id) in &targets {
@@ -498,7 +498,7 @@ fn show_transition_menu(
                                 duration_frames: state.default_transition_frames,
                             });
                         }
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });

@@ -153,7 +153,7 @@ impl KlippApp {
                     let text = format!("Grade {}{}", stage_name(stage).to_lowercase(), if has { " \u{25CF}" } else { "" });
                     if ui.selectable_label(on, text).on_hover_text(tip).clicked() {
                         stage_pick = Some(Some((g.id, stage)));
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 ui.separator();
@@ -166,7 +166,7 @@ impl KlippApp {
                 let taken = |n: &str| seq.grade_groups.iter().any(|g| g.name.eq_ignore_ascii_case(n));
                 let name = (1..).map(|k| format!("Group {k}")).find(|n| !taken(n)).expect("some number is free");
                 cmds.push(AppCommand::CreateGradeGroup { name, clip_ids: selection.clone() });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if !seq.grade_groups.is_empty() {
                 ui.separator();
@@ -174,7 +174,7 @@ impl KlippApp {
                     let members = seq.all_clips().filter(|c| c.grade_group == Some(g.id)).count();
                     if ui.add_enabled(n > 0, egui::Button::new(format!("Add {what} to \u{201c}{}\u{201d} ({members})", g.name))).clicked() {
                         cmds.push(AppCommand::SetClipsGradeGroup { clip_ids: selection.clone(), group: Some(g.id) });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             }
@@ -182,7 +182,7 @@ impl KlippApp {
                 ui.separator();
                 if clip_group == Some(g.id) && ui.button(format!("Take {what} out of \u{201c}{}\u{201d}", g.name)).clicked() {
                     cmds.push(AppCommand::SetClipsGradeGroup { clip_ids: selection.clone(), group: None });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.horizontal(|ui| {
                     ui.label("Name");
@@ -200,7 +200,7 @@ impl KlippApp {
                 });
                 if ui.button(format!("Delete \u{201c}{}\u{201d}", g.name)).on_hover_text("Its grades go; its clips keep their own.").clicked() {
                     cmds.push(AppCommand::DeleteGradeGroup { group: g.id });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
         })
@@ -4088,7 +4088,7 @@ pub(super) fn grade_track_menu(ui: &mut egui::Ui, state: &mut crate::state::AppS
             let text = if *graded { format!("{name} \u{25CF}") } else { name.clone() };
             if ui.selectable_label(state.grade_track == Some(*id), text).on_hover_text("Grade this track: after each of its clips' own grades").clicked() {
                 pick = Some(*id);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         }
     })

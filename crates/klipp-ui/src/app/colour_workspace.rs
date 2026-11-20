@@ -162,7 +162,7 @@ impl KlippApp {
                             self.layout.node_graph_placement = placement;
                             self.state.show_node_strip = true;
                             self.layout_dirty = true;
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     ui.label(egui::RichText::new("Compact windows place nodes below.").small().color(theme.text_dim));
@@ -326,7 +326,7 @@ impl KlippApp {
                                 let btn = egui::Button::new(egui::RichText::new(label).size(crate::theme::type_scale::CAPTION).color(text_c).strong())
                                     .fill(bg)
                                     .min_size(egui::vec2(20.0, crate::theme::control::COMPACT - 4.0))
-                                    .rounding(crate::theme::radius::CONTROL);
+                                    .corner_radius(crate::theme::radius::CONTROL);
                                 if ui.add(btn).on_hover_text(format!("Show the {label} channel")).clicked() { *enabled = !*enabled; }
                             }
                         }
@@ -637,7 +637,7 @@ impl KlippApp {
         let dropdown_id = egui::Id::new("scope_settings_dropdown");
         // Cap the visible height so the popover doesn't push past the
         // window bottom on small viewers; ScrollArea handles overflow.
-        let max_content_h = (ui.ctx().screen_rect().height() - toggle_bar_rect.max.y - 32.0)
+        let max_content_h = (ui.ctx().content_rect().height() - toggle_bar_rect.max.y - 32.0)
             .clamp(240.0, 720.0);
         let area_response = egui::Area::new(dropdown_id)
             .order(egui::Order::Foreground)

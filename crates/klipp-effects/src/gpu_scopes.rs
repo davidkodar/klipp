@@ -866,7 +866,7 @@ impl ScopeRenderer {
 
     /// The largest input the device binds in one storage buffer.
     fn max_input_bytes(&self) -> u64 {
-        self.device.limits().max_storage_buffer_binding_size as u64
+        self.device.limits().max_storage_buffer_binding_size
     }
 
     fn uniform<T: bytemuck::Pod>(&self, label: &str, v: &T) -> wgpu::Buffer {

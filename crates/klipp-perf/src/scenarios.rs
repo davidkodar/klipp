@@ -317,7 +317,7 @@ fn s04_colorbalance_1node_1080p_gpu_primed(cpu_only: bool) -> ScenarioResult {
         mapped_at_creation: false,
     });
     ctx.queue.write_buffer(&input_buf, 0, &bytes);
-    ctx.device.poll(wgpu::PollType::wait_indefinitely());
+    let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
 
     // No `has_gpu()` pre-check: the executor builds its GPU pipeline
     // lazily, and `prime_chain_from_gpu_u8_buffer` calls `ensure_gpu`

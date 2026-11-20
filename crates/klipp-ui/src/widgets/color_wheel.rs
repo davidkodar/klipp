@@ -108,7 +108,7 @@ pub fn color_wheel_spanned(
         let strip_w = if ks.has_any_keyframes { 36.0 } else { 16.0 };
         let left = center_x + title_w / 2.0 + 2.0;
         let strip = egui::Rect::from_min_size(egui::pos2(left, full_rect.min.y + label_h / 2.0 - 9.0), egui::vec2(strip_w, 18.0));
-        key = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(strip).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+        key = ui.scope_builder(egui::UiBuilder::new().max_rect(strip).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
             crate::widgets::scrubby_param::key_strip(ui, ks)
         }).inner;
     }
@@ -348,7 +348,7 @@ pub fn color_wheel_spanned(
                 w.bg_fill = egui::Color32::TRANSPARENT;
                 w.bg_stroke = egui::Stroke::NONE;
                 w.fg_stroke.color = text;
-                w.corner_radius = egui::Rounding::same(2);
+                w.corner_radius = egui::CornerRadius::same(2);
             }
             // Hover needs to say "this is a field" without repainting
             // the border the channel colour is carried by.

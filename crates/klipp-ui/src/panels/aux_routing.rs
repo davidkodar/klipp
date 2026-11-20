@@ -244,12 +244,12 @@ pub fn bus_strip(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, cm
         if (ui.add_enabled(!named.is_empty() && !taken, egui::Button::new("Rename")).clicked() || (enter && !named.is_empty() && !taken)) && named != bus.name {
             edit(state, cmds, |r| r.buses[at].name = named.chars().take(klipp_timeline::routing::MAX_BUS_NAME).collect());
             ui.data_mut(|d| d.remove::<String>(key));
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
         ui.separator();
         if ui.button("Remove Bus").on_hover_text("Take the bus out, and every send to it").clicked() {
             edit(state, cmds, |r| remove_bus(r, at));
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
     });
 
@@ -414,7 +414,7 @@ pub fn sends_popup(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, 
                         edit(state, cmds, |r| {
                             add_send(r, track, bus);
                         });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 if !free.is_empty() {
@@ -426,7 +426,7 @@ pub fn sends_popup(ui: &mut egui::Ui, theme: &KlippTheme, state: &mut AppState, 
                             add_send(r, track, bus);
                         }
                     });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             });
         });

@@ -609,10 +609,10 @@ pub fn show_content(
         let collapsed_key = card_id.with("collapsed");
         let is_collapsed: bool = ui.ctx().data_mut(|d| d.get_temp(collapsed_key).unwrap_or(false));
 
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(1.0_f32, theme.border))
-            .rounding(4.0)
+            .corner_radius(4.0)
             .inner_margin(egui::Margin::symmetric(8, 6))
             .outer_margin(egui::Margin::symmetric(0, 2))
             .show(ui, |ui| {

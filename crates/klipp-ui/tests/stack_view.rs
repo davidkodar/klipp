@@ -1,6 +1,10 @@
 //! The generated Effects tab (M3 step 12), drawn headless: what it shows
 //! and what its controls send.
 
+// The frame is drawn as the app draws its panels, on the context (see
+// klipp-ui/src/lib.rs on the egui 0.34 deprecations kept).
+#![allow(deprecated)]
+
 use klipp_core::{AppCommand, ClipId, MediaId, RationalTime};
 use klipp_effects::BuiltinEffect as E;
 use klipp_timeline::Clip;

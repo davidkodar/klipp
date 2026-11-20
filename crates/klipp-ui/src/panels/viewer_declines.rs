@@ -101,7 +101,7 @@ mod tests {
             let (state, panel) = (&mut self.state, &mut self.panel);
             let mut cmds = Vec::new();
             let out = self.ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     cmds = panel.show(ui, state, &theme, &crate::keybindings::KeyBindings::default());
                 });
             });

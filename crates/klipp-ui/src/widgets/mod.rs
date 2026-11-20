@@ -30,7 +30,7 @@ pub mod wordmark;
 /// never sits over the menus (#3428). `egui` would otherwise open it at the
 /// window's top left.
 pub fn below_menu_bar(ctx: &egui::Context) -> egui::Rect {
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     screen.with_min_y(screen.min.y + crate::panels::toolbar::MENU_BAR_HEIGHT)
 }
 

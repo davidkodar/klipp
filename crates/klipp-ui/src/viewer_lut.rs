@@ -338,7 +338,7 @@ mod tests {
         );
         queue.submit(Some(encoder.finish()));
         buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
         let got = buffer.slice(..).get_mapped_range().to_vec();
         got
     }

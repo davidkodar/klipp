@@ -815,7 +815,7 @@ mod readback_cost {
             mapped_at_creation: false,
         }));
         ctx.queue.write_buffer(&buf, 0, &bytes);
-        ctx.device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
 
         let gpu = std::sync::Arc::new(crate::frame::GpuFrame::new(
             ctx.device(),

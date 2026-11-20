@@ -138,7 +138,7 @@ pub fn show_project_doctor_dialog(
         return;
     }
 
-    let screen_rect = ctx.screen_rect();
+    let screen_rect = ctx.content_rect();
     let max_h = (screen_rect.height() * 0.85).clamp(400.0, 720.0);
     let max_w = (screen_rect.width() * 0.70).clamp(560.0, 800.0);
     let default_w = (screen_rect.width() * 0.55).clamp(560.0, max_w);
@@ -288,10 +288,10 @@ fn render_finding(
         Severity::Info => ("\u{2139}", theme.text_secondary),
     };
 
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_raised)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
-        .rounding(4.0)
+        .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(10, 8))
         .outer_margin(egui::Margin::symmetric(0, 2))
         .show(ui, |ui| {

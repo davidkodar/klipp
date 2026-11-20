@@ -328,7 +328,7 @@ pub fn menu(ui: &mut egui::Ui, target: &Target) -> Option<Choice> {
         chose = Some(Choice::Learn);
     }
     if chose.is_some() {
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     chose
 }

@@ -191,7 +191,7 @@ impl PreferencesPanel {
         // app behind has 4K-bright content. Floor at 200 (~78%) for
         // Preferences specifically.
         let backdrop_alpha = prefs.advanced.modal_backdrop_alpha.max(200);
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         egui::Area::new(egui::Id::new("prefs_modal_backdrop"))
             .fixed_pos(egui::pos2(0.0, 0.0))
             .order(egui::Order::Foreground)
@@ -229,14 +229,14 @@ impl PreferencesPanel {
             .default_width(win_w)
             .default_height(win_h)
             .default_pos(egui::pos2(screen.center().x - win_w / 2.0, screen.center().y - win_h / 2.0))
-            .frame(egui::Frame::window(&ctx.style()).fill(theme.bg_void).rounding(4.0).inner_margin(0.0))
+            .frame(egui::Frame::window(&ctx.global_style()).fill(theme.bg_void).corner_radius(4.0).inner_margin(0.0))
             .show(ctx, |ui| {
                 let win_rect = ui.max_rect();
 
                 // ── Title bar ──
                 let title_h = 40.0;
                 let title_rect = egui::Rect::from_min_size(win_rect.min, egui::vec2(win_rect.width(), title_h));
-                ui.painter().rect_filled(title_rect, egui::Rounding { nw: 10, ne: 10, sw: 0, se: 0 }, theme.bg_deep);
+                ui.painter().rect_filled(title_rect, egui::CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, theme.bg_deep);
                 // Close button (red circle)
                 let close_center = egui::pos2(title_rect.left() + 20.0, title_rect.center().y);
                 let close_resp = ui.allocate_rect(egui::Rect::from_center_size(close_center, egui::vec2(16.0, 16.0)), egui::Sense::click());
@@ -312,7 +312,7 @@ impl PreferencesPanel {
                 // Use a child UI whose max_rect is exactly the sidebar area.
                 // This constrains the scroll area AND its scrollbar to this region.
                 let sidebar_child_rect = sidebar_rect.shrink2(egui::vec2(0.0, 0.0));
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_child_rect), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_child_rect), |ui| {
                     ui.set_clip_rect(sidebar_child_rect);
                     ui.set_min_height(sidebar_child_rect.height());
                     egui::ScrollArea::vertical().id_salt("prefs_sidebar").auto_shrink(false).show(ui, |ui| {
@@ -362,7 +362,7 @@ impl PreferencesPanel {
                 });
 
                 // ── Right content panel ──
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                     ui.set_clip_rect(content_rect);
                     ui.set_min_height(content_rect.height());
                     egui::ScrollArea::vertical()
@@ -411,7 +411,7 @@ impl PreferencesPanel {
                     win_rect.max,
                 );
                 let bottom_painter = ui.painter().clone();
-                bottom_painter.rect_filled(bottom_rect, egui::Rounding { nw: 0, ne: 0, sw: 10, se: 10 }, theme.bg_deep);
+                bottom_painter.rect_filled(bottom_rect, egui::CornerRadius { nw: 0, ne: 0, sw: 10, se: 10 }, theme.bg_deep);
                 // Separator line
                 bottom_painter.line_segment(
                     [egui::pos2(bottom_rect.left(), bottom_rect.top()), egui::pos2(bottom_rect.right(), bottom_rect.top())],
@@ -2473,7 +2473,7 @@ impl PreferencesPanel {
             .collapsible(false)
             .resizable(true)
             .default_width(620.0)
-            .max_height(ctx.screen_rect().height() * 0.85)
+            .max_height(ctx.content_rect().height() * 0.85)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(open)
             .show(ctx, |ui| {

@@ -339,34 +339,34 @@ fn slider_row(
                 ui.label(egui::RichText::new("Interpolation").size(11.0).color(theme.text_dim));
                 if ui.selectable_label(ks.current_interpolation == Some(klipp_core::Interpolation::Linear), "Linear").clicked() {
                     resp.keyframe_set_interpolation = Some(klipp_core::Interpolation::Linear);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.selectable_label(ks.current_interpolation == Some(klipp_core::Interpolation::Step), "Step").clicked() {
                     resp.keyframe_set_interpolation = Some(klipp_core::Interpolation::Step);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.selectable_label(ks.current_interpolation == Some(klipp_core::Interpolation::Bezier), "Bezier").clicked() {
                     resp.keyframe_set_interpolation = Some(klipp_core::Interpolation::Bezier);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
                 ui.label(egui::RichText::new("Ease Preset").size(11.0).color(theme.text_dim));
                 if ui.button("Ease In").clicked() {
                     resp.keyframe_ease_preset = Some(EasePreset::EaseIn);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Ease Out").clicked() {
                     resp.keyframe_ease_preset = Some(EasePreset::EaseOut);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Ease Both").clicked() {
                     resp.keyframe_ease_preset = Some(EasePreset::EaseBoth);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             } else {
                 if ui.button("Add Keyframe").clicked() {
                     resp.keyframe_toggled = true;
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
         });
@@ -416,7 +416,7 @@ fn slider_row(
     ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
 
     // Place DragValue inside the input rect
-    let dv_resp = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(input_rect.shrink(2.0)), |ui| {
+    let dv_resp = ui.scope_builder(egui::UiBuilder::new().max_rect(input_rect.shrink(2.0)), |ui| {
         ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
         ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
         ui.style_mut().visuals.widgets.hovered.bg_fill = egui::Color32::TRANSPARENT;
@@ -698,7 +698,7 @@ fn show_clip_audio(
                 egui::pos2(row_rect.max.x - pad - combo_w, row_rect.center().y - 13.0),
                 egui::vec2(combo_w, 26.0),
             );
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
                 egui::ComboBox::from_id_salt("channel_config")
                     .selected_text(channel_config_label(channel_config))
                     .width(combo_w - 10.0)
@@ -782,7 +782,7 @@ fn show_clip_audio(
                 egui::pos2(row_rect.max.x - pad - combo_w, row_rect.center().y - 13.0),
                 egui::vec2(combo_w, 26.0),
             );
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
                 egui::ComboBox::from_id_salt("fade_in_curve")
                     .selected_text(fade_curve_label(fade_in_curve))
                     .width(combo_w - 10.0)
@@ -823,7 +823,7 @@ fn show_clip_audio(
                 egui::pos2(row_rect.max.x - pad - combo_w, row_rect.center().y - 13.0),
                 egui::vec2(combo_w, 26.0),
             );
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(combo_rect), |ui| {
                 egui::ComboBox::from_id_salt("fade_out_curve")
                     .selected_text(fade_curve_label(fade_out_curve))
                     .width(combo_w - 10.0)
@@ -892,7 +892,7 @@ fn show_clip_audio(
         egui::Frame::default()
             .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(1.0_f32, theme.border))
-            .rounding(4.0)
+            .corner_radius(4.0)
             .inner_margin(egui::Margin::symmetric(4, 4))
             .show(ui, |ui| {
                 // Measured inside the frame's margin: from outside it, the
@@ -1776,7 +1776,7 @@ mod clip_audio_tests {
         run(vec![key(egui::Key::A, ctrl)], true);
         let range = egui::TextEdit::load_state(&ctx, field).and_then(|s| s.cursor.char_range()).expect("a selection");
         assert_eq!((range.primary.index.min(range.secondary.index), range.primary.index.max(range.secondary.index)), (0, "1.00".len()), "Ctrl+A selected the field's text");
-        assert!(ctx.wants_keyboard_input(), "and the field still has the keys, so Select All is not read");
+        assert!(ctx.egui_wants_keyboard_input(), "and the field still has the keys, so Select All is not read");
         run(vec![egui::Event::Text("0.5".into())], false);
         let (_, cmds) = run(vec![key(egui::Key::Enter, egui::Modifiers::NONE)], false);
         let set: Vec<_> = cmds.iter().filter_map(|c| match c {

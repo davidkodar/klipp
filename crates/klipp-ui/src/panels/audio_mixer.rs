@@ -426,7 +426,7 @@ fn fader_strip(
     let is_editing = editing_name.as_ref().is_some_and(|(idx, _)| *idx == track_index);
     if is_editing {
         let edit_buf = &mut editing_name.as_mut().unwrap().1;
-        let resp = ui.allocate_new_ui(
+        let resp = ui.scope_builder(
             egui::UiBuilder::new().max_rect(name_rect),
             |ui| {
                 let te = egui::TextEdit::singleline(edit_buf)
@@ -1020,7 +1020,7 @@ pub fn show(
     let mut editing_name = state.mixer_editing_name.take();
 
     // Clip content to mixer panel bounds
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
         ui.set_clip_rect(content_rect);
         ui.set_min_size(content_rect.size());
 
@@ -1300,7 +1300,7 @@ mod tests {
         let theme = KlippTheme::default();
         let mut cmds = Vec::new();
         let out = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                 let rect = egui::Rect::from_min_size(egui::pos2(0.0, 300.0), egui::vec2(1200.0, panel_h));
                 crate::ui_util::allocate_clipped_ui(ui, rect, |ui| {
                     ui.set_min_size(rect.size());
@@ -1328,7 +1328,7 @@ mod tests {
             let theme = KlippTheme::default();
             let mut cmds = Vec::new();
             let out = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     let rect = egui::Rect::from_min_size(egui::pos2(0.0, 300.0), egui::vec2(1200.0, 480.0));
                     crate::ui_util::allocate_clipped_ui(ui, rect, |ui| {
                         ui.set_min_size(rect.size());
@@ -1532,7 +1532,7 @@ mod tests {
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), events, ..Default::default() };
             let mut cmds = Vec::new();
             let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     let rect = egui::Rect::from_min_size(egui::pos2(0.0, 300.0), egui::vec2(1200.0, panel_h));
                     crate::ui_util::allocate_clipped_ui(ui, rect, |ui| {
                         ui.set_min_size(rect.size());

@@ -150,7 +150,7 @@ pub fn show(
         );
         ui.painter().rect_filled(
             bar_rect,
-            egui::Rounding { nw: 0, ne: 2, sw: 0, se: 2 },
+            egui::CornerRadius { nw: 0, ne: 2, sw: 0, se: 2 },
             role_color,
         );
 
@@ -634,7 +634,7 @@ pub fn show(
                             crate::tracks_undo::record(state, before);
                         }
                         cmds.push(AppCommand::SequenceUpdated);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });
@@ -652,7 +652,7 @@ pub fn show(
                             crate::tracks_undo::record(state, before);
                         }
                         cmds.push(AppCommand::SequenceUpdated);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });
@@ -661,7 +661,7 @@ pub fn show(
             if ui.button("Rename Track").clicked() {
                 ui.data_mut(|d| d.insert_temp(rename_id(), (track_id, track_name.clone())));
                 ui.memory_mut(|m| m.request_focus(rename_edit_id()));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             crate::panels::timeline::track_waveform_zoom_item(ui, state, track_idx, &mut cmds);
             // The track's colour, and moving it (#922).
@@ -672,7 +672,7 @@ pub fn show(
                     let text = egui::RichText::new(format!("\u{25CF} {}", label.label())).color(swatch);
                     if ui.selectable_label(own_label == label.to_u8(), text).clicked() {
                         cmds.push(AppCommand::SetTrackColourLabel { track_index: track_idx, label: label.to_u8() });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });
@@ -680,7 +680,7 @@ pub fn show(
                 let apart = state.sequence().tracks[track_idx].channel_waveforms;
                 if menu_toggle(ui, "Show Channels Separately", "", apart).on_hover_text("Each clip's left channel above its right").clicked() {
                     cmds.push(AppCommand::SetTrackChannelWaveforms { track_index: track_idx, on: !apart });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
             let same_kind = |i: &usize| state.sequence().tracks[*i].kind == track_kind;
@@ -690,13 +690,13 @@ pub fn show(
                 if let Some(to) = up {
                     cmds.push(AppCommand::MoveTrack { from: track_idx, to });
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(down.is_some(), egui::Button::new("Move Track Down")).clicked() {
                 if let Some(to) = down {
                     cmds.push(AppCommand::MoveTrack { from: track_idx, to });
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
 
             // Magnetic role options, with their separator only when
@@ -711,19 +711,19 @@ pub fn show(
                     let key = kb.display_for("toggle_audio_skim");
                     if ui.add(egui::Button::new("Create Storyline").shortcut_text(&key)).clicked() {
                         deferred_action = Some(TrackAction::PromoteToStoryline(track_idx));
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 klipp_timeline::TrackRole::ConnectedStoryline => {
                     if ui.button("Break Apart Storyline").clicked() {
                         deferred_action = Some(TrackAction::BreakApartStoryline(track_idx));
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 klipp_timeline::TrackRole::Free => {
                     if ui.button("Set as Primary").clicked() {
                         deferred_action = Some(TrackAction::SetAsPrimary(track_idx));
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 klipp_timeline::TrackRole::Primary => {}
@@ -737,7 +737,7 @@ pub fn show(
                     Some(job) => {
                         if ui.button(format!("Cancel Translation into {} ({:.0}%)", job.language, job.progress * 100.0)).clicked() {
                             let _ = tr::jobs::cancel(&job.id);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     None => {
@@ -746,7 +746,7 @@ pub fn show(
                                 let (from, to) = (tr::language_name(pair.source), tr::language_name(pair.target));
                                 if ui.button(format!("{from} \u{2192} {to}")).on_hover_text("A new subtitle track under this one, each caption translated at its own time; the model downloads the first time").clicked() {
                                     cmds.push(AppCommand::TranslateCaptions { track_id, source: pair.source.into(), target: pair.target.into(), job_id: uuid::Uuid::new_v4().to_string(), glossary: Vec::new(), download: false });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                         });
@@ -766,7 +766,7 @@ pub fn show(
                     let mut pick = |ui: &mut egui::Ui, text: String, language: Option<String>| {
                         if menu_toggle(ui, &text, "", current == language).clicked() {
                             cmds.push(AppCommand::SetTrackLanguage { track_id, language });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     };
                     pick(ui, "None".into(), None);
@@ -792,7 +792,7 @@ pub fn show(
                     let mut pick = |ui: &mut egui::Ui, text: &str, role: Option<klipp_core::roles::RoleRef>| {
                         if menu_toggle(ui, text, "", current == role).clicked() {
                             cmds.push(AppCommand::SetTrackRole { track_id, role });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     };
                     pick(ui, "None", None);
@@ -810,7 +810,7 @@ pub fn show(
                     for mode in klipp_core::automation::AutomationMode::ALL {
                         if menu_toggle(ui, mode.label(), "", mode == current).clicked() {
                             cmds.push(AppCommand::SetTrackAutomationMode { track_index: track_idx, mode });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });
@@ -828,7 +828,7 @@ pub fn show(
             };
             if menu_toggle(ui, "Lock Track", "", locked).clicked() {
                 cmds.push(AppCommand::SetTrackLocked { track_id, locked: !locked });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             // Freeze (#3207): a picture track played from frames drawn
             // ahead, a sound track from its sound drawn ahead.
@@ -846,13 +846,13 @@ pub fn show(
                 };
                 if menu_toggle(ui, "Freeze Track", "Ctrl+Shift+F", frozen).on_hover_text(hint).clicked() {
                     cmds.push(AppCommand::SetTrackFrozen { track_id, frozen: !frozen });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if t.kind == klipp_timeline::TrackKind::Video
                     && ui.button("Bounce to Media File…").on_hover_text("Draw this track alone into a ProRes 4444 or FFV1 file with its transparency and sound, and put a clip of it on a new track above, the original hidden. One undo takes it back").clicked()
                 {
                     cmds.push(AppCommand::OpenBounceDialog { track_id });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 let lock = t.lock_while_frozen;
                 if menu_toggle(ui, "Lock While Frozen", "", lock)
@@ -860,12 +860,12 @@ pub fn show(
                     .clicked()
                 {
                     cmds.push(AppCommand::SetTrackLockWhileFrozen { track_id, on: !lock });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
             if custom_height && ui.button("Reset Track Height").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: None });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             // Sync lock (#915): a ripple on another track moves this one too.
             let sync_on = state.sequence().tracks[track_idx].sync_lock;
@@ -874,7 +874,7 @@ pub fn show(
                 .clicked()
             {
                 cmds.push(AppCommand::SetTrackSyncLock { track_id, on: !sync_on });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             // Track targeting and source patching (#915).
             let (targeted, patched, kind) = {
@@ -886,7 +886,7 @@ pub fn show(
                 .clicked()
             {
                 cmds.push(AppCommand::SetTrackTargeted { track_id, on: !targeted });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             let what = match kind {
                 klipp_timeline::TrackKind::Video => Some("Picture"),
@@ -902,7 +902,7 @@ pub fn show(
                     .clicked()
                 {
                     cmds.push(AppCommand::SetTrackSourcePatch { track_id, on: !patched });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
             ui.separator();
@@ -911,12 +911,12 @@ pub fn show(
             let has_clips = !state.sequence().tracks[track_idx].clips.is_empty();
             if ui.add_enabled(!has_clips, egui::Button::new("Remove Track")).clicked() {
                 cmds.push(AppCommand::RemoveTrack { track_id });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if has_clips
                 && ui.button("Remove Track (with clips)").clicked() {
                     cmds.push(AppCommand::RemoveTrack { track_id });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
         });
 
@@ -1002,24 +1002,24 @@ pub fn show(
         handle_resp.context_menu_rows(|ui| {
             if ui.button("Small (32px)").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(32.0) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Medium (64px)").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(64.0) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Large (120px)").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(120.0) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Expanded (200px)").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(200.0) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.button("Reset to default").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: None });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         });
 
@@ -1062,7 +1062,7 @@ pub fn show(
                         crate::tracks_undo::record(state, before);
                     }
                     cmds.push(AppCommand::SequenceUpdated);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
         });

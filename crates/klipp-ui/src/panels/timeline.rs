@@ -2797,7 +2797,7 @@ impl TimelinePanel {
                                                 }
                                                 cmds.push(AppCommand::EndHistoryBatch);
                                                 close_menu = true;
-                                                ui.close_menu();
+                                                ui.close_kind(egui::UiKind::Menu);
                                             }
                                         }
                                     });
@@ -3876,29 +3876,29 @@ impl TimelinePanel {
         handle_resp.context_menu_rows(|ui| {
             if ui.button("Small (32px)").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(32.0) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Medium (64px)").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(64.0) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Large (120px)").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(120.0) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             let cap = track_height_cap(&state.timeline_prefs);
             if cap > 200.0 && ui.button("Expanded (200px)").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(200.0) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button(format!("Maximum ({cap:.0}px)")).clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(cap) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.button("Reset to default").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: None });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         });
 
@@ -3983,19 +3983,19 @@ impl TimelinePanel {
         handle_resp.context_menu_rows(|ui| {
             if ui.button("Compact (60px)").clicked() {
                 cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: Some(60.0) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Default (120px)").clicked() {
                 cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: None });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Tall (200px)").clicked() {
                 cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: Some(200.0) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Maximum (400px)").clicked() {
                 cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: Some(400.0) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         });
 
@@ -4245,28 +4245,28 @@ impl TimelinePanel {
                         let track = klipp_timeline::Track::new(&name, TrackKind::Video);
                         state.sequences[state.active_sequence_idx].tracks.push(track);
                         cmds.push(AppCommand::SequenceUpdated);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Audio Track").clicked() {
                         let name = state.sequence().next_track_name(TrackKind::Audio);
                         let track = klipp_timeline::Track::new(&name, TrackKind::Audio);
                         state.sequences[state.active_sequence_idx].tracks.push(track);
                         cmds.push(AppCommand::SequenceUpdated);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Text Track").clicked() {
                         let name = format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1);
                         let track = klipp_timeline::Track::new(&name, TrackKind::Text);
                         state.sequences[state.active_sequence_idx].tracks.push(track);
                         cmds.push(AppCommand::SequenceUpdated);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Subtitle Track").clicked() {
                         let name = format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1);
                         let track = klipp_timeline::Track::new(&name, TrackKind::Subtitle);
                         state.sequences[state.active_sequence_idx].tracks.push(track);
                         cmds.push(AppCommand::SequenceUpdated);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 });
             }
@@ -4423,7 +4423,7 @@ impl TimelinePanel {
             let master_label = if snap_cfg.master { "\u{2714} Snap" } else { "    Snap" };
             if ui.button(format!("{master_label} (N)")).clicked() {
                 cmds.push(AppCommand::SetSnapMaster(!snap_cfg.master));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.menu_rows("Snap targets", |ui| {
                 ui.add_enabled_ui(snap_cfg.master, |ui| {
@@ -4437,7 +4437,7 @@ impl TimelinePanel {
                         let row_label = if enabled { format!("\u{2714} {label}") } else { format!("    {label}") };
                         if ui.button(row_label).clicked() {
                             cmds.push(AppCommand::SetSnapTarget { target, enabled: !enabled });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });
@@ -4450,7 +4450,7 @@ impl TimelinePanel {
                     let prefix = if is_selected { "\u{2714} " } else { "    " };
                     if ui.button(format!("{prefix}{}", preset.label())).clicked() {
                         cmds.push(AppCommand::SetGridInterval(preset));
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 // Custom secs is configured from preferences only —
@@ -4475,7 +4475,7 @@ impl TimelinePanel {
                     label: String::new(),
                     color: klipp_core::MarkerColor::Blue,
                 });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
 
             ui.separator();
@@ -4487,18 +4487,18 @@ impl TimelinePanel {
             // already use playhead — match that convention.
             if ui.add(egui::Button::new("Set in point at playhead").shortcut_text("I")).clicked() {
                 cmds.push(AppCommand::MarkRange { in_point: Some(Some(state.playhead)), out_point: None });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add(egui::Button::new("Set out point at playhead").shortcut_text("O")).clicked() {
                 cmds.push(AppCommand::MarkRange { in_point: None, out_point: Some(Some(state.playhead)) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
 
             ui.separator();
 
             if ui.add(egui::Button::new("Zoom to fit").shortcut_text("Z")).clicked() {
                 cmds.push(AppCommand::FitTimelineToWindow);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         });
     }
@@ -5970,7 +5970,7 @@ impl TimelinePanel {
                             let track = klipp_timeline::Track::new(&name, kind);
                             state.sequences[state.active_sequence_idx].tracks.insert(track_idx, track);
                             cmds.push(AppCommand::SequenceUpdated);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });
@@ -5989,14 +5989,14 @@ impl TimelinePanel {
                             let idx = (track_idx + 1).min(state.sequences[state.active_sequence_idx].tracks.len());
                             state.sequences[state.active_sequence_idx].tracks.insert(idx, track);
                             cmds.push(AppCommand::SequenceUpdated);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });
                 ui.separator();
                 if ui.button("Rename Track").clicked() {
                     self.renaming_track = Some((track_idx, track_name.to_string()));
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 track_waveform_zoom_item(ui, state, track_idx, cmds);
                 ui.separator();
@@ -6006,12 +6006,12 @@ impl TimelinePanel {
                 let remove_resp = ui.add_enabled(!has_clips, egui::Button::new("Remove Track"));
                 if !has_clips && remove_resp.clicked() {
                     cmds.push(AppCommand::RemoveTrack { track_id });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if has_clips { remove_resp.on_disabled_hover_text("Remove clips first"); }
                 if ui.button("Remove Track (with clips)").clicked() {
                     cmds.push(AppCommand::RemoveTrack { track_id });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             });
         }
@@ -8754,30 +8754,30 @@ impl TimelinePanel {
                 // ── Cut, copy, paste, duplicate, delete (#845) ──
                 if ui.add(egui::Button::new("Cut").shortcut_text(edit_key("cut_clip"))).clicked() {
                     cmds.push(AppCommand::CutClip { clip_id });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.add(egui::Button::new("Copy").shortcut_text(edit_key("copy_clip"))).clicked() {
                     cmds.push(AppCommand::CopyClip { clip_id });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.add_enabled(state.clipboard.is_some(), egui::Button::new("Paste at Playhead").shortcut_text(edit_key("paste_clip"))).clicked() {
                     cmds.push(AppCommand::PasteClip);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.add(egui::Button::new("Duplicate Clip").shortcut_text(edit_key("duplicate_clip"))).clicked() {
                     cmds.push(AppCommand::DuplicateClip { clip_id });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.add(egui::Button::new("Delete Clip").shortcut_text(edit_key("delete_clip"))).clicked() {
                     cmds.push(AppCommand::RemoveClip { clip_id });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
 
                 // ── The clip itself ──
                 if ui.button("Rename Clip\u{2026}").clicked() {
                     self.renaming_clip = Some(ClipRename { clip_ids: targets.clone(), track_idx, buf: clip.name.clone().unwrap_or_default(), focused: false });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.menu_rows("Clip Colour", |ui| {
                     for label in klipp_media::ColorLabel::ALL {
@@ -8785,14 +8785,14 @@ impl TimelinePanel {
                         let text = egui::RichText::new(format!("\u{25CF} {}", label.label())).color(swatch);
                         if ui.selectable_label(clip.colour_label == label.to_u8(), text).clicked() {
                             cmds.push(AppCommand::SetClipColourLabels { clip_ids: targets.clone(), label: label.to_u8() });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });
                 if ui.button("Speed\u{2026}").on_hover_text("The clip's speed, and reverse").clicked() {
                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                     cmds.push(AppCommand::OpenSpeedDialog { clip_id });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 // The frame under the playhead held (#2773).
                 let playhead = state.playhead;
@@ -8800,21 +8800,21 @@ impl TimelinePanel {
                     && ui.button("Freeze Frame").on_hover_text("Hold the frame at the playhead for 2 seconds; the rest moves on").clicked()
                 {
                     cmds.push(AppCommand::FreezeFrame { clip_id, at_secs: playhead.to_secs_f64(), secs: 2.0 });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 let enable_label = if clip.enabled { "Disable Clip" } else { "Enable Clip" };
                 if ui.button(enable_label).clicked() {
                     cmds.push(AppCommand::SetClipEnabled { clip_id, enabled: !clip.enabled });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if let Some(mid) = media_id {
                     if ui.add(egui::Button::new("Match Frame").shortcut_text(edit_key("match_frame_program_to_source"))).clicked() {
                         cmds.push(AppCommand::MatchFrameProgramToSource);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Reveal in Media Pool").clicked() {
                         cmds.push(AppCommand::RevealMediaInBrowser { media_id: mid });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 ui.separator();
@@ -8847,19 +8847,19 @@ impl TimelinePanel {
                 let attribute_items = |ui: &mut egui::Ui, state: &mut AppState, cmds: &mut Vec<AppCommand>| {
                     if ui.add(egui::Button::new("Copy Attributes").shortcut_text(edit_key("copy_attributes"))).clicked() {
                         cmds.push(AppCommand::CopyAttributes { clip_id });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if state.attributes_clipboard.is_some() && ui.add(egui::Button::new("Paste Attributes\u{2026}").shortcut_text(edit_key("paste_attributes"))).clicked() {
                         state.show_paste_attributes_dialog = true;
                         state.paste_attributes_onto = Some(clip_id);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if !keyed.is_empty() {
                         ui.menu_rows("Show Keys on Clip", |ui| {
                             for row in &keyed {
                                 if ui.button(&row.label).clicked() {
                                     crate::timeline::param_lane::pick(state, clip_id, &row.kind);
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                         });
@@ -8871,21 +8871,21 @@ impl TimelinePanel {
                     if has_source {
                         if ui.add(egui::Button::new("Insert").shortcut_text(",")).clicked() {
                             cmds.push(AppCommand::InsertEdit);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.add(egui::Button::new("Overwrite").shortcut_text(".")).clicked() {
                             cmds.push(AppCommand::OverwriteEdit);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     if has_in_out {
                         if ui.add(egui::Button::new("Lift").shortcut_text(";")).clicked() {
                             cmds.push(AppCommand::LiftEdit);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.add(egui::Button::new("Extract").shortcut_text("'")).clicked() {
                             cmds.push(AppCommand::ExtractEdit);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     if state.clipboard.is_some()
@@ -8894,31 +8894,31 @@ impl TimelinePanel {
                             .clicked()
                     {
                         cmds.push(AppCommand::PasteClipInsert);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.separator();
                     if ui.add(egui::Button::new("Ripple Trim Head to Playhead").shortcut_text("Alt+[")).clicked() {
                         cmds.push(AppCommand::RippleTrimHead { clip_id });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.add(egui::Button::new("Ripple Trim Tail to Playhead").shortcut_text("Alt+]")).clicked() {
                         cmds.push(AppCommand::RippleTrimTail { clip_id });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Insert Gap (1s)").clicked() {
                         cmds.push(AppCommand::InsertGapAtPlayhead);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if track_has_gaps && ui.button("Close All Gaps on Track").clicked() {
                         cmds.push(AppCommand::CloseAllGaps { track_index: track_idx });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     // Join Through Edit (#683): close a cut that is not one,
                     // such as a split, or a scene cut found on a flash.
                     for (next, label) in [(false, "Join with Previous"), (true, "Join with Next")] {
                         if state.can_join_through_edit(clip_id, next) && ui.button(label).on_hover_text("Make this clip and that piece of the same shot one clip again, its sound with it").clicked() {
                             cmds.push(AppCommand::JoinThroughEdit { clip_id, next });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     // Offer the razor-split once scene markers exist. One
@@ -8927,7 +8927,7 @@ impl TimelinePanel {
                         let label = format!("Split at Scene Markers ({} cut{})", scene_markers, if scene_markers == 1 { "" } else { "s" });
                         if ui.button(label).clicked() {
                             cmds.push(AppCommand::SplitAtSceneMarkers { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     if let Some(colliding_id) = collision {
@@ -8941,7 +8941,7 @@ impl TimelinePanel {
                             });
                             state.dirty = true;
                             cmds.push(AppCommand::SequenceUpdated);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     ui.separator();
@@ -8949,18 +8949,18 @@ impl TimelinePanel {
                     // at the playhead, inside a picture clip.
                     if can_freeze && ui.button("Freeze Frame Here").clicked() {
                         cmds.push(AppCommand::InsertFreezeFrame { duration_secs: 2.0 });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     // A subclip of what the clip uses (#925).
                     if media_id.is_some() && ui.button("Make Subclip").on_hover_text("A subclip in the media pool over what this clip uses of its file").clicked() {
                         cmds.push(AppCommand::SubclipFromClip { clip_id });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     // Every media-pool item but the clip's own; picking one
                     // keeps the trim, effects and transitions.
                     if let Some(cur_media_id) = media_id {
                         ui.menu_rows_with_icon(crate::icons::Icon::ArrowClockwise, "Replace From Bin", |ui| {
-                            let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
+                            let max_h = (ui.ctx().content_rect().height() * 0.70).max(240.0);
                             egui::ScrollArea::vertical()
                                 .id_salt(("replace_from_bin", clip_id.0))
                                 .max_height(max_h)
@@ -8977,7 +8977,7 @@ impl TimelinePanel {
                                     for (mid, name) in entries {
                                         if ui.button(name).clicked() {
                                             cmds.push(AppCommand::ReplaceClipMedia { clip_id, new_media_id: mid });
-                                            ui.close_menu();
+                                            ui.close_kind(egui::UiKind::Menu);
                                         }
                                     }
                                 });
@@ -8997,7 +8997,7 @@ impl TimelinePanel {
                             if ui.button(label).on_hover_text(tip).clicked() {
                                 cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 cmds.push(AppCommand::OpenEditHelper { kind, clip_id });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                     });
@@ -9027,14 +9027,14 @@ impl TimelinePanel {
                                 Some(tid) => {
                                     if ui.button(format!("Remove Transition {arrow}")).clicked() {
                                         cmds.push(AppCommand::RemoveTransition { track_index: track_idx, transition_id: *tid });
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                 }
                                 None => {
                                     ui.menu_rows(format!("Add Transition {arrow}"), |ui| {
                                         // Capped so the 30-odd kinds stay
                                         // reachable on a small screen.
-                                        let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
+                                        let max_h = (ui.ctx().content_rect().height() * 0.70).max(240.0);
                                         egui::ScrollArea::vertical()
                                             .id_salt(("transition_submenu", *after))
                                             .max_height(max_h)
@@ -9048,7 +9048,7 @@ impl TimelinePanel {
                                                             kind_id,
                                                             duration_frames: state.default_transition_frames,
                                                         });
-                                                        ui.close_menu();
+                                                        ui.close_kind(egui::UiKind::Menu);
                                                     }
                                                 }
                                             });
@@ -9060,7 +9060,7 @@ impl TimelinePanel {
                             for (label, fade_in) in [("Add Fade In", true), ("Add Fade Out", false)] {
                                 if ui.button(label).on_hover_text(format!("{:.2} s, set in Preferences > Audio", state.default_fade_secs)).clicked() {
                                     cmds.extend(default_fade_command(state, &clip, fade_in));
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                         }
@@ -9082,23 +9082,23 @@ impl TimelinePanel {
                         // Normalize (#1843) and fit to length (#2210).
                         if has_sound && ui.button("Normalize\u{2026}").on_hover_text("Bring the clip, or the selection, to a loudness or peak target by its gain").clicked() {
                             cmds.push(AppCommand::OpenNormalizeDialog { clip_id: Some(clip_id) });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if has_sound && ui.button("Fit Music to Length\u{2026}").on_hover_text("Cut or repeat whole bars so the track lasts as long as the picture, a marked range or a length").clicked() {
                             cmds.push(AppCommand::OpenMusicFitDialog { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         // A picture whose sound was taken off, or never
                         // brought: laid back down, linked (#912).
                         if attach_audio && ui.button("Attach Its Audio").on_hover_text("Lay the clip's own sound on an audio track, linked to it").clicked() {
                             cmds.push(AppCommand::AttachLinkedAudio { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         // A stereo clip on an audio track into its two
                         // channels (#922).
                         if is_audio_track && stereo && ui.button("Split to Mono").on_hover_text("The left channel stays here; the right goes on the audio track below").clicked() {
                             cmds.push(AppCommand::SplitToMono { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         ui.separator();
                         // Audio sync (#61): set the reference, align to it.
@@ -9106,18 +9106,18 @@ impl TimelinePanel {
                         let ref_label = if is_ref { "\u{25CF} Audio Reference (click to re-set)" } else { "Set as Audio Reference" };
                         if ui.button(ref_label).clicked() {
                             cmds.push(AppCommand::SetAudioReference { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if state.audio_reference_clip_id.is_some() && !is_ref && ui.button("Align to Audio Reference").clicked() {
                             cmds.push(AppCommand::AlignToAudioReference { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         // The camera clip and a separate recording among the
                         // selection, the recording lined up (#615).
                         if let Some(pair) = &auto_align {
                             if ui.button("Auto Align Audio\u{2026}").on_hover_text("Line the separate recording up with the camera's sound").clicked() {
                                 cmds.push(AppCommand::OpenAutoAlignAudio { reference: pair.reference, recording: pair.recording });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                         if !is_video_track {
@@ -9140,7 +9140,7 @@ impl TimelinePanel {
                                 let row = ui.add(egui::Button::new(egui::RichText::new(text).color(if flag.is_none() { ui.visuals().text_color() } else { egui::Color32::from_rgb(r, g, b) })).selected(clip.grade_flag == flag));
                                 if row.clicked() {
                                     cmds.push(AppCommand::SetClipGradeFlags { clip_ids: targets.clone(), flag });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                         });
@@ -9150,11 +9150,11 @@ impl TimelinePanel {
                         let ref_label = if is_ref { "\u{25CF} Colour Reference (click to re-set)" } else { "Use as Colour Reference" };
                         if ui.button(ref_label).clicked() {
                             cmds.push(AppCommand::UseClipAsColorMatchReference { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if state.color_match_reference.is_some() && !is_ref && ui.button("Match Colour to Reference").clicked() {
                             cmds.push(AppCommand::MatchClipToColorReference { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         // The rest of a split shot, graded alike in one step.
                         let pieces = state.sequence().ungraded_shot_pieces(clip_id).len();
@@ -9163,7 +9163,7 @@ impl TimelinePanel {
                             && ui.button("Apply Grade to All Pieces of This Shot").on_hover_text(format!("Give this grade to the {pieces} other ungraded piece{} of this shot", if pieces == 1 { "" } else { "s" })).clicked()
                         {
                             cmds.push(AppCommand::ApplyGradeToShotPieces { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         // Wipe the graded clip against this one (#899).
                         if state.show_color_panel
@@ -9171,7 +9171,7 @@ impl TimelinePanel {
                             && ui.button("Wipe Against This Clip").on_hover_text("Split the viewer: this clip graded on the left, the frame shown on the right").clicked()
                         {
                             cmds.push(AppCommand::WipeAgainstClip { target: Some(klipp_core::WipeClip::Clip(clip_id)) });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         ui.separator();
                         attribute_items(ui, state, cmds);
@@ -9190,7 +9190,7 @@ impl TimelinePanel {
                             state.viewer_text_select_anchor = None;
                             state.viewer_text_edit_buffer = td.text().clone();
                             cmds.push(AppCommand::SelectClip(Some(clip_id)));
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         let current_align = td.alignment();
                         let align_name = |a: klipp_timeline::TextAlignment| match a {
@@ -9203,7 +9203,7 @@ impl TimelinePanel {
                             for (i, a) in [klipp_timeline::TextAlignment::Left, klipp_timeline::TextAlignment::Center, klipp_timeline::TextAlignment::Right, klipp_timeline::TextAlignment::Justify].into_iter().enumerate() {
                                 if ui.selectable_label(current_align == a, align_name(a)).clicked() {
                                     cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: i as u8 });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                         });
@@ -9216,7 +9216,7 @@ impl TimelinePanel {
                                         clip_id, text: td.text().clone(), font_size: td.font_size(),
                                         font_name: td.font_name().clone(), font_style: style, color: td.color(),
                                     });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                         });
@@ -9226,12 +9226,12 @@ impl TimelinePanel {
                                 clip_id, range_start: 0, range_end: td.text().len(),
                                 property: "clear_all".into(), value: String::new(),
                             });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         ui.separator();
                         if ui.button("Save as Title Template\u{2026}").clicked() {
                             cmds.push(AppCommand::SaveTitleTemplate { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         // Promote to a project asset, or detach from one.
                         if let Some(asset_id) = clip.linked_title_asset_id {
@@ -9239,11 +9239,11 @@ impl TimelinePanel {
                             crate::widgets::menu::menu_heading(ui, &format!("Linked to \u{201C}{asset_name}\u{201D}"));
                             if ui.button("Detach from Project Asset").clicked() {
                                 cmds.push(AppCommand::DetachTitleAsset { clip_id });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         } else if ui.button("Save as Project Asset").clicked() {
                             cmds.push(AppCommand::CreateTitleAsset { source_clip_id: clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     });
                 }
@@ -9264,7 +9264,7 @@ impl TimelinePanel {
                             ] {
                                 if ui.button(label).clicked() {
                                     cmds.push(AppCommand::ApplyMotionPreset { clip_id, preset: preset.into() });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                             ui.separator();
@@ -9276,7 +9276,7 @@ impl TimelinePanel {
                             ] {
                                 if ui.button(label).clicked() {
                                     cmds.push(AppCommand::ApplyMotionPreset { clip_id, preset: preset.into() });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                         });
@@ -9291,14 +9291,14 @@ impl TimelinePanel {
                                 for row in templates {
                                     if ui.button(row.label).clicked() {
                                         (row.dispatch)(state, cmds);
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                 }
                             });
                         }
                         if ui.button("Add Title Over Clip").clicked() {
                             cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: Some(clip_id) });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         ui.separator();
                         // Track matte: the clip on the track above as this
@@ -9310,7 +9310,7 @@ impl TimelinePanel {
                                 for (label, channel, invert) in [(auto_label, auto_channel, false), ("Alpha", 0, false), ("Luma", 1, false), ("Inverted Luma", 1, true)] {
                                     if ui.button(label).clicked() {
                                         cmds.push(AppCommand::SetClipMatte { clip_id, source_clip_id: cand_id, channel, invert, feather_px: 0.0, choke_px: 0.0 });
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                     if label == auto_label {
                                         ui.separator();
@@ -9320,7 +9320,7 @@ impl TimelinePanel {
                         }
                         if clip.matte_source.is_some() && ui.button("Clear Matte").clicked() {
                             cmds.push(AppCommand::ClearClipMatte { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         // A matte that follows the subject through the
                         // clip (#239), or the clip cut out round them (#73).
@@ -9329,16 +9329,16 @@ impl TimelinePanel {
                                 ui.label(format!("Tracking subject\u{2026} {pct:.0}%"));
                                 if ui.small_button("Stop Tracking").clicked() {
                                     cmds.push(AppCommand::CancelTrackSubject { clip_id });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             } else {
                                 if ui.button("Track Subject").on_hover_text("A matte that follows the person through the clip, gating its grade. Made in the background.").clicked() {
                                     cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into(), into: Some(klipp_core::SubjectMatteUse::Grade) });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Cut Out Subject").on_hover_text("The clip cut out round the person, frame by frame: the tracks below show everywhere else. Made in the background.").clicked() {
                                     cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into(), into: Some(klipp_core::SubjectMatteUse::CutOut) });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                         }
@@ -9386,21 +9386,21 @@ impl TimelinePanel {
                                     let on = std::mem::discriminant(&pin.on_loss) == std::mem::discriminant(&on_loss);
                                     if ui.selectable_label(on, label).on_hover_text(hint).clicked() {
                                         state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin: {label} If Lost"), ops: vec![repin(on_loss, pin.light, (pin.shade, pin.texture))], independent: false });
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                 }
                             });
                             let lit = pin.light > 0.0;
                             if ui.selectable_label(lit, "Take the Surface's Light").on_hover_text("Darker or lighter as the surface is than where it was pinned (a surface tracked since this was measured)").clicked() {
                                 state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Pin: Take the Surface's Light".into(), ops: vec![repin(pin.on_loss, if lit { 0.0 } else { 1.0 }, (pin.shade, pin.texture))], independent: false });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                             // Its shade across the surface and its grain
                             // through the layer (#2751).
                             let shaded = pin.shade > 0.0 || pin.texture > 0.0;
                             if ui.selectable_label(shaded, "Take the Surface's Shade and Texture").on_hover_text("Darker where the surface is in shade and lighter where it is lit, its grain showing through").clicked() {
                                 state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Pin: Take the Surface's Shade and Texture".into(), ops: vec![repin(pin.on_loss, pin.light, if shaded { (0.0, 0.0) } else { (0.8, 0.5) })], independent: false });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                         if !hosts.is_empty() {
@@ -9434,7 +9434,7 @@ impl TimelinePanel {
                                                     template: template.map(str::to_string),
                                                 };
                                                 state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin to {name}"), ops: vec![op], independent: false });
-                                                ui.close_menu();
+                                                ui.close_kind(egui::UiKind::Menu);
                                             }
                                         }
                                     });
@@ -9453,7 +9453,7 @@ impl TimelinePanel {
                             };
                             if ui.button(label).on_hover_text("Measure the water's colour and brightness under the reflection again, from the footage below it").clicked() {
                                 cmds.push(AppCommand::MeasureWater { clip_id });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                         // The clip faded into the tracks below across the
@@ -9470,20 +9470,20 @@ impl TimelinePanel {
                             ] {
                                 if ui.button(label).clicked() {
                                     cmds.push(AppCommand::SetOpacityGradient { clip_id, mask: Some(Box::new(ramp(shape))) });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                             if faded {
                                 ui.separator();
                                 if ui.button("Remove Opacity Gradient").clicked() {
                                     cmds.push(AppCommand::SetOpacityGradient { clip_id, mask: None });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                         });
                         if can_restore && ui.button("Restore Background").clicked() {
                             cmds.push(AppCommand::RestoreBackground { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         // Scene detection, on a picture whose file is there.
                         if file_there {
@@ -9491,11 +9491,11 @@ impl TimelinePanel {
                                 ui.label(format!("Detecting scenes\u{2026} {:.0}%", pct));
                                 if ui.small_button("Cancel").clicked() {
                                     cmds.push(AppCommand::CancelSceneDetect { clip_id });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             } else if ui.button("Detect Scenes\u{2026}").clicked() {
                                 cmds.push(AppCommand::DetectScenes { clip_id });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                     });
@@ -9527,16 +9527,16 @@ impl TimelinePanel {
                         };
                         if ui.button(reveal_label).clicked() {
                             cmds.push(AppCommand::SelectClip(Some(partner_id)));
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.button("Unlink Clip").clicked() {
                             cmds.push(AppCommand::UnlinkClip { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     } else if let Some(partner_id) = link_candidate {
                         if ui.button("Link to Matching Clip").clicked() {
                             cmds.push(AppCommand::LinkClips { clip_a: clip_id, clip_b: partner_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     if has_multi && ui.add(egui::Button::new("Group").shortcut_text(edit_key("group_clips"))).clicked() {
@@ -9547,12 +9547,12 @@ impl TimelinePanel {
                             }
                         }
                         cmds.push(AppCommand::GroupClips { clip_ids: ids });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if let Some(gid) = clip.group_id {
                         if ui.add(egui::Button::new("Ungroup").shortcut_text(edit_key("ungroup_clips"))).clicked() {
                             cmds.push(AppCommand::UngroupClips { group_id: gid });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     // Magnetic connection and storylines, off the primary.
@@ -9560,11 +9560,11 @@ impl TimelinePanel {
                         if clip.magnetic_anchor.is_some() {
                             if ui.add(egui::Button::new("Disconnect from Primary").shortcut_text("Shift+G")).clicked() {
                                 cmds.push(AppCommand::DisconnectFromPrimary { clip_id });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         } else if ui.add(egui::Button::new("Connect to Primary").shortcut_text("G")).clicked() {
                             cmds.push(AppCommand::ConnectToPrimary { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         // The storyline key (shared with audio skim) acts
                         // on a selected clip on a connected track.
@@ -9577,7 +9577,7 @@ impl TimelinePanel {
                         if let Some(label) = storyline {
                             if ui.add(egui::Button::new(label).shortcut_text(&storyline_key)).clicked() {
                                 cmds.push(AppCommand::ToggleStoryline { clip_id });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                     }
@@ -9587,21 +9587,21 @@ impl TimelinePanel {
                     if is_compound {
                         if ui.button("Open Compound Clip").clicked() {
                             cmds.push(AppCommand::OpenCompoundClip { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.button("Decompose Compound Clip").on_hover_text("Replaces the compound clip with the inner clips at their original positions, then deletes the inner sequence. Inverse of \"Create Compound Clip\".").clicked() {
                             cmds.push(AppCommand::DecomposeCompoundClip { clip_id });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     if has_multi_for_compound && ui.button("Create Compound Clip\u{2026}").clicked() {
                         cmds.push(AppCommand::CreateCompoundClip { name: "Compound Clip".into() });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     // The clips together as a template placed as one (#2757).
                     if has_multi_for_compound && ui.button("Save as Template\u{2026}").on_hover_text("Save these clips as a template: placed as one clip, its texts, colours and media changeable").clicked() {
                         cmds.push(AppCommand::SaveSelectionAsTemplate);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     // Auditions (#3209): several takes in this slot.
                     if crate::auditions::can_hold_takes(&clip) {
@@ -9610,25 +9610,25 @@ impl TimelinePanel {
                             if clip.audition.is_none() {
                                 if ui.add(egui::Button::new("Create Audition").shortcut_text(kb.display_for("create_audition"))).on_hover_text("Hold several takes in this slot: this clip, and a copy of it to vary").clicked() {
                                     cmds.push(audition(klipp_core::AuditionEdit::Create));
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             } else {
                                 if ui.add(egui::Button::new("Takes\u{2026}").shortcut_text(kb.display_for("open_audition"))).on_hover_text("The takes in this slot: put one in, rename or remove").clicked() {
                                     cmds.push(AppCommand::OpenAuditionPicker { clip_id: Some(clip_id) });
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.add(egui::Button::new("Duplicate as Audition").shortcut_text(kb.display_for("duplicate_as_audition"))).on_hover_text("Add a copy of the take in the slot, to vary").clicked() {
                                     cmds.push(audition(klipp_core::AuditionEdit::AddCopy));
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.add(egui::Button::new("Finalize Audition").shortcut_text(kb.display_for("finalize_audition"))).on_hover_text("Keep the take in the slot as a plain clip and drop the others").clicked() {
                                     cmds.push(audition(klipp_core::AuditionEdit::Finalize));
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             }
                             // A file as a take, from its start, as long as the slot.
                             ui.menu_rows("Add Take From Bin", |ui| {
-                                let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
+                                let max_h = (ui.ctx().content_rect().height() * 0.70).max(240.0);
                                 egui::ScrollArea::vertical().id_salt(("audition_from_bin", clip_id.0)).max_height(max_h).show(ui, |ui| {
                                     // What this slot can play, by name.
                                     let kind = state.sequence().tracks.get(track_idx).map_or(klipp_timeline::TrackKind::Video, |t| t.kind);
@@ -9640,7 +9640,7 @@ impl TimelinePanel {
                                     for (mid, name) in entries {
                                         if ui.button(name).clicked() {
                                             cmds.push(audition(klipp_core::AuditionEdit::AddMedia { media_ids: vec![mid] }));
-                                            ui.close_menu();
+                                            ui.close_kind(egui::UiKind::Menu);
                                         }
                                     }
                                 });
@@ -9650,7 +9650,7 @@ impl TimelinePanel {
                     // Multicam bundles the video clips at the playhead.
                     if is_video_track && ui.button("Create Multicam Clip").clicked() {
                         cmds.push(AppCommand::CreateMulticamClip);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     // A title, effect or sound laid over one shot, made to
                     // start and end with it, and kept so (#2236).
@@ -9670,7 +9670,7 @@ impl TimelinePanel {
                     if let Some((label, keep)) = asked {
                         let ops = vec![klipp_document::ops::Op::Match { clip_id: klipp_document::ops::ClipRef::Id(clip_id), keep }];
                         state.pending_doc_ops.push(crate::state::DocOpsRequest { label: label.into(), ops, independent: false });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     // Several clips selected: line them up with this one (#925).
                     if multi_selected {
@@ -9678,19 +9678,19 @@ impl TimelinePanel {
                             if ui.button("By Timecode").on_hover_text("The same moment of the shoot under each, from the files' start timecodes").clicked() {
                                 cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 cmds.push(AppCommand::SyncSelectedClips { by_markers: false });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                             if ui.button("By Markers").on_hover_text("Each clip's first clip marker where this clip's is").clicked() {
                                 cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 cmds.push(AppCommand::SyncSelectedClips { by_markers: true });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         });
                     }
                     if ui.button("Select Same Source").clicked() {
                         cmds.push(AppCommand::SelectClip(Some(clip_id)));
                         cmds.push(AppCommand::SelectSameSource);
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 });
                 ui.separator();
@@ -9700,17 +9700,17 @@ impl TimelinePanel {
                 if crate::widgets::menu::menu_icon_item(ui, crate::icons::Icon::Export, "Export This Clip\u{2026}", "").clicked() {
                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                     cmds.push(AppCommand::OpenExportDialogForSelectedClips);
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if let Some(mid) = media_id {
                     if ui.button("Open in External App").clicked() {
                         cmds.push(AppCommand::OpenInExternalApp { media_id: mid });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                     // The Clip Properties dialog (#47) on its source media.
                     if ui.button("Properties\u{2026}").clicked() {
                         cmds.push(AppCommand::OpenClipProperties { media_id: mid });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             } else {
@@ -9758,23 +9758,23 @@ impl TimelinePanel {
                                     gap_start,
                                     gap_end,
                                 });
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                         // Every gap on the track at once, and pasting here
                         // (#925): more than Close Gap on empty space.
                         if !crate::selection::gaps(track).is_empty() && ui.button("Close All Gaps on Track").clicked() {
                             cmds.push(AppCommand::CloseAllGaps { track_index: track_idx });
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.button("Paste Here").clicked() {
                             cmds.push(AppCommand::SeekTo(tc));
                             cmds.push(AppCommand::PasteClip);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.button("Go to Next Gap").clicked() {
                             cmds.push(AppCommand::GoToNextGap);
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 }
@@ -9947,7 +9947,7 @@ impl TimelinePanel {
                         }.unwrap_or(*track_rect);
 
                         // Ghost clip following cursor — unclipped so it renders on any track
-                        let ghost_painter = ui.painter_at(ui.ctx().screen_rect());
+                        let ghost_painter = ui.painter_at(ui.ctx().content_rect());
                         let ghost_x = content_rect.left() + final_in.to_secs_f64() as f32 * zoom - scroll;
                         let ghost_w = clip_dur * zoom;
                         let ghost_rect = egui::Rect::from_min_size(
@@ -10263,7 +10263,7 @@ impl TimelinePanel {
                                     if let Some((_, _, rect)) = self.frame_cache.track_rects.iter()
                                         .find(|(idx, _, _)| *idx == target_idx)
                                     {
-                                        let hl = ui.painter_at(ui.ctx().screen_rect());
+                                        let hl = ui.painter_at(ui.ctx().content_rect());
                                         hl.rect_stroke(*rect, 0.0,
                                             egui::Stroke::new(2.0_f32, tt.marker_info), egui::StrokeKind::Outside);
                                     }
@@ -10298,7 +10298,7 @@ impl TimelinePanel {
 
                         // Ghost clip following cursor — use unclipped painter so ghost
                         // renders on ANY track, not just the source track
-                        let ghost_painter = ui.painter_at(ui.ctx().screen_rect());
+                        let ghost_painter = ui.painter_at(ui.ctx().content_rect());
                         let ghost_x = content_rect.left() + final_in.to_secs_f64() as f32 * zoom - scroll;
                         let ghost_w = clip_dur * zoom;
                         let ghost_rect = egui::Rect::from_min_size(
@@ -10487,7 +10487,7 @@ impl TimelinePanel {
                                 if let Some((_, _, rect)) = self.frame_cache.track_rects.iter()
                                     .find(|(idx, _, _)| *idx == target_idx)
                                 {
-                                    let highlight_painter = ui.painter_at(ui.ctx().screen_rect());
+                                    let highlight_painter = ui.painter_at(ui.ctx().content_rect());
                                     highlight_painter.rect_stroke(
                                         *rect, 0.0,
                                         egui::Stroke::new(2.0_f32, tt.marker_info), egui::StrokeKind::Outside,
@@ -11483,7 +11483,7 @@ impl TimelinePanel {
         let tt = theme();
         let a = tt.accent;
         let alpha = if hot { 235 } else if shown { 170 } else { 90 };
-        let corner = if at_end { egui::Rounding { nw: 0, ne: 3, sw: 4, se: 0 } } else { egui::Rounding { nw: 3, ne: 0, sw: 0, se: 4 } };
+        let corner = if at_end { egui::CornerRadius { nw: 0, ne: 3, sw: 4, se: 0 } } else { egui::CornerRadius { nw: 3, ne: 0, sw: 0, se: 4 } };
         painter.rect_filled(r, corner, egui::Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), alpha));
         let s = egui::Stroke::new(1.0_f32, egui::Color32::WHITE);
         let (y, l, rt) = (r.center().y, r.left() + 2.5, r.right() - 2.5);
@@ -17304,7 +17304,7 @@ fn edit_point_menu(ui: &mut egui::Ui, state: &mut AppState, edit: EditPoint, cmd
     if let Some(spec) = klipp_core::TRANSITION_SPECS.iter().find(|s| s.string_key == "CrossDissolve") {
         if ui.button(if sound { "Add Crossfade" } else { "Add Cross Dissolve" }).clicked() {
             cmds.push(add(spec.kind_id));
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
     }
     if !sound {
@@ -17313,7 +17313,7 @@ fn edit_point_menu(ui: &mut egui::Ui, state: &mut AppState, edit: EditPoint, cmd
                 for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
                     if ui.button(label).clicked() {
                         cmds.push(add(kind_id));
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });
@@ -17322,20 +17322,20 @@ fn edit_point_menu(ui: &mut egui::Ui, state: &mut AppState, edit: EditPoint, cmd
     ui.separator();
     if ui.button("Move Playhead Here").clicked() {
         cmds.push(AppCommand::SeekTo(edit.at));
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if ui.button("Select Clip Before").clicked() {
         cmds.push(AppCommand::SelectClip(Some(edit.before)));
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if ui.button("Select Clip After").clicked() {
         cmds.push(AppCommand::SelectClip(Some(edit.after)));
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if ui.button("Select Both Clips").clicked() {
         state.selected_clips = vec![edit.before, edit.after];
         cmds.push(AppCommand::SelectClip(Some(edit.after)));
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
 }
 
@@ -17350,7 +17350,7 @@ fn transition_menu(ui: &mut egui::Ui, state: &AppState, track_index: usize, tran
             for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
                 if ui.button(label).clicked() {
                     cmds.push(AppCommand::SetTransitionKind { track_index, transition_id, kind_id });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
         });
@@ -17360,7 +17360,7 @@ fn transition_menu(ui: &mut egui::Ui, state: &AppState, track_index: usize, tran
             let frames = (secs * fps).round().max(1.0) as u32;
             if ui.selectable_label(frames == frames_now, format!("{secs} s ({frames} frames)")).clicked() {
                 cmds.push(AppCommand::SetTransitionDuration { track_index, transition_id, duration_frames: frames });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         }
     });
@@ -17369,14 +17369,14 @@ fn transition_menu(ui: &mut egui::Ui, state: &AppState, track_index: usize, tran
         for (alignment, label) in [(A::Center, "Centred on the cut"), (A::StartAtCut, "Starting at the cut"), (A::EndAtCut, "Ending at the cut")] {
             if ui.selectable_label(transition.alignment == alignment, label).clicked() {
                 cmds.push(AppCommand::SetTransitionAlignment { track_index, transition_id, alignment });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         }
     });
     ui.separator();
     if ui.add(egui::Button::new("Remove Transition").shortcut_text("Delete")).clicked() {
         cmds.push(AppCommand::RemoveTransition { track_index, transition_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
 }
 
@@ -20336,7 +20336,7 @@ pub(crate) fn track_select_items(ui: &mut egui::Ui, track_idx: usize, cmds: &mut
         let hint = if range == klipp_core::SelectRange::All { "Ctrl-click" } else { "" };
         if ui.add(egui::Button::new(label).shortcut_text(hint)).clicked() {
             cmds.push(AppCommand::SelectClipsIn { track: Some(track_idx), range });
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
     }
 }
@@ -20356,7 +20356,7 @@ pub(crate) fn track_waveform_zoom_item(ui: &mut egui::Ui, state: &AppState, trac
         .unwrap_or(false);
     if ui.add_enabled(has_zoom, egui::Button::new("Reset Waveform Zoom")).clicked() {
         cmds.push(AppCommand::ResetWaveformZoom { track_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
 }
 
@@ -20367,7 +20367,7 @@ pub(crate) fn track_attribute_items(ui: &mut egui::Ui, state: &AppState, track_i
     track_effects_menu(ui, &state.sequence().tracks[track_idx], cmds);
     if ui.button("Copy Track Attributes").on_hover_text("Keep this track's levels and its own effects, to paste onto other tracks").clicked() {
         cmds.push(AppCommand::CopyTrackAttributes { track_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     let copied = state.copied_track_settings.as_ref().map(|(name, _)| name.clone());
     ui.add_enabled_ui(copied.is_some(), |ui| {
@@ -20386,14 +20386,14 @@ pub(crate) fn track_attribute_items(ui: &mut egui::Ui, state: &AppState, track_i
             ] {
                 if ui.button(what).clicked() {
                     cmds.push(AppCommand::PasteTrackAttributes { track_ids: vec![track_id], levels, picture, sound });
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
             ui.separator();
             let plural = match kind { TrackKind::Video => "Video", TrackKind::Audio => "Audio", TrackKind::Text => "Text", TrackKind::Subtitle => "Subtitle" };
             if ui.button(format!("All to Every {plural} Track")).on_hover_text("One undo step for all of them").clicked() {
                 cmds.push(AppCommand::PasteTrackAttributes { track_ids: same_kind, levels: true, picture: true, sound: true });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         });
     });
@@ -20449,7 +20449,7 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
         // Its grade, edited as the timeline grade is (#1408).
         if track.kind == TrackKind::Video && ui.button("Grade in Colour").on_hover_text("Grade this track in the Colour workspace: after each of its clips' own grades").clicked() {
             cmds.push(AppCommand::GradeTrackInColour { track_id });
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
         for (k, e) in fx.audio.iter().enumerate() {
             let name = klipp_audio::dsp::available_effects().into_iter().find(|(t, _)| *t == e.effect_type).map_or(e.effect_type.clone(), |(_, n)| n.to_string());
@@ -20461,7 +20461,7 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
                 for e in track_picture_effects() {
                     if ui.button(&e.label).clicked() {
                         cmds.push(AppCommand::AddTrackVideoEffect { track_id, kind: e.kind.clone() });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });
@@ -20471,14 +20471,14 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
                 for (effect_type, label) in klipp_audio::dsp::available_effects() {
                     if ui.button(label).clicked() {
                         cmds.push(AppCommand::AddTrackAudioEffect { track_id, effect_type: effect_type.to_string() });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });
         }
         if !fx.is_empty() && ui.button("Clear Track Effects").clicked() {
             cmds.push(AppCommand::ClearTrackEffects { track_id });
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
     });
 }

@@ -79,7 +79,7 @@ impl SequenceSettingsDialog {
             .fixed_pos(egui::pos2(0.0, 0.0))
             .order(egui::Order::Background)
             .show(ctx, |ui| {
-                let screen = ctx.screen_rect();
+                let screen = ctx.content_rect();
                 let resp = ui.allocate_rect(screen, egui::Sense::click());
                 ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
                 if resp.clicked() { open = false; }
@@ -90,7 +90,7 @@ impl SequenceSettingsDialog {
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .frame(egui::Frame::window(&ctx.style()).fill(theme.bg_panel).inner_margin(egui::Margin::symmetric(0, 8)))
+            .frame(egui::Frame::window(&ctx.global_style()).fill(theme.bg_panel).inner_margin(egui::Margin::symmetric(0, 8)))
             .show(ctx, |ui| {
                 ui.set_width(420.0);
 

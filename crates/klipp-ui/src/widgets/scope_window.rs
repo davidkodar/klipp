@@ -204,10 +204,10 @@ pub fn show_scope_window(
         .order(egui::Order::Middle)
         .default_pos([100.0, 60.0])
         .show(ctx, |ui| {
-            let panel_frame = egui::Frame::none()
+            let panel_frame = egui::Frame::NONE
                 .fill(theme.bg_panel_alt)
                 .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
-                .rounding(4.0)
+                .corner_radius(4.0)
                 .inner_margin(0.0)
                 .shadow(egui::Shadow { offset: [0, 2], blur: 12, spread: 0, color: egui::Color32::from_black_alpha(100) });
 
@@ -1457,14 +1457,14 @@ fn draw_dot_menu(
                             for pane in &mut state.panes {
                                 pane.settings.scale = *val;
                             }
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     ui.separator();
                     let legal_prefix = if state.show_legal_range { "\u{2022} " } else { "   " };
                     if ui.button(format!("{legal_prefix}Show legal range (64\u{2013}940)")).clicked() {
                         state.show_legal_range = !state.show_legal_range;
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 });
 
@@ -1474,7 +1474,7 @@ fn draw_dot_menu(
                         let prefix = if state.vectorscope_scale == val { "\u{2022} " } else { "   " };
                         if ui.button(format!("{prefix}{}", val.label())).clicked() {
                             state.vectorscope_scale = val;
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });
@@ -1500,7 +1500,7 @@ fn draw_dot_menu(
                 ui.menu_rows("Ratio", |ui| {
                     for (label, _) in [("Equal (1:1)", 0), ("Wide (2:1)", 1), ("Tall (1:2)", 2)] {
                         if ui.button(label).clicked() {
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });
@@ -1519,7 +1519,7 @@ fn draw_dot_menu(
                             for pane in &mut state.panes {
                                 pane.settings.quality = *val;
                             }
-                            ui.close_menu();
+                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });

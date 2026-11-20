@@ -136,7 +136,7 @@ mod tests {
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 300.0))), events, ..Default::default() };
         let mut cmds = Vec::new();
         let out = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                 let ruler = egui::Rect::from_min_size(egui::pos2(0.0, 100.0), egui::vec2(800.0, 20.0));
                 show(ui, ruler, state, 10.0, 0.0, &mut cmds);
             });
@@ -164,7 +164,7 @@ mod tests {
             review: None,
         });
         let ctx = egui::Context::default();
-        ctx.style_mut(|s| {
+        ctx.global_style_mut(|s| {
             s.interaction.tooltip_delay = 0.0;
             s.interaction.show_tooltips_only_when_still = false;
         });

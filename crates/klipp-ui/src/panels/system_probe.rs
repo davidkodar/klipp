@@ -19,7 +19,7 @@ pub fn show_system_probe_dialog(
         return;
     }
 
-    let screen_rect = ctx.screen_rect();
+    let screen_rect = ctx.content_rect();
     let max_h = (screen_rect.height() * 0.85).clamp(400.0, 720.0);
     let max_w = (screen_rect.width() * 0.70).clamp(520.0, 720.0);
     let default_w = (screen_rect.width() * 0.50).clamp(520.0, max_w);

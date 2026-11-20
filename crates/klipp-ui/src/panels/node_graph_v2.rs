@@ -853,7 +853,7 @@ impl NodeGraphV2Panel {
         let clip_grade = graph.grade_tools() && grade_version_names.is_some();
         if clip_grade || !graph.grade_tools() || !descent_path.is_empty() {
             let mut navigated = false;
-            egui::Frame::none().fill(theme.bg_panel).show(ui, |ui| {
+            egui::Frame::NONE.fill(theme.bg_panel).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.add_space(8.0);
                     if clip_grade {
@@ -1106,7 +1106,7 @@ impl NodeGraphV2Panel {
                             clip_id,
                             version_index: i,
                         });
-                        mb_ui.close_menu();
+                        mb_ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 if !grade_version_names.is_empty() {
@@ -1116,19 +1116,19 @@ impl NodeGraphV2Panel {
                     // Auto-numbered "V1", "V2", … based on current count.
                     let name = format!("V{}", grade_version_names.len() + 1);
                     cmds.push(AppCommand::SaveGradeVersion { clip_id, name });
-                    mb_ui.close_menu();
+                    mb_ui.close_kind(egui::UiKind::Menu);
                 }
                 if let Some(idx) = active_grade_version {
                     if mb_ui.button("Update active version with current").clicked() {
                         cmds.push(AppCommand::UpdateActiveGradeVersion { clip_id });
-                        mb_ui.close_menu();
+                        mb_ui.close_kind(egui::UiKind::Menu);
                     }
                     if mb_ui.button("Delete active version").clicked() {
                         cmds.push(AppCommand::DeleteGradeVersion {
                             clip_id,
                             version_index: idx,
                         });
-                        mb_ui.close_menu();
+                        mb_ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             }).response } else {
@@ -1156,10 +1156,10 @@ impl NodeGraphV2Panel {
             let bg = egui::Color32::from_rgba_unmultiplied(
                 solo_color.r(), solo_color.g(), solo_color.b(), 40,
             );
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(bg)
                 .stroke(egui::Stroke::new(0.5_f32, solo_color))
-                .rounding(2.0)
+                .corner_radius(2.0)
                 .inner_margin(egui::Margin::symmetric(4, 1))
                 .show(&mut toolbar_ui, |ui| {
                     ui.label(
@@ -1864,7 +1864,7 @@ impl NodeGraphV2Panel {
             // rather than each ghost casting its own competing one.
             {
                 painter.add(egui::Shape::Rect(
-                    egui::epaint::RectShape::filled(rect.translate(egui::vec2(0.0, 5.0)).expand(2.0), egui::Rounding::same(4), egui::Color32::from_rgba_premultiplied(0, 0, 0, 50))
+                    egui::epaint::RectShape::filled(rect.translate(egui::vec2(0.0, 5.0)).expand(2.0), egui::CornerRadius::same(4), egui::Color32::from_rgba_premultiplied(0, 0, 0, 50))
                         .with_blur_width(8.0),
                 ));
                 // Tighter contact stop for the dark edge directly
@@ -1946,7 +1946,7 @@ impl NodeGraphV2Panel {
             if let Some(colour) = label {
                 painter.rect_filled(header_rect, 4.0, colour.gamma_multiply(0.3));
                 let band = egui::Rect::from_min_max(header_rect.min, egui::pos2(header_rect.max.x, header_rect.min.y + (3.0 * zoom).max(2.0)));
-                painter.rect_filled(band, egui::Rounding { nw: 4, ne: 4, sw: 0, se: 0 }, colour);
+                painter.rect_filled(band, egui::CornerRadius { nw: 4, ne: 4, sw: 0, se: 0 }, colour);
             }
             // Active nodes get a small lift on the kind-palette fill so
             // they read as live; bypassed nodes fall back to bg_panel_alt
@@ -3220,7 +3220,7 @@ impl NodeGraphV2Panel {
         // ids that the engine just removed. Gated on `wants_keyboard_
         // input` so the user typing into a slider doesn't accidentally
         // wipe nodes.
-        if graph.keyboard_enabled() && !ui.ctx().wants_keyboard_input()
+        if graph.keyboard_enabled() && !ui.ctx().egui_wants_keyboard_input()
             && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
             && !selected_set.is_empty()
         {
@@ -3295,7 +3295,7 @@ impl NodeGraphV2Panel {
         // a "set me first" toast instead of silently doing nothing —
         // confirms the binding registered even when no jump
         // happened.
-        if graph.keyboard_enabled() && !any_menu_open && !ui.ctx().wants_keyboard_input() {
+        if graph.keyboard_enabled() && !any_menu_open && !ui.ctx().egui_wants_keyboard_input() {
             const NUM_KEYS: [egui::Key; 9] = [
                 egui::Key::Num1, egui::Key::Num2, egui::Key::Num3,
                 egui::Key::Num4, egui::Key::Num5, egui::Key::Num6,
@@ -4091,7 +4091,7 @@ impl NodeGraphV2Panel {
         // less than the full window height. ScrollArea handles
         // wheel scroll for free; same pattern the Add Transition
         // submenu uses on the timeline side.
-        let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
+        let max_h = (ui.ctx().content_rect().height() * 0.70).max(240.0);
 
         // Lookup helper — recents store kind_str; we want to render
         // them with their display label, so we walk categories once.
@@ -4915,7 +4915,7 @@ impl NodeGraphV2Panel {
                                         for (node_id, delta_x, delta_y) in align_moves(graph, &ids, how) {
                                             cmds.push(AppCommand::MoveNode { clip_id, node_id, delta_x, delta_y });
                                         }
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                         close = true;
                                     }
                                 }
@@ -5033,7 +5033,7 @@ impl NodeGraphV2Panel {
                                             port,
                                             label: if active { None } else { Some(lab.clone()) },
                                         });
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                         close = true;
                                     }
                                 }
@@ -5042,7 +5042,7 @@ impl NodeGraphV2Panel {
                                         cmds.push(AppCommand::SetNodeInputLink {
                                             clip_id, node_id, port, label: None,
                                         });
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                         close = true;
                                     }
                                 ui.separator();
@@ -5407,7 +5407,7 @@ fn paint_thumb_rounded(
     rounding_px: f32,
 ) {
     painter.add(egui::Shape::Rect(
-        egui::epaint::RectShape::filled(rect, egui::Rounding::from(rounding_px), egui::Color32::WHITE)
+        egui::epaint::RectShape::filled(rect, egui::CornerRadius::from(rounding_px), egui::Color32::WHITE)
             .with_texture(tex_id, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))),
     ));
 }
@@ -5812,7 +5812,7 @@ mod dock_toolbar_tests {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 600.0))),
                     ..Default::default()
                 }, |ctx| {
-                    egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                         panel.show(ui, &mut None, &mut Default::default(), &mut graph, clip, &theme,
                             &Default::default(), 0, &mut Vec::new(), &mut Vec::new(), &[], Some(&[]), None,
                             0.0, false, 0.0, None);

@@ -35,7 +35,7 @@ pub fn allocate_clipped_ui<R>(
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     let clipped_rect = rect.intersect(ui.clip_rect());
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         ui.set_clip_rect(clipped_rect);
         add_contents(ui)
     })

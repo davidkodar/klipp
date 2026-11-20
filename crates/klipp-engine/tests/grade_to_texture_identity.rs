@@ -166,7 +166,7 @@ fn encode_grade_to_texture_matches_cpu() {
     let slice = staging.slice(..staging_size);
     let (tx, rx) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-    ctx.device.poll(wgpu::PollType::wait_indefinitely());
+    let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
     rx.recv().unwrap().unwrap();
     let data = slice.get_mapped_range();
     let actual: Vec<u8> = data.to_vec();

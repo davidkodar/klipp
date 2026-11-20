@@ -152,7 +152,7 @@ impl KlippApp {
         // Above the panels and under every window, where egui 0.29's
         // PanelResizeLine order put it: the top of the background layers.
         let backdrop = egui::Area::new(egui::Id::new("bounce_backdrop")).fixed_pos(egui::pos2(0.0, 0.0)).order(egui::Order::Background).show(ctx, |ui| {
-            let screen = ctx.screen_rect();
+            let screen = ctx.content_rect();
             if ui.allocate_rect(screen, egui::Sense::click()).clicked() {
                 close = true;
             }

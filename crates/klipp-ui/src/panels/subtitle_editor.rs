@@ -382,7 +382,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                                 if row.track_id != st.track_id { continue; }
                                 let is_active = active_idx == Some(i);
                                 let is_selected = selected_clip == Some(row.clip_id);
-                                let row_frame = egui::Frame::none()
+                                let row_frame = egui::Frame::NONE
                                     .fill(if is_active {
                                         egui::Color32::from_rgba_unmultiplied(0xff, 0xdc, 0x32, 30)
                                     } else if is_selected {
@@ -461,7 +461,7 @@ fn render_track_header(
     cmds: &mut Vec<AppCommand>,
 ) {
     let collapsed = state.subtitle_editor.subtitle_track_collapsed.contains(&st.track_id);
-    let hdr_frame = egui::Frame::none()
+    let hdr_frame = egui::Frame::NONE
         .fill(egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 6))
         .inner_margin(egui::Margin::symmetric(4, 3))
         .stroke(egui::Stroke::new(

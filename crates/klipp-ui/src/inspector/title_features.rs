@@ -142,7 +142,7 @@ pub(super) fn show_features(
                 (false, true) => (theme.bg_raised, theme.text_secondary),
                 (false, false) => (theme.bg_raised, theme.text_dim),
             };
-            let button = egui::Button::new(egui::RichText::new(label).size(11.0).color(text)).fill(fill).rounding(4.0);
+            let button = egui::Button::new(egui::RichText::new(label).size(11.0).color(text)).fill(fill).corner_radius(4.0);
             let mut resp = ui.add(button);
             resp = if !has(tag) {
                 resp.on_hover_text(format!("This font has no {lacks}"))

@@ -299,8 +299,8 @@ impl GpuContext {
     /// by an earlier `install_shared` or by `shared()` triggering
     /// its lazy init); the caller can decide whether to log and
     /// proceed with two devices or abort.
-    pub fn install_shared(ctx: GpuContext) -> Result<(), GpuContext> {
-        SHARED.set(ctx)?;
+    pub fn install_shared(ctx: GpuContext) -> Result<(), Box<GpuContext>> {
+        SHARED.set(ctx).map_err(Box::new)?;
         SHARED_FROM_UI.store(true, std::sync::atomic::Ordering::Release);
         Ok(())
     }

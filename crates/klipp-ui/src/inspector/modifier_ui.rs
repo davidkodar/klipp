@@ -110,10 +110,10 @@ fn show_modifier_stack(
     let mut remove_idx: Option<usize> = None;
     for (idx, modifier) in stack.modifiers.iter().enumerate() {
         let mod_id = format!("{id_salt}_{idx}");
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(0.5_f32, theme.border))
-            .rounding(2.0)
+            .corner_radius(2.0)
             .inner_margin(egui::Margin::symmetric(6, 4))
             .show(ui, |ui| {
                 // Header row: name + enabled toggle + remove button

@@ -481,10 +481,10 @@ fn inline_picker(
     // The chip under the pointer last frame, kept while the pointer moves
     // across the gaps between chips so the preview does not jump back.
     let hovered: Option<usize> = ui.memory(|m| m.data.get_temp(hovered_id)).flatten();
-    let frame = egui::Frame::none()
+    let frame = egui::Frame::NONE
         .fill(theme.bg_panel_alt)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
-        .rounding(crate::theme::radius::PANEL)
+        .corner_radius(crate::theme::radius::PANEL)
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             // The picture with its name beside it: the same height either

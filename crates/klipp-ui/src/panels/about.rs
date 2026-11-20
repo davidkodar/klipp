@@ -50,10 +50,10 @@ pub(crate) fn show(ctx: &egui::Context, theme: &KlippTheme, status: &Status<'_>)
         action = AboutAction::Close;
     }
     let t = seconds_open(ctx);
-    let frame = egui::Frame::window(&ctx.style())
+    let frame = egui::Frame::window(&ctx.global_style())
         .fill(theme.bg_panel)
         .stroke(Stroke::new(1.0_f32, theme.border))
-        .rounding(ROUND)
+        .corner_radius(ROUND)
         .inner_margin(0.0);
     crate::widgets::window("About Klipp")
         .title_bar(false)
@@ -157,7 +157,7 @@ fn hero(ui: &mut egui::Ui, theme: &KlippTheme, t: f64) -> bool {
     let rect = Rect::from_min_size(ui.cursor().min, vec2(WIDTH, HERO));
     let painter = ui.painter_at(rect);
     let dark = ui.visuals().dark_mode;
-    painter.rect_filled(rect, egui::Rounding { nw: ROUND as u8, ne: ROUND as u8, sw: 0, se: 0 }, theme.bg_deep);
+    painter.rect_filled(rect, egui::CornerRadius { nw: ROUND as u8, ne: ROUND as u8, sw: 0, se: 0 }, theme.bg_deep);
     painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0_f32, theme.border));
 
     let appear = ease_out(t / 0.45);
@@ -393,7 +393,7 @@ const LABEL_W: f32 = 68.0;
 fn body(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<AboutAction> {
     let mut action = None;
     let build = klipp_core::build_info::get();
-    egui::Frame::none().inner_margin(egui::Margin { left: 32, right: 32, top: 22, bottom: 24 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 32, right: 32, top: 22, bottom: 24 }).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
         let row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
             ui.horizontal(|ui| {
@@ -453,7 +453,7 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<Ab
             let primary = egui::Button::new(egui::RichText::new("Check for updates…").size(13.0).color(TILE).strong())
                 .fill(AMBER)
                 .stroke(Stroke::NONE)
-                .rounding(7.0)
+                .corner_radius(7.0)
                 .min_size(vec2(0.0, 32.0));
             // Shown in a Flatpak too: there it answers with how the
             // software store updates Klipp, so the button is never a dead end.
@@ -463,7 +463,7 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<Ab
             let secondary = egui::Button::new(egui::RichText::new("Report an issue").size(13.0).color(theme.text_primary))
                 .fill(theme.bg_raised)
                 .stroke(Stroke::new(1.0_f32, theme.border))
-                .rounding(7.0)
+                .corner_radius(7.0)
                 .min_size(vec2(0.0, 32.0));
             if ui.add(secondary).clicked() {
                 open(ISSUES);
@@ -497,10 +497,10 @@ fn status_row(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Opt
     }
     let mut action = None;
     ui.add_space(14.0);
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_deep)
         .stroke(Stroke::new(1.0_f32, theme.border))
-        .rounding(8.0)
+        .corner_radius(8.0)
         .inner_margin(egui::Margin { left: 12, right: 14, top: 11, bottom: 11 })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -628,7 +628,7 @@ fn status_text(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Op
                     let button = egui::Button::new(egui::RichText::new("Install update…").size(12.5).color(TILE).strong())
                         .fill(AMBER)
                         .stroke(Stroke::NONE)
-                        .rounding(6.0)
+                        .corner_radius(6.0)
                         .min_size(vec2(0.0, 28.0));
                     if ui.add(button).clicked() {
                         action = Some(AboutAction::Install);
@@ -657,10 +657,10 @@ fn commands(ui: &mut egui::Ui, theme: &KlippTheme, line: &str) {
     let id = ui.id().with("about_copied");
     let now = ui.input(|i| i.time);
     let copied = ui.data(|d| d.get_temp::<f64>(id)).is_some_and(|at| now - at < COPIED_FOR);
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_panel)
         .stroke(Stroke::new(1.0_f32, theme.border))
-        .rounding(6.0)
+        .corner_radius(6.0)
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

@@ -98,7 +98,7 @@ impl TenBitDisplay {
             return None;
         }
         let device = &self.ctx.device;
-        if bytes > device.limits().max_storage_buffer_binding_size as u64 {
+        if bytes > device.limits().max_storage_buffer_binding_size {
             return None;
         }
         if self.frame.as_ref().is_none_or(|f| f.0 < bytes) {

@@ -115,7 +115,7 @@ fn prime_chain_from_u8_matches_cpu_upload_path() {
         mapped_at_creation: false,
     }));
     ctx.queue.write_buffer(&input_buf, 0, &bytes);
-    ctx.device.poll(wgpu::PollType::Poll);
+    let _ = ctx.device.poll(wgpu::PollType::Poll);
 
     let mut exec_b = GraphExecutor::new();
     assert!(
@@ -184,7 +184,7 @@ fn empty_source_with_primed_chain_matches_the_cpu_upload_path() {
         mapped_at_creation: false,
     }));
     ctx.queue.write_buffer(&input_buf, 0, &bytes);
-    ctx.device.poll(wgpu::PollType::Poll);
+    let _ = ctx.device.poll(wgpu::PollType::Poll);
 
     // What the engine now does: prime, then pass nothing.
     let mut exec_empty = GraphExecutor::new();
@@ -245,7 +245,7 @@ fn a_seed_made_at_another_resolution_is_refused_not_reinterpreted() {
         mapped_at_creation: false,
     });
     ctx.queue.write_buffer(&input_buf, 0, &bytes);
-    ctx.device.poll(wgpu::PollType::wait_indefinitely());
+    let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
 
     let mut exec = GraphExecutor::new();
     if !exec.prime_chain_from_gpu_u8_buffer(&input_buf, W, H) {
@@ -297,7 +297,7 @@ fn an_unconsumed_seed_does_not_leak_into_the_next_run() {
         mapped_at_creation: false,
     });
     ctx.queue.write_buffer(&stale_buf, 0, &stale);
-    ctx.device.poll(wgpu::PollType::wait_indefinitely());
+    let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
 
     let mut exec = GraphExecutor::new();
     assert!(

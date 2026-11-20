@@ -406,7 +406,7 @@ fn show_clip_video(
         }
 
         if col_state.is_open() {
-            let frame = egui::Frame::none()
+            let frame = egui::Frame::NONE
                 .inner_margin(egui::Margin { left: pad as i8, right: pad as i8, top: 4, bottom: 4 });
             frame.show(ui, |ui| {
                 crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Video(VideoParam::PositionX));
@@ -1195,7 +1195,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Ramp Up"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                            .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("0.5x to 2x over clip duration").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1208,7 +1208,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Ramp Down"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                            .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("2x to 0.5x over clip duration").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1221,7 +1221,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Slow-Mo"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                            .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("1x -> 0.25x -> 1x (center slow-mo)").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1236,7 +1236,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Speed Burst"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                            .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("1x -> 3x -> 1x (center speed burst)").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1251,7 +1251,7 @@ fn show_clip_video(
 
                         if ui.add(egui::Button::new(btn("Reset"))
                             .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.marker_error))
-                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                            .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("Clear all speed keyframes").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
@@ -1578,7 +1578,7 @@ fn show_color_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, c
                         )
                         .fill(theme.bg_raised)
                         .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(4.0),
+                        .corner_radius(4.0),
                     ).clicked() {
                         cmds.push(AppCommand::ToggleColorPanel);
                     }
@@ -2028,7 +2028,7 @@ fn show_compositing_section(
                         )
                         .fill(theme.bg_raised)
                         .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(4.0)).clicked()
+                        .corner_radius(4.0)).clicked()
                     {
                         cmds.push(AppCommand::ClearClipMatte { clip_id });
                     }
@@ -2296,7 +2296,7 @@ fn show_transform_link_section(
                         )
                         .fill(theme.bg_raised)
                         .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(4.0)).clicked()
+                        .corner_radius(4.0)).clicked()
                     {
                         cmds.push(AppCommand::ClearClipTransformLink { clip_id });
                     }
@@ -3074,7 +3074,7 @@ fn show_hyperzoom_section(
                                 .color(theme.text_on_accent),
                         )
                         .fill(theme.accent)
-                        .rounding(4.0),
+                        .corner_radius(4.0),
                     )
                     .on_hover_text(
                         "Writes anchor + scale keyframes on this clip and the chosen target. \
@@ -3186,7 +3186,7 @@ fn show_hyperzoom_section(
                         )
                         .fill(theme.bg_raised)
                         .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(4.0),
+                        .corner_radius(4.0),
                     )
                     .on_hover_text(
                         "Auto-set transform_link on every clip beneath this one within the \
@@ -3449,7 +3449,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     let btn_text = |label: &str| egui::RichText::new(label).size(11.0);
                     if ui.add(egui::Button::new(btn_text("Zoom In"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                        .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Scale 1.0 to 1.3, centered").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
                             clip_id, start_scale: 1.0, end_scale: 1.3,
@@ -3458,7 +3458,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     }
                     if ui.add(egui::Button::new(btn_text("Zoom Out"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                        .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Scale 1.3 to 1.0, centered").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
                             clip_id, start_scale: 1.3, end_scale: 1.0,
@@ -3467,7 +3467,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     }
                     if ui.add(egui::Button::new(btn_text("Pan L>R"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                        .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Pan left to right, 1.2\u{00d7} zoom").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
                             clip_id, start_scale: 1.2, end_scale: 1.2,
@@ -3476,7 +3476,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     }
                     if ui.add(egui::Button::new(btn_text("Pan R>L"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                        .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Pan right to left, 1.2\u{00d7} zoom").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
                             clip_id, start_scale: 1.2, end_scale: 1.2,
@@ -3485,7 +3485,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     }
                     if has_transform_kfs && ui.add(egui::Button::new(btn_text("Remove"))
                         .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
-                        .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                        .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Clear all transform keyframes").clicked() {
                         cmds.push(AppCommand::ClearTransformKeyframes { clip_id });
                     }
@@ -3549,7 +3549,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                         };
                         if ui.add(egui::Button::new(btn_text(label))
                             .fill(fill).stroke(stroke)
-                            .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
+                            .corner_radius(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).clicked() {
                             cmds.push(AppCommand::SetClipSpeed { clip_id, speed: speed_val * sign, ripple: true });
                         }

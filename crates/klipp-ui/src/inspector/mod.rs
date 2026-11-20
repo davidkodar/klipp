@@ -35,10 +35,10 @@ use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 
 fn inspector_scope_banner(ui: &mut egui::Ui, theme: &KlippTheme, scope: &str, detail: &str) {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.accent_subtle)
         .stroke(egui::Stroke::new(1.0_f32, theme.accent))
-        .rounding(4.0)
+        .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(8, 5))
         .outer_margin(egui::Margin::symmetric(0, 4))
         .show(ui, |ui| {
@@ -218,7 +218,7 @@ impl NewInspectorPanel {
                 ui.cursor().min,
                 egui::vec2(ui.available_width(), banner_h),
             );
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(banner_rect), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(banner_rect), |ui| {
                 // Amber background
                 ui.painter().rect_filled(banner_rect, 0.0, theme.bg_panel_alt);
                 ui.painter().hline(banner_rect.x_range(), banner_rect.max.y, egui::Stroke::new(1.0_f32, theme.border));
@@ -313,7 +313,7 @@ impl NewInspectorPanel {
                     let chip = egui::Button::new(egui::RichText::new(format!("\u{25C6} {label}")).size(10.0).color(accent))
                         .fill(accent.gamma_multiply(0.12))
                         .stroke(egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.45)))
-                        .rounding(8.0)
+                        .corner_radius(8.0)
                         .small();
                     if ui.add(chip).on_hover_text("Show it here and its curve in the Curve Editor").clicked() {
                         *active_tab = *tab;
@@ -411,7 +411,7 @@ impl NewInspectorPanel {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let text = egui::RichText::new("\u{25C6} Keyframes").size(10.0);
-                    let toggle = ui.add_enabled(fits, egui::SelectableLabel::new(self.key_column && fits, text));
+                    let toggle = ui.add_enabled(fits, egui::Button::selectable(self.key_column && fits, text));
                     let toggle = if fits { toggle.on_hover_text("Show each parameter's keys beside it") } else { toggle.on_disabled_hover_text("Widen the Inspector to show each parameter's keys beside it") };
                     if toggle.clicked() {
                         self.key_column = !self.key_column;
@@ -568,7 +568,7 @@ impl NewInspectorPanel {
                             // 12 px horizontal content rail — every row in
                             // show_title_editor inherits the same horizontal
                             // inset, so nothing touches the inspector edges.
-                            egui::Frame::none()
+                            egui::Frame::NONE
                                 .inner_margin(egui::Margin {
                                     left: 12, right: 12, top: 0, bottom: 0,
                                 })
@@ -626,7 +626,7 @@ impl NewInspectorPanel {
             if let (true, Some((_, clip))) = (column_w > 0.0, clip_info) {
                 let seen = ui.clip_rect();
                 // Never past the panel's visible edge, or the last keys are cut.
-                let right = (top.x + full).min(seen.max.x).min(ui.ctx().screen_rect().max.x);
+                let right = (top.x + full).min(seen.max.x).min(ui.ctx().content_rect().max.x);
                 let column = egui::Rect::from_x_y_ranges(top.x + content_width..=right, seen.min.y.max(top.y)..=seen.max.y.min(rows_drawn.response.rect.max.y));
                 let edge = egui::Rect::from_x_y_ranges(column.min.x - 3.0..=column.min.x + 3.0, column.y_range());
                 let grip = ui.interact(edge, ui.id().with("key_column_edge"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
@@ -2044,9 +2044,9 @@ fn show_title_pinned_core_textbox(
     // Its misspelt words underlined, a right-click on one offering what
     // it might have been (#3236).
     let language = crate::spelling::language_of(state.sequence(), clip_id, None);
-    let (text_resp, respelt) = egui::Frame::none()
+    let (text_resp, respelt) = egui::Frame::NONE
         .fill(theme.bg_raised)
-        .rounding(4.0)
+        .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             let (out, respelt) = crate::spelling::show(
@@ -2158,9 +2158,9 @@ fn show_title_pinned_core_textbox(
         }
         ui.add_space(8.0);
         let mut size = display_size;
-        let size_resp = egui::Frame::none()
+        let size_resp = egui::Frame::NONE
             .fill(theme.bg_raised)
-            .rounding(4.0)
+            .corner_radius(4.0)
             .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
                 ui.add(
@@ -2517,9 +2517,9 @@ fn show_title_pinned_core_textbox(
             if color_is_mixed {
                 ui.label(egui::RichText::new("Mixed").size(rows::TEXT).color(theme.text_secondary));
             }
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(theme.bg_raised)
-                .rounding(4.0)
+                .corner_radius(4.0)
                 .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
                     ui.label(
@@ -2533,9 +2533,9 @@ fn show_title_pinned_core_textbox(
             // it, so the swatch / slider / % row reads as three
             // equal-height components.
             let slider_outer_w = ui.available_width().max(36.0);
-            let slider_changed = egui::Frame::none()
+            let slider_changed = egui::Frame::NONE
                 .fill(theme.bg_raised)
-                .rounding(4.0)
+                .corner_radius(4.0)
                 .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
                     ui.set_width(slider_outer_w - 16.0);
@@ -4285,10 +4285,10 @@ fn show_title_layers_panel(
 
     // Iterate top-down (last in objects = front layer = top of list).
     let total = td.objects.len();
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_panel)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
-        .rounding(4.0)
+        .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(6, 6))
         .show(ui, |ui| {
             if total == 0 {
@@ -4395,9 +4395,9 @@ fn compact_axis_input(
     crate::param_focus::tag_keys(ui, keyframes);
     let tag = crate::param_focus::take_tag(ui);
     let mut picked = false;
-    let framed = egui::Frame::none()
+    let framed = egui::Frame::NONE
         .fill(theme.bg_raised)
-        .rounding(4.0)
+        .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.set_width(col_w - 16.0);
@@ -4511,9 +4511,9 @@ fn effect_color_row(
         let mut hex_buf: String = ui.ctx().data_mut(|d| {
             d.get_temp::<String>(buf_id).unwrap_or_else(|| current_hex.clone())
         });
-        let hex_resp = egui::Frame::none()
+        let hex_resp = egui::Frame::NONE
             .fill(theme.bg_raised)
-            .rounding(4.0)
+            .corner_radius(4.0)
             .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width().max(40.0));
@@ -4664,9 +4664,9 @@ fn effect_param_row(
         }
 
         // Value pill — framed, right-aligned text.
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(theme.bg_raised)
-            .rounding(4.0)
+            .corner_radius(4.0)
             .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
                 ui.set_width(pill_w - 16.0);
@@ -4734,7 +4734,7 @@ fn pill_toggle_button(
     let btn = egui::Button::new(rich)
         .fill(fill)
         .min_size(egui::vec2(28.0, 28.0))
-        .rounding(4.0);
+        .corner_radius(4.0);
     ui.add(btn)
 }
 
@@ -4756,13 +4756,13 @@ fn pill_toggle_icon_button(
         egui::Sense::click(),
     );
     let painter = ui.painter();
-    painter.rect_filled(rect, egui::Rounding::same(4), fill);
+    painter.rect_filled(rect, egui::CornerRadius::same(4), fill);
     let icon_size = 14.0;
     let icon_rect = egui::Rect::from_center_size(
         rect.center(),
         egui::vec2(icon_size, icon_size),
     );
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(icon_rect), |ui| {
         ui.add(icon.image(icon_size).tint(tint));
     });
     resp
@@ -4976,10 +4976,10 @@ fn show_title_editor(
                     }
                 }
             }
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(theme.accent_subtle)
                 .stroke(egui::Stroke::new(1.0_f32, theme.accent))
-                .rounding(4.0)
+                .corner_radius(4.0)
                 .inner_margin(egui::Margin::symmetric(8, 6))
                 .outer_margin(egui::Margin::symmetric(0, 4))
                 .show(ui, |ui| {
@@ -6036,7 +6036,7 @@ fn show_transition_inspector(
         ui.cursor().min,
         egui::vec2(ui.available_width(), 42.0),
     );
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(header_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| {
         ui.painter().rect_filled(header_rect, 0.0, theme.bg_deep);
         ui.painter().hline(
             header_rect.x_range(),
@@ -6071,7 +6071,7 @@ fn show_transition_inspector(
         .map(|(_, n)| *n)
         .unwrap_or("Unknown");
 
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_raised)
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
@@ -9237,7 +9237,7 @@ mod title_row_style_tests {
             }
             frame(&ctx, &clip, &state, Vec::new());
             let focused = ctx.memory(|m| m.focused()).expect("a field has the keys");
-            assert!(ctx.wants_keyboard_input(), "one click, typing");
+            assert!(ctx.egui_wants_keyboard_input(), "one click, typing");
             // Ctrl+A: the field's text, start to end.
             let ctrl = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
             frame(&ctx, &clip, &state, vec![egui::Event::Key { key: egui::Key::A, physical_key: Some(egui::Key::A), pressed: true, repeat: false, modifiers: ctrl }]);
@@ -9442,7 +9442,7 @@ mod fits_its_column_tests {
         for _ in 0..2 {
             let mut active = tab;
             let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1600.0))), ..Default::default() }, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     edge = ui.max_rect().right();
                     let _ = panel.show(ui, &state, &prefs, &KlippTheme::default(), &mut active);
                 });
@@ -9478,7 +9478,7 @@ mod fits_its_column_tests {
         for _ in 0..2 {
             let mut active = InspectorTab::Effects;
             let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 1600.0))), ..Default::default() }, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     let _ = panel.show(ui, &state, &prefs, &KlippTheme::default(), &mut active);
                 });
             });

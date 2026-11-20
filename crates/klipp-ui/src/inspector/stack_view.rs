@@ -159,7 +159,7 @@ fn recipe_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &
     let mut known: Vec<klipp_timeline::composition_template::CompositionTemplate> = state.composition_templates.recipes().cloned().collect();
     known.extend(klipp_timeline::composition_template::builtin_recipes());
     for (i, card) in recipe_cards_of(graph, &known).into_iter().enumerate() {
-        egui::Frame::none().stroke(egui::Stroke::new(1.0_f32, theme.border)).rounding(3.0).inner_margin(6.0).show(ui, |ui| {
+        egui::Frame::NONE.stroke(egui::Stroke::new(1.0_f32, theme.border)).corner_radius(3.0).inner_margin(6.0).show(ui, |ui| {
             ui.label(egui::RichText::new(format!("Recipe \u{00B7} {}", card.name)).size(12.0).color(theme.text_primary));
             if card.controls.is_empty() && card.others.is_empty() {
                 ui.label(egui::RichText::new("Its controls aren't known here: its nodes are set on their own cards.").size(10.0).color(theme.text_dim));
@@ -256,7 +256,7 @@ fn placement_controls(ui: &mut egui::Ui, clip: &Clip, view: &StackView, row: &Ro
         egui::ComboBox::from_id_salt(("placement_mode", clip.id.0))
             .selected_text(if auto { "Auto" } else { "Fixed" })
             .show_ui(ui, |ui| {
-                let r = ui.add_enabled(auto || refusal.is_none(), egui::SelectableLabel::new(auto, "Auto"));
+                let r = ui.add_enabled(auto || refusal.is_none(), egui::Button::selectable(auto, "Auto"));
                 let r = match refusal.filter(|_| !auto) {
                     Some(why) => r.on_disabled_hover_text(why),
                     None => r.on_hover_text("Placed before the first effect drawn outside the picture"),
@@ -422,7 +422,7 @@ fn add_menu(ui: &mut egui::Ui, state: &AppState, clip: &Clip, view: &StackView, 
             for t in types {
                 if ui.button(t.desc.name).clicked() {
                     cmds.extend(add_to_selection(state, clip, &after, t));
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
         });

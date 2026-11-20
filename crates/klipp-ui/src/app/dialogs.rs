@@ -360,7 +360,7 @@ impl KlippApp {
                 .fixed_pos(egui::pos2(0.0, 0.0))
                 .order(egui::Order::Background)
                 .show(ctx, |ui| {
-                    let screen = ctx.screen_rect();
+                    let screen = ctx.content_rect();
                     let resp = ui.allocate_rect(screen, egui::Sense::click());
                     ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
                     if resp.clicked() { self.state.close_speed_dialog(false); }
@@ -1020,11 +1020,11 @@ impl KlippApp {
             // inner_response.response.rect). Setting an explicit
             // max_width hard-caps the panel via clamp_to_range
             // regardless of what content reports.
-            egui::SidePanel::right("ai_tools_side")
+            egui::Panel::right("ai_tools_side")
                 .resizable(true)
-                .default_width(340.0)
-                .min_width(300.0)
-                .max_width(500.0)
+                .default_size(340.0)
+                .min_size(300.0)
+                .max_size(500.0)
                 .show(ctx, |ui| {
                     crate::ai_tools::AiToolsPanel::show(
                         ui,
@@ -1484,7 +1484,7 @@ impl KlippApp {
                 .fixed_pos(egui::pos2(0.0, 0.0))
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    let screen = ctx.screen_rect();
+                    let screen = ctx.content_rect();
                     let resp = ui.allocate_rect(screen, egui::Sense::click());
                     ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(self.state.modal_backdrop_alpha));
                     if resp.clicked() { self.state.show_project_info = false; }
@@ -1532,7 +1532,7 @@ impl KlippApp {
                 .fixed_pos(egui::pos2(0.0, 0.0))
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    let screen = ctx.screen_rect();
+                    let screen = ctx.content_rect();
                     let resp = ui.allocate_rect(screen, egui::Sense::click());
                     ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(self.state.modal_backdrop_alpha));
                     if resp.clicked() { self.state.file_info = None; }
@@ -1646,7 +1646,7 @@ impl KlippApp {
     /// plus a small metadata overlay at the bottom. Dismisses on Escape,
     /// Spacebar, or backdrop click. Arrow keys navigate to adjacent files.
     fn render_quick_look(&mut self, ctx: &egui::Context, path: &std::path::Path) {
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
 
         // ── Lazy-load texture and header info on first frame ──
         if self.state.quick_look_texture.is_none() && self.state.quick_look_info.is_none() {

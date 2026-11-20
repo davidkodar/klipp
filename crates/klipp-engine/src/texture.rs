@@ -63,7 +63,7 @@ impl GpuOutputSnapshot {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
         rx.recv()
             .map_err(|_| "the viewer readback was dropped".to_string())?
             .map_err(|e| format!("the viewer readback failed: {e}"))?;

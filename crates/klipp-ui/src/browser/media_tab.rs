@@ -341,7 +341,7 @@ pub fn show(
     // title text field.
     // Nor behind a dialog that keeps the keys: Ctrl+A in New Project
     // selected the whole pool behind it.
-    if !ui.ctx().wants_keyboard_input()
+    if !ui.ctx().egui_wants_keyboard_input()
         && !state.dialog_open()
         && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A))
     {
@@ -427,12 +427,12 @@ fn pool_menu(ui: &mut egui::Ui, view_mode: &mut BrowserViewMode, sort_by: &mut S
     ui.set_min_width(180.0);
     if menu_item(ui, "New Bin", "").clicked() {
         cmds.push(AppCommand::NewBin { media_ids: Vec::new() });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     ui.separator();
     if menu_item(ui, "Import Media\u{2026}", "").clicked() {
         crate::file_dialog::spawn(crate::command_palette::import_media_commands);
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     // A folder with its subfolders (#3096), each subfolder a bin when
     // asked.
@@ -444,7 +444,7 @@ fn pool_menu(ui: &mut egui::Ui, view_mode: &mut BrowserViewMode, sort_by: &mut S
                     .map(|dir| vec![AppCommand::ImportMediaFolder { directory: dir, bins }])
                     .unwrap_or_default()
             });
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
     }
     ui.separator();
@@ -458,16 +458,16 @@ fn pool_menu(ui: &mut egui::Ui, view_mode: &mut BrowserViewMode, sort_by: &mut S
         for (ascending, label) in [(true, "Ascending"), (false, "Descending")] {
             if menu_choice(ui, label, "", *sort_ascending == ascending).clicked() {
                 *sort_ascending = ascending;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         }
     }));
     ui.menu_rows("View", |ui| menu_body(ui, |ui| {
         if ui.selectable_value(view_mode, BrowserViewMode::List, "List").clicked() {
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
         if ui.selectable_value(view_mode, BrowserViewMode::Grid, "Grid").clicked() {
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
     }));
 }
@@ -624,10 +624,10 @@ fn draw_info_icon_with_tooltip(
     let bg_panel_alt = theme.bg_panel_alt;
 
     resp.on_hover_ui_at_pointer(move |ui| {
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(bg_panel_alt)
             .stroke(egui::Stroke::new(1.0_f32, border_light))
-            .rounding(4.0)
+            .corner_radius(4.0)
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.set_max_width(420.0);
@@ -794,7 +794,7 @@ fn paint_synthetic_title_thumb(
     // BlueGradient swatch so the asset reads as "made from a title".
     painter.rect_filled(
         rect,
-        egui::Rounding::same(2),
+        egui::CornerRadius::same(2),
         egui::Color32::from_rgb(0x4d, 0x77, 0xab),
     );
     let upper = egui::Rect::from_min_max(
@@ -803,7 +803,7 @@ fn paint_synthetic_title_thumb(
     );
     painter.rect_filled(
         upper,
-        egui::Rounding { nw: 2, ne: 2, sw: 0, se: 0 },
+        egui::CornerRadius { nw: 2, ne: 2, sw: 0, se: 0 },
         egui::Color32::from_rgb(0x6b, 0x8d, 0xb5),
     );
 
@@ -1015,7 +1015,7 @@ fn render_column_header(ui: &mut egui::Ui, theme: &KlippTheme, columns: &mut Vec
         ui.separator();
         if menu_item(ui, "Default columns", "").clicked() {
             *columns = Field::DEFAULT_COLUMNS.to_vec();
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
     }));
     painter.line_segment([egui::pos2(rect.min.x, rect.max.y), egui::pos2(rect.max.x, rect.max.y)], egui::Stroke::new(1.0_f32, theme.border));
@@ -1683,16 +1683,16 @@ fn bin_section(
     resp.context_menu_rows(|ui| menu_body(ui, |ui| {
         if menu_item(ui, "New Bin", "").clicked() {
             cmds.push(AppCommand::NewBin { media_ids: Vec::new() });
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
         ui.separator();
         if menu_item(ui, "Rename Bin", "").clicked() {
             *renaming_bin = Some((name.clone(), name.clone()));
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
         if menu_item(ui, "Delete Bin", "").on_hover_text("Its clips stay in the pool, in no bin.").clicked() {
             cmds.push(AppCommand::DeleteBin { name: name.clone() });
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
     }));
     // Items dragged onto the header go into the bin.
@@ -1991,31 +1991,31 @@ fn show_context_menu(
         for id in span_parts {
             cmds.push(AppCommand::ImportMediaLinked { media_id: *id, on_new_tracks: false });
         }
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if synced_audio && menu_item(ui, "Remove Synced Audio", "").on_hover_text("The clip goes back to its own sound.").clicked() {
         cmds.push(AppCommand::ClearSyncedAudio { video_id: media_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if !offline && menu_item(ui, "Transcribe Clip", "")
         .on_hover_text("Run speech-to-text on this clip now, even when automatic transcription is off.")
         .clicked()
     {
         cmds.push(AppCommand::TranscribeClip { media_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if !offline && menu_item(ui, "Make Shorts\u{2026}", "")
         .on_hover_text("Find the moments that stand on their own as vertical shorts, review them, and build each as a sequence of its own.")
         .clicked()
     {
         cmds.push(AppCommand::OpenShortsDialog { media_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     // Relink — only shown for offline items, sits at the top so it's
     // the first action a user sees when reaching for a missing clip.
     if offline {
         if menu_item(ui, "Relink\u{2026}", "").clicked() {
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
             let ext = path
                 .extension()
                 .and_then(|e| e.to_str())
@@ -2036,7 +2036,7 @@ fn show_context_menu(
     }
 
     if menu_item(ui, "Rename\u{2026}", "").clicked() {
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
         // Single-item rename reuses the batch dialog (count 1 is supported).
         cmds.push(AppCommand::OpenBatchRenameDialog { media_ids: vec![media_id] });
     }
@@ -2045,7 +2045,7 @@ fn show_context_menu(
     // avoids offering it when it would toast an error.
     if !is_subclip && has_zone
         && menu_item(ui, "Create Subclip from Zone", "").clicked() {
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
             cmds.push(AppCommand::CreateSubclipFromZone {
                 source_media_id: media_id,
                 name: None,
@@ -2054,35 +2054,35 @@ fn show_context_menu(
     ui.separator();
     if menu_item(ui, "Load in Source", "").clicked() {
         cmds.push(AppCommand::LoadSourceMedia { media_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if menu_item(ui, "Add at Playhead", "").clicked() {
         cmds.push(AppCommand::PlaceMedia { media_id, drop: klipp_core::events::ClipDrop::AtPlayhead });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if menu_item(ui, MENU_ADD_TO_END, "").clicked() {
         cmds.push(AppCommand::ImportMediaLinked { media_id, on_new_tracks: false });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if menu_item(ui, "Generate Proxy", "").clicked() {
         cmds.push(AppCommand::GenerateProxy { media_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if menu_item(ui, "Regenerate Filmstrip", "").clicked() {
         cmds.push(AppCommand::RegenerateFilmstrip { media_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     // A still is its own skim: there is none to make again.
     if !is_still && menu_item(ui, "Regenerate Skim Transcode", "").clicked() {
         cmds.push(AppCommand::RegenerateSkimTranscode { media_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if ui.add_enabled(!offline, egui::Button::new("Refresh Metadata"))
         .on_hover_text("Read the file again for what the camera recorded: timecode, reel, exposure, a sidecar copied beside it since, every tag.")
         .clicked()
     {
         cmds.push(AppCommand::RefreshMediaMetadata { media_ids: vec![media_id] });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     ui.separator();
     ui.menu_rows("Set Rating", |ui| menu_body(ui, |ui| {
@@ -2094,7 +2094,7 @@ fn show_context_menu(
             };
             if menu_item(ui, &label, "").clicked() {
                 cmds.push(AppCommand::SetMediaRating { media_id, rating: r });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         }
     }));
@@ -2106,7 +2106,7 @@ fn show_context_menu(
             }
             if ui.button(text).clicked() {
                 cmds.push(AppCommand::SetMediaColorLabel { media_id, label: label.to_u8() });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         }
     }));
@@ -2115,24 +2115,24 @@ fn show_context_menu(
     ui.separator();
     if menu_item(ui, "Remove from Project", "").clicked() {
         cmds.push(AppCommand::RemoveFromPool { media_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if menu_item(ui, "Open in External App", "").clicked() {
         cmds.push(AppCommand::OpenInExternalApp { media_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if menu_item(ui, "Reveal in File Manager", "").clicked() {
         cmds.push(AppCommand::RevealInFileManager {
             path: path.to_path_buf(),
         });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if menu_item(ui, "Add to Shared Library", "")
         .on_hover_text("Keep this file in the Library's shared collection, to bring into any project. The file stays where it is.")
         .clicked()
     {
         cmds.push(AppCommand::AddMediaToSharedLibrary { media_ids: vec![media_id], collection: String::new() });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     // F-160: bin-side audio sync entries. The by-media variants
     // resolve to the first timeline clip using this media at
@@ -2140,16 +2140,16 @@ fn show_context_menu(
     ui.separator();
     if menu_item(ui, "Set as Audio Reference", "").clicked() {
         cmds.push(AppCommand::SetAudioReferenceByMedia { media_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if menu_item(ui, "Align to Audio Reference", "").clicked() {
         cmds.push(AppCommand::AlignToAudioReferenceByMedia { media_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     ui.separator();
     if menu_item(ui, "Properties\u{2026}", "").clicked() {
         cmds.push(AppCommand::OpenClipProperties { media_id });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
 }
 
@@ -2218,7 +2218,7 @@ fn bin_menu_items(ui: &mut egui::Ui, bins: &[String], ids: &[MediaId], current: 
         for bin in bins {
             if ui.add_enabled_ui(current != Some(bin.as_str()), |ui| menu_item(ui, bin, "")).inner.clicked() {
                 cmds.push(AppCommand::MoveItemsToBin { media_ids: ids.to_vec(), bin: Some(bin.clone()) });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         }
         if !bins.is_empty() {
@@ -2226,16 +2226,16 @@ fn bin_menu_items(ui: &mut egui::Ui, bins: &[String], ids: &[MediaId], current: 
         }
         if menu_item(ui, "New Bin\u{2026}", "").on_hover_text("A new bin with these in it. Its name is ready to type.").clicked() {
             cmds.push(AppCommand::NewBin { media_ids: ids.to_vec() });
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
         if in_a_bin && menu_item(ui, "Remove from Bin", "").clicked() {
             cmds.push(AppCommand::MoveItemsToBin { media_ids: ids.to_vec(), bin: None });
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
     }));
     if menu_item(ui, "New Bin from Selection", "").on_hover_text("A new bin with the selected clips in it.").clicked() {
         cmds.push(AppCommand::NewBin { media_ids: ids.to_vec() });
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
 }
 
@@ -2252,20 +2252,20 @@ fn show_multi_context_menu(
     ui.label(egui::RichText::new(format!("{count} items selected")).strong());
     ui.separator();
     if menu_item(ui, "Batch Rename\u{2026}", "").on_hover_text("Rename these items by one pattern.").clicked() {
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
         cmds.push(AppCommand::OpenBatchRenameDialog {
             media_ids: selected_ids.iter().copied().collect(),
         });
     }
     if menu_item(ui, "Refresh Metadata", "").on_hover_text("Read these files again for what the camera recorded.").clicked() {
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
         cmds.push(AppCommand::RefreshMediaMetadata { media_ids: selected_ids.iter().copied().collect() });
     }
     if menu_item(ui, "Add to Shared Library", "")
         .on_hover_text("Keep these files in the Library's shared collection, to bring into any project. The files stay where they are.")
         .clicked()
     {
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
         cmds.push(AppCommand::AddMediaToSharedLibrary { media_ids: selected_ids.iter().copied().collect(), collection: String::new() });
     }
     let ids = || selected_ids.iter().copied().collect::<Vec<_>>();
@@ -2275,7 +2275,7 @@ fn show_multi_context_menu(
         .on_hover_text(format!("Put these clips on one clock and lay them out at the playhead as a multicam, one angle per track: {} (the default in Preferences > Editing).", default_sync.label().to_lowercase()))
         .clicked()
     {
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
         cmds.push(AppCommand::CreateSyncedMulticam { media_ids: ids(), method: default_sync });
     }
     ui.menu_rows("Create Synced Multicam By", |ui| menu_body(ui, |ui| {
@@ -2285,7 +2285,7 @@ fn show_multi_context_menu(
             (MulticamSync::Audio, "Only the sound, matched against the longest clip. For cameras with no shared timecode."),
         ] {
             if menu_item(ui, method.label(), "").on_hover_text(hint).clicked() {
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
                 cmds.push(AppCommand::CreateSyncedMulticam { media_ids: ids(), method });
             }
         }
@@ -2297,7 +2297,7 @@ fn show_multi_context_menu(
             .on_hover_text("Pair the clip with this recording: by timecode when both carry one, by the sound otherwise. The recording then goes under the clip when it is added to the timeline.")
             .clicked()
         {
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
             cmds.push(AppCommand::SyncMediaPair { video_id, audio_id });
         }
     }
@@ -2314,7 +2314,7 @@ fn show_multi_context_menu(
                 for &id in selected_ids {
                     cmds.push(AppCommand::SetMediaRating { media_id: id, rating: r });
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         }
     }));
@@ -2333,7 +2333,7 @@ fn show_multi_context_menu(
                 for &id in selected_ids {
                     cmds.push(AppCommand::SetMediaColorLabel { media_id: id, label: label.to_u8() });
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         }
     }));
@@ -2342,20 +2342,20 @@ fn show_multi_context_menu(
         for &id in selected_ids {
             cmds.push(AppCommand::GenerateProxy { media_id: id });
         }
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     if menu_item(ui, &format!("Regenerate Filmstrips ({count})"), "").clicked() {
         for &id in selected_ids {
             cmds.push(AppCommand::RegenerateFilmstrip { media_id: id });
         }
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     ui.separator();
     if menu_item(ui, &format!("Remove {count} items from Project"), "").clicked() {
         for &id in selected_ids {
             cmds.push(AppCommand::RemoveFromPool { media_id: id });
         }
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
 }
 
@@ -3152,7 +3152,7 @@ mod bin_menu_tests {
         pool.panel.renaming_bin = Some(("New Bin".into(), "New Bin".into()));
         pool.texts();
         pool.texts();
-        assert!(pool.ctx.wants_keyboard_input(), "the name has the keys at once");
+        assert!(pool.ctx.egui_wants_keyboard_input(), "the name has the keys at once");
         pool.frame(vec![egui::Event::Text("Interviews".into())]);
         assert_eq!(pool.panel.renaming_bin.as_ref().map(|(_, t)| t.as_str()), Some("Interviews"));
     }

@@ -139,14 +139,14 @@ pub fn show(
             if ui.button("Rename...").clicked() {
                 state.renaming_sequence_idx = Some(i);
                 state.rename_sequence_buf = name.clone();
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Duplicate").clicked() {
                 cmds.push(AppCommand::DuplicateSequence {
                     sequence_idx: i,
                     new_name: format!("{} (copy)", name),
                 });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             // A copy at another aspect, each picture following its subject
             // (#2211).
@@ -157,7 +157,7 @@ pub fn show(
                     let (w, h) = aspect_size(frame, (a, b));
                     if ui.button(format!("{label}  ({w}\u{00d7}{h})")).on_hover_text("A copy at this frame, each picture following its subject; pictures with no clear subject are marked for review").clicked() {
                         cmds.push(AppCommand::NewAspectVersion { sequence_idx: i, width: w, height: h, name: format!("{name} {label}") });
-                        ui.close_menu();
+                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });
@@ -167,18 +167,18 @@ pub fn show(
                 && ui.button("Rebuild from Master").on_hover_text("This version is older than the master's last edit. Copy the master's cut in again: the clips still there keep their framing here, the new ones are reframed").clicked()
             {
                 cmds.push(AppCommand::RebuildVersion { sequence_idx: i });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Sequence Settings...").clicked() {
                 cmds.push(AppCommand::OpenSequenceSettings { sequence_idx: i });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             // Stacked above the cut, to skim and take ranges from (#82).
             let as_selects = state.selects_sequence == Some(state.sequences[i].id);
             if ui.add_enabled(!is_active && !as_selects, egui::Button::new("Open as Selects")).on_disabled_hover_text(if is_active { "This is the sequence being cut" } else { "Open above the cut already" }).clicked() {
                 state.selects_sequence = Some(state.sequences[i].id);
                 state.selects_range = None;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(can_close, egui::Button::new("Close Tab")).clicked() {
                 state.closed_sequence_tabs.insert(state.sequences[i].id);
@@ -187,7 +187,7 @@ pub fn show(
                         cmds.push(AppCommand::SetActiveSequence { sequence_idx: next });
                     }
                 }
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             let can_delete = state.sequences.len() > 1;
@@ -197,7 +197,7 @@ pub fn show(
                 // Asked first: a deleted sequence and its undo history
                 // cannot be brought back.
                 state.confirm_delete_sequence = Some(state.sequences[i].id);
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         });
 

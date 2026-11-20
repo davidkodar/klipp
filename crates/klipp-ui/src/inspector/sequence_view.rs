@@ -97,9 +97,9 @@ pub fn show(ui: &mut Ui, theme: &KlippTheme, state: &AppState, cmds: &mut Vec<Ap
 /// The sequence's name, its format on one line, and its settings.
 fn header(ui: &mut Ui, theme: &KlippTheme, state: &AppState, cmds: &mut Vec<AppCommand>) {
     let seq = state.sequence();
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.bg_panel_alt)
-        .rounding(6.0)
+        .corner_radius(6.0)
         .inner_margin(egui::Margin::symmetric(14, 12))
         .outer_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {

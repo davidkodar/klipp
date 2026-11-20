@@ -778,7 +778,7 @@ fn download_linear(buf: &wgpu::Buffer, width: u32, height: u32) -> Vec<f32> {
     ctx.queue().submit(std::iter::once(enc.finish()));
     let slice = staging.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
-    ctx.device().poll(wgpu::PollType::wait_indefinitely());
+    let _ = ctx.device().poll(wgpu::PollType::wait_indefinitely());
     let data = slice.get_mapped_range();
     let out = bytemuck::pod_collect_to_vec(&data);
     drop(data);

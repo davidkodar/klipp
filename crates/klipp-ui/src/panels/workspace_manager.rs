@@ -25,7 +25,7 @@ pub fn show_workspace_manager_dialog(
 
     let built_ins = builtin_workspace_layouts();
 
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     let win_w = 520.0_f32.min(screen.width() - 40.0);
     let win_h = 420.0_f32.min(screen.height() - 40.0);
     let min_w = 440.0_f32.min(screen.width() - 40.0);

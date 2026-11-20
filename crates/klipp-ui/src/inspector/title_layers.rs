@@ -173,9 +173,9 @@ fn row_ui(
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), egui::Sense::click_and_drag());
     if is_selected {
-        ui.painter().rect(rect.shrink(1.0), egui::Rounding::same(4), theme.accent_subtle, egui::Stroke::new(1.5_f32, theme.accent), egui::StrokeKind::Outside);
+        ui.painter().rect(rect.shrink(1.0), egui::CornerRadius::same(4), theme.accent_subtle, egui::Stroke::new(1.5_f32, theme.accent), egui::StrokeKind::Outside);
     } else if resp.hovered() {
-        ui.painter().rect_filled(rect, egui::Rounding::same(4), theme.bg_hover);
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(4), theme.bg_hover);
     }
     if resp.clicked() {
         cmds.push(AppCommand::SelectTitleObject { clip_id, object_id: Some(obj.id.0) });
@@ -194,7 +194,7 @@ fn row_ui(
                 let mut o = order.clone();
                 f(&mut o);
                 cmds.push(AppCommand::ReorderTitleObjects { clip_id, new_order: o });
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         };
         restack(ui, fwd, "Bring to Front", &|o| {
@@ -210,15 +210,15 @@ fn row_ui(
         ui.separator();
         if ui.button("Rename").clicked() {
             mem.renaming = Some((obj.id.0, layer_name(obj)));
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
         if ui.button("Duplicate").clicked() {
             cmds.push(AppCommand::DuplicateTitleObject { clip_id, object_id: obj.id.0 });
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
         if ui.button("Delete").clicked() {
             cmds.push(AppCommand::DeleteTitleObject { clip_id, object_id: obj.id.0 });
-            ui.close_menu();
+            ui.close_kind(egui::UiKind::Menu);
         }
     });
 
@@ -229,7 +229,7 @@ fn row_ui(
     let icon = |ui: &mut egui::Ui, x: f32, key: &str, icon: Icon, tint: egui::Color32, hover: &str| -> bool {
         let r = egui::Rect::from_min_size(egui::pos2(x, icon_y), egui::vec2(icon_size, icon_size));
         let resp = ui.interact(r, ui.id().with((key, obj.id.0)), egui::Sense::click()).on_hover_text(hover);
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(r), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
             ui.add(icon.image(icon_size).tint(tint));
         });
         resp.clicked()
@@ -250,7 +250,7 @@ fn row_ui(
         TitleObjectContent::Shape(_) => (theme.bg_raised, theme.text_primary, "S"),
         TitleObjectContent::Image(_) => (theme.bg_raised, theme.text_primary, "I"),
     };
-    ui.painter().rect_filled(badge, egui::Rounding::same(4), fill);
+    ui.painter().rect_filled(badge, egui::CornerRadius::same(4), fill);
     ui.painter().text(badge.center(), egui::Align2::CENTER_CENTER, letter, egui::FontId::proportional(12.0), ink);
     x += 28.0;
 
@@ -259,7 +259,7 @@ fn row_ui(
     let mut x_right = rect.max.x - 8.0 - icon_size;
     let del = egui::Rect::from_min_size(egui::pos2(x_right, icon_y), egui::vec2(icon_size, icon_size));
     let del_resp = ui.interact(del, ui.id().with(("title_layer_del", obj.id.0)), egui::Sense::click()).on_hover_text("Delete");
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(del), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(del), |ui| {
         ui.add(Icon::X.image(icon_size).tint(if del_resp.hovered() { theme.marker_error } else { theme.text_dim }));
     });
     if del_resp.clicked() {
@@ -285,7 +285,7 @@ fn row_ui(
     if !masks.is_empty() {
         let g = ui.painter().layout_no_wrap("Matte".into(), egui::FontId::proportional(10.0), theme.text_on_accent);
         let pill = egui::Rect::from_min_size(egui::pos2(x_right - g.size().x - 14.0, rect.center().y - 8.0), egui::vec2(g.size().x + 8.0, 16.0));
-        ui.painter().rect_filled(pill, egui::Rounding::same(8), theme.accent);
+        ui.painter().rect_filled(pill, egui::CornerRadius::same(8), theme.accent);
         ui.painter().galley(pill.min + egui::vec2(4.0, (16.0 - g.size().y) * 0.5), g, theme.text_on_accent);
         ui.interact(pill, ui.id().with(("title_layer_matte", obj.id.0)), egui::Sense::hover()).on_hover_text(format!("Masks {}: a matte, not drawn itself", masks.join(", ")));
         x_right = pill.left() - 6.0;

@@ -24,7 +24,7 @@ pub fn show_file_info(
         .collapsible(false)
         .resizable(false)
         .default_width(460.0)
-        .default_pos(ctx.screen_rect().center() - egui::vec2(230.0, 220.0))
+        .default_pos(ctx.content_rect().center() - egui::vec2(230.0, 220.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 5.0);

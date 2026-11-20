@@ -500,7 +500,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
     // can't grow the dialog past the bottom edge — the ScrollArea
     // below absorbs the overflow instead. Width fixed for stable
     // row layout.
-    let screen_rect = ctx.screen_rect();
+    let screen_rect = ctx.content_rect();
     let max_h = (screen_rect.height() * 0.8).clamp(360.0, 720.0);
     let scroll_max_h = max_h - 110.0; // header + footer + padding
 
@@ -978,7 +978,7 @@ fn show_model_details(
         return;
     }
 
-    let screen_rect = ctx.screen_rect();
+    let screen_rect = ctx.content_rect();
     egui::Area::new(egui::Id::new("ai_model_details_scrim"))
         .order(egui::Order::Foreground)
         .fixed_pos(screen_rect.min)
@@ -1111,7 +1111,7 @@ fn show_uninstall_confirm(
         return;
     };
 
-    let screen_rect = ctx.screen_rect();
+    let screen_rect = ctx.content_rect();
 
     // Modal scrim — same darken-the-world treatment the parent
     // dialog uses, on a higher layer so it stacks above.
@@ -1278,7 +1278,7 @@ fn show_bulk_uninstall_confirm(
         return;
     }
 
-    let screen_rect = ctx.screen_rect();
+    let screen_rect = ctx.content_rect();
 
     egui::Area::new(egui::Id::new("ai_model_bulk_uninstall_scrim"))
         .order(egui::Order::Foreground)
@@ -1415,7 +1415,7 @@ fn show_stale_uninstall_confirm(
         return;
     }
 
-    let screen_rect = ctx.screen_rect();
+    let screen_rect = ctx.content_rect();
 
     egui::Area::new(egui::Id::new("ai_model_stale_uninstall_scrim"))
         .order(egui::Order::Foreground)
@@ -1605,7 +1605,7 @@ fn render_custom_row(
     let avail = ui.available_width();
     let left_w = (avail - right_reserve - 28.0).max(200.0);
 
-    egui::Frame::none()
+    egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.set_min_height(row_h);
@@ -1673,10 +1673,10 @@ fn render_custom_row(
                             *pending_uninstall = Some(entry.clone());
                         }
                         ui.add_space(8.0);
-                        let badge = egui::Frame::none()
+                        let badge = egui::Frame::NONE
                             .fill(badge_color.gamma_multiply(0.18))
                             .stroke(egui::Stroke::new(1.0_f32, badge_color))
-                            .rounding(2.0)
+                            .corner_radius(2.0)
                             .inner_margin(egui::Margin::symmetric(6, 2));
                         badge.show(ui, |ui| {
                             ui.label(
@@ -1713,7 +1713,7 @@ fn show_custom_uninstall_confirm(
         return;
     };
 
-    let screen_rect = ctx.screen_rect();
+    let screen_rect = ctx.content_rect();
 
     egui::Area::new(egui::Id::new("ai_custom_uninstall_scrim"))
         .order(egui::Order::Foreground)
@@ -1870,7 +1870,7 @@ fn show_custom_install(
         return;
     }
 
-    let screen_rect = ctx.screen_rect();
+    let screen_rect = ctx.content_rect();
 
     // Modal scrim — same darken treatment the other AI Models
     // modals use.
@@ -2427,7 +2427,7 @@ fn render_row(
     let avail = ui.available_width();
     // Leave room for the status dot (~18px) + a small margin.
     let left_w = (avail - right_reserve - 28.0).max(200.0);
-    egui::Frame::none()
+    egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.set_min_height(row_h);
@@ -2575,9 +2575,9 @@ fn section_header(ui: &mut egui::Ui, header: &str, count: usize, theme: &KlippTh
                 .color(theme.text_dim),
         );
         ui.add_space(4.0);
-        let badge = egui::Frame::none()
+        let badge = egui::Frame::NONE
             .fill(theme.bg_raised)
-            .rounding(2.0)
+            .corner_radius(2.0)
             .inner_margin(egui::Margin::symmetric(5, 1));
         badge.show(ui, |ui| {
             ui.label(
@@ -2607,9 +2607,9 @@ fn paint_status_dot(ui: &mut egui::Ui, color: egui::Color32) {
 /// signals.
 fn recommended_badge(ui: &mut egui::Ui, theme: &KlippTheme) {
     let bg = theme.marker_warning;
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(bg)
-        .rounding(2.0)
+        .corner_radius(2.0)
         .inner_margin(egui::Margin::symmetric(6, 1))
         .show(ui, |ui| {
             ui.label(
@@ -2630,10 +2630,10 @@ fn status_badge(
     theme: &KlippTheme,
 ) {
     let color = status.badge_color(theme);
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(color.gamma_multiply(0.18))
         .stroke(egui::Stroke::new(1.0_f32, color))
-        .rounding(2.0)
+        .corner_radius(2.0)
         .inner_margin(egui::Margin::symmetric(6, 2))
         .show(ui, |ui| {
             ui.label(

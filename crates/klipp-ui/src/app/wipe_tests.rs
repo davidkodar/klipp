@@ -56,7 +56,7 @@ fn the_viewer_wipes_against_another_clip_graded() {
     for t in 0..3 {
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(t as f64 * 0.05), ..Default::default() };
         let out = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                 let _ = panel.show(ui, &mut state, &theme, &crate::keybindings::KeyBindings::default());
             });
         });
@@ -71,7 +71,7 @@ fn the_viewer_wipes_against_another_clip_graded() {
     state.show_color_panel = false;
     let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(1.0), ..Default::default() };
     let out = ctx.run(input, |ctx| {
-        egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
             let _ = panel.show(ui, &mut state, &theme, &crate::keybindings::KeyBindings::default());
         });
     });

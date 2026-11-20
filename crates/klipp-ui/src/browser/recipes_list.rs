@@ -148,7 +148,7 @@ fn hex_rgb(v: &str) -> Option<[u8; 3]> {
 /// The list, under the Library's search field.
 pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme, search: &str, cmds: &mut Vec<AppCommand>) {
     let target = target(state);
-    egui::Frame::none().inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| {
         let line = match &target {
             Some((_, name)) => format!("Click Apply to build a recipe into {name}. Its controls are in the inspector; Undo takes it off."),
             None => "Select a clip on the timeline to apply a recipe to it.".to_string(),
@@ -172,7 +172,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme, search: &st
                 });
                 category = Some(row.category.clone());
             }
-            egui::Frame::none().inner_margin(egui::Margin::symmetric(10, 3)).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(10, 3)).show(ui, |ui| {
                 let filled: Vec<(String, String)> = row
                     .slots
                     .iter()

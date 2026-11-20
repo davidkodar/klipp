@@ -206,7 +206,7 @@ fn gpu_buffer(ctx: &GpuContext, bytes: &[u8]) -> Arc<wgpu::Buffer> {
         mapped_at_creation: false,
     }));
     ctx.queue.write_buffer(&buf, 0, bytes);
-    ctx.device.poll(wgpu::PollType::Poll);
+    let _ = ctx.device.poll(wgpu::PollType::Poll);
     buf
 }
 

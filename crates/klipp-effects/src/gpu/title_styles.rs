@@ -552,7 +552,7 @@ impl GpuEffectsPipeline {
             return false;
         };
         let count = u64::from(w) * u64::from(h);
-        if count * 16 > u64::from(self.device.limits().max_storage_buffer_binding_size)
+        if count * 16 > self.device.limits().max_storage_buffer_binding_size
             || count.div_ceil(u64::from(WORKGROUP_SIZE))
                 > u64::from(self.device.limits().max_compute_workgroups_per_dimension)
         {
@@ -774,7 +774,7 @@ impl GpuEffectsPipeline {
         if self.is_device_lost()
             || slot >= self.stack_layers.len()
             || count == 0
-            || count * 16 > u64::from(self.device.limits().max_storage_buffer_binding_size)
+            || count * 16 > self.device.limits().max_storage_buffer_binding_size
             || !chromatic_px.is_finite()
             || !glitch.is_finite()
         {
@@ -860,7 +860,7 @@ impl GpuEffectsPipeline {
             || count == 0
             || !radians.is_finite()
             || pivot.iter().any(|v| !v.is_finite())
-            || bytes > u64::from(self.device.limits().max_storage_buffer_binding_size)
+            || bytes > self.device.limits().max_storage_buffer_binding_size
             || count.div_ceil(u64::from(WORKGROUP_SIZE))
                 > u64::from(self.device.limits().max_compute_workgroups_per_dimension)
         {
@@ -944,7 +944,7 @@ impl GpuEffectsPipeline {
             || th == 0
             || x0.checked_add(w).is_none_or(|x| x > fw)
             || y0.checked_add(h).is_none_or(|y| y > fh)
-            || bytes > u64::from(self.device.limits().max_storage_buffer_binding_size)
+            || bytes > self.device.limits().max_storage_buffer_binding_size
             || texture.texels.len() as u64 * 4 != texbytes
             || texture.mode > 3
             || texture
@@ -1108,7 +1108,7 @@ impl GpuEffectsPipeline {
             || count == 0
             || !opacity.is_finite()
             || edges.iter().any(|x| !x.is_finite())
-            || count * 16 > u64::from(self.device.limits().max_storage_buffer_binding_size)
+            || count * 16 > self.device.limits().max_storage_buffer_binding_size
         {
             return false;
         }
@@ -1256,7 +1256,7 @@ impl GpuEffectsPipeline {
         let Some(to_authored)=inverse(self.authored_to_working) else {return false;};
         let (w,h)=self.stack_dims;let bytes=u64::from(w)*u64::from(h)*16;
         let size=bytes+16+if solid {8+u64::from(w.min(319))*u64::from(h.min(319))*4}else{0};
-        if size>u64::from(self.device.limits().max_storage_buffer_binding_size) {return false;}
+        if size>self.device.limits().max_storage_buffer_binding_size {return false;}
         let buffer=||self.device.create_buffer(&wgpu::BufferDescriptor {
             label:Some("title blur image and bounds"),size,
             usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,
@@ -1402,7 +1402,7 @@ impl GpuEffectsPipeline {
 
     /// Whether a picture of `texels` fits one GPU storage binding.
     pub fn stack_title_image_fits(&self, texels: usize) -> bool {
-        (texels as u64).saturating_mul(4) <= u64::from(self.device.limits().max_storage_buffer_binding_size)
+        (texels as u64).saturating_mul(4) <= self.device.limits().max_storage_buffer_binding_size
     }
 
     /// Whether the picture `id` is on the GPU already.
@@ -1525,7 +1525,7 @@ impl GpuEffectsPipeline {
         let (w,h)=self.stack_dims;
         let bytes=u64::from(w)*u64::from(h)*16;
         let size=bytes+16+if solid {8+u64::from(w.min(319))*u64::from(h.min(319))*4}else{0};
-        if size>u64::from(self.device.limits().max_storage_buffer_binding_size) {return false;}
+        if size>self.device.limits().max_storage_buffer_binding_size {return false;}
         // Four bounds words precede the source image. Keeping both in one
         // read buffer avoids in-place translation races or a CPU bounds read.
         if self.title_post_scratch.as_ref().is_none_or(|b|b.size()<size) {
@@ -1761,7 +1761,7 @@ impl GpuEffectsPipeline {
             || count == 0
             || !opacity.is_finite()
             || self.is_device_lost()
-            || count * 16 > u64::from(self.device.limits().max_storage_buffer_binding_size)
+            || count * 16 > self.device.limits().max_storage_buffer_binding_size
         {
             return false;
         }
@@ -1863,7 +1863,7 @@ impl GpuEffectsPipeline {
             || count == 0
             || x0.checked_add(w).is_none_or(|x| x > fw)
             || y0.checked_add(h).is_none_or(|y| y > fh)
-            || count * 16 > u64::from(self.device.limits().max_storage_buffer_binding_size)
+            || count * 16 > self.device.limits().max_storage_buffer_binding_size
             || count.div_ceil(u64::from(WORKGROUP_SIZE))
                 > u64::from(self.device.limits().max_compute_workgroups_per_dimension)
             || styles.len() > 256
@@ -2265,7 +2265,7 @@ impl GpuEffectsPipeline {
             return false;
         }
         let small = u64::from(fw.div_ceil(METAL_SHOT_SCALE)) * u64::from(fh.div_ceil(METAL_SHOT_SCALE));
-        if (count + small) * 16 > u64::from(self.device.limits().max_storage_buffer_binding_size) {
+        if (count + small) * 16 > self.device.limits().max_storage_buffer_binding_size {
             return false;
         }
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {

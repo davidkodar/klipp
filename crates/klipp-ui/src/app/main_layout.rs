@@ -42,7 +42,7 @@ impl KlippApp {
     fn render_launch_screen(&mut self, ctx: &egui::Context, all_cmds: &mut Vec<AppCommand>) -> bool {
         if self.state.project_path.is_none() {
             egui::CentralPanel::default()
-                .frame(egui::Frame::none().fill(self.theme.bg_void))
+                .frame(egui::Frame::NONE.fill(self.theme.bg_void))
                 .show(ctx, |ui| {
                     // Auto-saves are recovery copies, not projects: they are
                     // offered from their project's card and open prompt.
@@ -67,7 +67,7 @@ impl KlippApp {
             // Fullscreen viewer occupies the entire screen — record this so the
             // dim-on-play overlay (which paints around the viewer rect) computes
             // a zero-area frame and produces no visible strips.
-            self.state.viewer_panel_rect = ctx.screen_rect();
+            self.state.viewer_panel_rect = ctx.content_rect();
             egui::CentralPanel::default().show(ctx, |ui| {
                 let panel_cmds = self.viewer.show_fullscreen(ui, &mut self.state);
                 all_cmds.extend(panel_cmds);
@@ -88,7 +88,7 @@ impl KlippApp {
             // ── Manual rect layout ──
             // Use CentralPanel as the container, then compute rects manually.
             egui::CentralPanel::default()
-                .frame(egui::Frame::none().fill(self.theme.bg_void))
+                .frame(egui::Frame::NONE.fill(self.theme.bg_void))
                 .show(ctx, |ui| {
                     let full = ui.available_rect_before_wrap();
 
@@ -654,7 +654,7 @@ impl KlippApp {
                 v.window_stroke = egui::Stroke::NONE;
                 v.window_shadow = egui::Shadow::NONE;
             }
-            let frame = egui::Frame::none()
+            let frame = egui::Frame::NONE
                 .fill(self.theme.bg_viewer)
                 .inner_margin(egui::Margin::ZERO);
             frame.show(ui, |ui| {
@@ -1119,14 +1119,14 @@ impl KlippApp {
                                                 name: buf.trim().to_string(),
                                             });
                                             ui.data_mut(|d| d.remove::<String>(id));
-                                            ui.close_menu();
+                                            ui.close_kind(egui::UiKind::Menu);
                                         } else {
                                             ui.data_mut(|d| d.insert_temp(id, buf));
                                         }
                                         ui.separator();
                                         if !is_active && ui.button("Delete").clicked() {
                                             all_cmds.push(AppCommand::DeleteGradeVersion { clip_id, version_index: i });
-                                            ui.close_menu();
+                                            ui.close_kind(egui::UiKind::Menu);
                                         }
                                     });
                                 }
@@ -1216,7 +1216,7 @@ impl KlippApp {
                                         .clicked()
                                     {
                                         apply_idx = Some((i, false));
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                     if ui.add_enabled(can, egui::Button::new(add_label))
                                         .on_hover_text(add_hover)
@@ -1224,11 +1224,11 @@ impl KlippApp {
                                         .clicked()
                                     {
                                         apply_idx = Some((i, true));
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                     if ui.button("Delete").clicked() {
                                         delete_idx = Some(i);
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                 });
                             }

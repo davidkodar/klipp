@@ -9342,7 +9342,7 @@ mod locked_label_tests {
         let mut out = None;
         for _ in 0..2 {
             out = Some(ctx.run(Default::default(), |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| super::draw_locked_label(ui.painter(), egui::pos2(200.0, 200.0), egui::Color32::from_rgb(232, 160, 32)));
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| super::draw_locked_label(ui.painter(), egui::pos2(200.0, 200.0), egui::Color32::from_rgb(232, 160, 32)));
             }));
         }
         let shapes = out.unwrap().shapes;

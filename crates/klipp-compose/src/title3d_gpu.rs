@@ -474,7 +474,7 @@ impl GpuText3d {
             .any(|v| !v.is_finite())
             || pose_bytes.is_empty()
             || pose_bytes.len() as u64
-                > u64::from(self.device.limits().max_storage_buffer_binding_size)
+                > self.device.limits().max_storage_buffer_binding_size
         {
             return None;
         }

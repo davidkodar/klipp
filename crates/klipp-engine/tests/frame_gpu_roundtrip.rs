@@ -59,7 +59,7 @@ fn gpu_frame_into_cpu_reads_back_exact_bytes() {
     });
     queue.write_buffer(&buffer, 0, &expected);
     // Flush the write before we submit a dependent copy.
-    device.poll(wgpu::PollType::Poll);
+    let _ = device.poll(wgpu::PollType::Poll);
 
     let frame = Frame::Gpu(GpuFrame::new(
         device,

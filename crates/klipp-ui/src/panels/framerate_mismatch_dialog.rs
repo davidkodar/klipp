@@ -38,7 +38,7 @@ impl FrameRateMismatchDialog {
             .fixed_pos(egui::pos2(0.0, 0.0))
             .order(egui::Order::Background)
             .show(ctx, |ui| {
-                let screen = ctx.screen_rect();
+                let screen = ctx.content_rect();
                 // Takes the clicks so that what is behind it doesn't.
                 ui.allocate_rect(screen, egui::Sense::click());
                 ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));

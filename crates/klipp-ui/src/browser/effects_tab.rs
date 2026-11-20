@@ -178,7 +178,7 @@ pub fn show(
 
     // ── Category sidebar (General / Video FX) ──
     if !folded {
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
             ui.set_min_size(sidebar_rect.size());
 
             // Soft sidebar fill that lifts above the panel base.
@@ -225,7 +225,7 @@ pub fn show(
     }
 
     // ── Thumbnail grid pane ──
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(grid_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(grid_rect), |ui| {
         ui.set_min_size(grid_rect.size());
 
         ui.add_space(6.0);
@@ -240,7 +240,7 @@ pub fn show(
         }
 
         // ── Search bar (shared style, see browser::browser_search_field) ──
-        egui::Frame::none()
+        egui::Frame::NONE
             .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 super::browser_search_field(ui, theme, search_query, "Search effects\u{2026}", state);
@@ -548,7 +548,7 @@ pub fn show(
                                 };
                                 if ui.button(label).clicked() {
                                     *pending_fav_toggle = Some(fx.name.clone());
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             });
 
@@ -767,7 +767,7 @@ fn effect_card(
     let painter = ui.painter();
 
     // The card: the same field, border and hover as a media card.
-    let rounding = egui::Rounding::from(crate::theme::radius::PANEL);
+    let rounding = egui::CornerRadius::from(crate::theme::radius::PANEL);
     painter.rect_filled(card_rect, rounding, theme.bg_panel_alt);
     let preview_rect = egui::Rect::from_min_size(card_rect.min, egui::vec2(width, preview_h));
 
@@ -941,7 +941,7 @@ fn effect_list_row(
         egui::pos2(rect.min.x + 6.0, rect.center().y - thumb_h * 0.5),
         egui::vec2(thumb_w, thumb_h),
     );
-    let rounding = egui::Rounding::same(4);
+    let rounding = egui::CornerRadius::same(4);
     painter.rect_filled(thumb_rect, rounding, theme.bg_panel);
     painter.rect_stroke(thumb_rect, rounding, egui::Stroke::new(1.0_f32, theme.border), egui::StrokeKind::Outside);
     if let Some(tex) = thumbnail {
@@ -1123,7 +1123,7 @@ fn sidebar_row(
             egui::vec2(icon_size, icon_size),
         );
         let img = icon.image(icon_size).tint(icon_tint);
-        ui.allocate_new_ui(
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(icon_rect),
             |ui| {
                 ui.add(img);
@@ -1184,7 +1184,7 @@ fn sidebar_section_header(
             egui::vec2(icon_size, icon_size),
         );
         let img = icon.image(icon_size).tint(theme.text_dim);
-        ui.allocate_new_ui(
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(icon_rect),
             |ui| {
                 ui.add(img);
@@ -1287,7 +1287,7 @@ fn gpu_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
         egui::vec2(icon_size, icon_size),
     );
     let img = Icon::Lightning.image(icon_size).tint(fg);
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new().max_rect(icon_rect),
         |ui| {
             ui.add(img);
@@ -1334,7 +1334,7 @@ fn icon_filter_button(
     let size = 12.0;
     let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
     let img = icon.image(size).tint(fg);
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new().max_rect(icon_rect),
         |ui| {
             ui.add(img);
@@ -1424,7 +1424,7 @@ fn result_strip(
         egui::pos2(rect.max.x - dropdown_w - 8.0, rect.min.y + 1.0),
         egui::pos2(rect.max.x - 8.0, rect.max.y - 1.0),
     );
-    ui.allocate_new_ui(
+    ui.scope_builder(
         egui::UiBuilder::new().max_rect(dropdown_rect),
         |ui| {
             ui.style_mut().visuals.widgets.inactive.weak_bg_fill =

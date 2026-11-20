@@ -58,7 +58,7 @@ fn load(device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureView) ->
     enc.copy_buffer_to_buffer(&out, 0, &read, 0, 16);
     queue.submit([enc.finish()]);
     read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    device.poll(wgpu::PollType::wait_indefinitely());
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
     let v: Vec<f32> = bytemuck::cast_slice(&read.slice(..).get_mapped_range()).to_vec();
     [v[0], v[1], v[2], v[3]]
 }

@@ -485,7 +485,7 @@ pub fn curves_editor_in(
             if ui.button("Delete point").clicked() {
                 points.remove(i);
                 changed = true;
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         }
         None => {

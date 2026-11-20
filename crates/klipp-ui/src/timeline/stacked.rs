@@ -177,7 +177,7 @@ fn header_row(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect:
     ui.painter().hline(rect.x_range(), rect.max.y - 0.5, egui::Stroke::new(1.0_f32, theme.border));
     let mut carry = false;
     let mut done = false;
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(8.0, 1.0))), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(8.0, 1.0))), |ui| {
         ui.horizontal_centered(|ui| {
             ui.label(egui::RichText::new("SELECTS").size(10.0).strong().color(theme.accent));
             ui.label(egui::RichText::new(&name).size(11.0).color(theme.text_secondary));
@@ -352,7 +352,7 @@ mod tests {
             let (state, panel, old) = (&mut self.state, &mut self.panel, &mut self.old);
             let mut cmds = Vec::new();
             let out = self.ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     cmds = panel.show(ui, state, &theme, old, &kb, false);
                 });
             });

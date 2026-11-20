@@ -60,7 +60,7 @@ pub fn show_empty(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppComma
                 egui::Button::new(job)
                     .fill(theme.bg_raised)
                     .stroke(egui::Stroke::new(1.0_f32, theme.border))
-                    .rounding(4.0),
+                    .corner_radius(4.0),
             ).clicked() {
                 cmds.push(AppCommand::ShowEffectsBrowser);
             }
@@ -938,9 +938,9 @@ pub(crate) fn show_ofx_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppS
         );
 
         let header_rounding = if is_open {
-            egui::Rounding { nw: card_rounding.round() as u8, ne: card_rounding.round() as u8, sw: 0, se: 0 }
+            egui::CornerRadius { nw: card_rounding.round() as u8, ne: card_rounding.round() as u8, sw: 0, se: 0 }
         } else {
-            egui::Rounding::from(card_rounding)
+            egui::CornerRadius::from(card_rounding)
         };
         ui.painter().rect_filled(header_rect, header_rounding, card_header_bg);
         ui.painter().rect_stroke(header_rect.shrink(0.25), header_rounding, egui::Stroke::new(0.5_f32, theme.border), egui::StrokeKind::Outside);
@@ -1065,10 +1065,10 @@ pub(crate) fn show_ofx_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppS
 
         // ── Card body ──
         if is_open {
-            let body_frame = egui::Frame::none()
+            let body_frame = egui::Frame::NONE
                 .fill(card_bg)
                 .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                .rounding(egui::Rounding { nw: 0, ne: 0, sw: card_rounding.round() as u8, se: card_rounding.round() as u8 })
+                .corner_radius(egui::CornerRadius { nw: 0, ne: 0, sw: card_rounding.round() as u8, se: card_rounding.round() as u8 })
                 .inner_margin(egui::Margin { left: pad as i8, right: pad as i8, top: 8, bottom: 8 });
             body_frame.show(ui, |ui: &mut egui::Ui| {
                 // When disabled, dim and lock the params — mirrors the
@@ -1149,7 +1149,7 @@ pub(crate) fn show_ofx_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppS
         if header_resp.dragged_by(egui::PointerButton::Primary) {
             ui.painter().rect_stroke(
                 header_rect,
-                if is_open { egui::Rounding { nw: card_rounding.round() as u8, ne: card_rounding.round() as u8, sw: 0, se: 0 } } else { egui::Rounding::from(card_rounding) },
+                if is_open { egui::CornerRadius { nw: card_rounding.round() as u8, ne: card_rounding.round() as u8, sw: 0, se: 0 } } else { egui::CornerRadius::from(card_rounding) },
                 egui::Stroke::new(2.0_f32, theme.accent), egui::StrokeKind::Outside,
             );
             let drag_dy = header_resp.drag_delta().y;

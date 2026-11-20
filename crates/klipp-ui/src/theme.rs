@@ -554,7 +554,7 @@ impl KlippTheme {
 
         install_unicode_fallback_fonts(ctx);
 
-        let mut style = (*ctx.style()).clone();
+        let mut style = (*ctx.global_style()).clone();
         style.text_styles.insert(
             TextStyle::Body,
             FontId::new(base_size, FontFamily::Proportional),
@@ -575,7 +575,7 @@ impl KlippTheme {
             TextStyle::Monospace,
             FontId::new(base_size - 1.0, FontFamily::Monospace),
         );
-        ctx.set_style(style);
+        ctx.set_global_style(style);
     }
 }
 

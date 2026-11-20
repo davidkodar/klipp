@@ -19,7 +19,7 @@ pub fn library_card(
     theme: &KlippTheme,
     paint_preview: impl FnOnce(&egui::Painter, egui::Rect),
 ) -> egui::Rect {
-    let rounding = egui::Rounding::from(crate::theme::radius::PANEL);
+    let rounding = egui::CornerRadius::from(crate::theme::radius::PANEL);
     let painter = ui.painter().clone();
     painter.rect_filled(rect, rounding, theme.bg_panel_alt);
     let preview = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), (rect.height() - CAPTION_H).max(1.0)));
@@ -108,7 +108,7 @@ pub fn favourite_star(ui: &mut egui::Ui, theme: &KlippTheme, card: &egui::Respon
 pub fn favourite_menu_item(ui: &mut egui::Ui, is_fav: bool) -> bool {
     let chosen = ui.button(if is_fav { "Remove from Favourites" } else { "Add to Favourites" }).clicked();
     if chosen {
-        ui.close_menu();
+        ui.close_kind(egui::UiKind::Menu);
     }
     chosen
 }

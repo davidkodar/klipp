@@ -105,7 +105,7 @@ impl KlippApp {
         // The window, not the monitor (#2944): a small window on a large
         // screen is small, and was given the large screen's 125%.
         let zoom = ctx.zoom_factor();
-        let size = ctx.input(|i| i.screen_rect().size()) * zoom;
+        let size = ctx.input(|i| i.content_rect().size()) * zoom;
         self.state.small_window = size.x < SMALL_WINDOW.x || size.y < SMALL_WINDOW.y;
         let want = match self.ui_scale.step(pct, size, now) {
             ScaleStep::Same => return,
