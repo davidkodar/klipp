@@ -104,7 +104,21 @@ mod below_menus_tests {
 /// pressed: "120" is one edit, one undo step and one picture, not 1, 12 and
 /// 120. Dragging it still changes the value as it goes.
 pub fn number_field<N: egui::emath::Numeric>(value: &mut N) -> NumberField<'_> {
-    NumberField { inner: egui::DragValue::new(value).update_while_editing(false), range: None, clamps: true, suffix: String::new(), parser: None }
+    // `DragValue::new`, with the value read through a probe that keeps the
+    // first and last value the field saw this frame (see `Widget::ui`).
+    let seen = std::rc::Rc::new(std::cell::Cell::new((None::<f64>, None::<f64>)));
+    let probe = seen.clone();
+    let inner = egui::DragValue::from_get_set(move |v: Option<f64>| {
+        if let Some(v) = v {
+            *value = N::from_f64(v);
+        }
+        let now = value.to_f64();
+        let (first, _) = probe.get();
+        probe.set((first.or(Some(now)), Some(now)));
+        now
+    });
+    let inner = if N::INTEGRAL { inner.max_decimals(0).range(N::MIN..=N::MAX).speed(0.25) } else { inner };
+    NumberField { inner: inner.update_while_editing(false), range: None, clamps: true, suffix: String::new(), parser: None, seen }
 }
 
 /// [`number_field`]'s field: a `DragValue` as built, which also says so
@@ -117,6 +131,8 @@ pub struct NumberField<'a> {
     clamps: bool,
     suffix: String,
     parser: Option<Box<dyn 'a + Fn(&str) -> Option<f64>>>,
+    /// The first and last value the field read this frame.
+    seen: std::rc::Rc<std::cell::Cell<(Option<f64>, Option<f64>)>>,
 }
 
 impl<'a> NumberField<'a> {
@@ -203,7 +219,7 @@ pub fn past_range_note(typed: f64, lo: f64, hi: f64, suffix: &str) -> Option<Str
 
 impl egui::Widget for NumberField<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let NumberField { inner, range, clamps, suffix, parser } = self;
+        let NumberField { inner, range, clamps, suffix, parser, seen: values } = self;
         // What was typed, before it is held to the range.
         let typed = std::rc::Rc::new(std::cell::Cell::new(None::<f64>));
         let seen = typed.clone();
@@ -215,7 +231,14 @@ impl egui::Widget for NumberField<'_> {
             seen.set(v);
             v
         });
-        let response = ui.add(inner);
+        let mut response = ui.add(inner);
+        // Changed means the value changed, as in egui 0.29, which set
+        // `changed` from the value alone. egui 0.34 keeps the typing box's
+        // own flag too, so each keystroke read as an edit: typing 120 made
+        // four undo steps, three of them of the value as it was.
+        if let (Some(first), Some(last)) = values.get() {
+            response.flags.set(egui::response::Flags::CHANGED, first != last);
+        }
         let note_id = response.id.with("past_range");
         let now = ui.input(|i| i.time);
         if response.lost_focus() && clamps {
