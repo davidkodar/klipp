@@ -3,6 +3,7 @@
 //! reachable only over the control socket, so a person could save a recipe
 //! but never apply one.
 
+use crate::widgets::colour_field::ColourField;
 use klipp_core::{AppCommand, ClipId};
 use klipp_timeline::composition_template::{CompositionTemplate, SlotKind};
 
@@ -93,7 +94,7 @@ fn slot_row(ui: &mut egui::Ui, state: &AppState, clip: Option<ClipId>, recipe: &
         match kind {
             SlotKind::Colour => {
                 let mut rgb = hex_rgb(&value).unwrap_or([0, 177, 64]);
-                if ui.color_edit_button_srgb(&mut rgb).changed() || value.is_empty() && ui.small_button("Use").clicked() {
+                if ui.colour_srgb(&mut rgb).changed() || value.is_empty() && ui.small_button("Use").clicked() {
                     value = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
                 }
             }

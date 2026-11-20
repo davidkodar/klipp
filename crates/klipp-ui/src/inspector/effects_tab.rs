@@ -1,3 +1,4 @@
+use crate::widgets::colour_field::ColourField;
 use crate::icons::Icon;
 use crate::theme::KlippTheme;
 use crate::state::AppState;
@@ -187,7 +188,7 @@ fn show_ofx_param(
                     (r * 255.0) as u8, (g * 255.0) as u8,
                     (b * 255.0) as u8, (a * 255.0) as u8,
                 );
-                if ui.color_edit_button_srgba(&mut color).changed() {
+                if ui.colour_srgba(&mut color).changed() {
                     cmds.push(AppCommand::SetEffectParam {
                         clip_id,
                         effect_index,
@@ -212,7 +213,7 @@ fn show_ofx_param(
                 let mut color = egui::Color32::from_rgb(
                     (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8,
                 );
-                if ui.color_edit_button_srgba(&mut color).changed() {
+                if ui.colour_srgba(&mut color).changed() {
                     cmds.push(AppCommand::SetEffectParam {
                         clip_id,
                         effect_index,
@@ -854,7 +855,7 @@ pub(crate) fn frei0r_body(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppStat
                         (rgb[1].clamp(0.0, 1.0) * 255.0) as u8,
                         (rgb[2].clamp(0.0, 1.0) * 255.0) as u8,
                     ];
-                    if ui.color_edit_button_srgb(&mut color).changed() {
+                    if ui.colour_srgb(&mut color).changed() {
                         rgb[0] = color[0] as f32 / 255.0;
                         rgb[1] = color[1] as f32 / 255.0;
                         rgb[2] = color[2] as f32 / 255.0;

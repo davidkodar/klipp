@@ -1,3 +1,4 @@
+use crate::widgets::colour_field::ColourField;
 use klipp_core::{AppCommand, ClipId};
 use klipp_timeline::{TitleObjectId, VectorPath};
 
@@ -198,11 +199,11 @@ pub(super) fn show(
     ui.horizontal(|ui| {
         ui.label("Fill");
         changed |= ui
-            .color_edit_button_rgba_unmultiplied(&mut pose.fill)
+            .colour_rgba_unmultiplied(&mut pose.fill)
             .changed();
         ui.label("Stroke");
         changed |= ui
-            .color_edit_button_rgba_unmultiplied(&mut pose.stroke)
+            .colour_rgba_unmultiplied(&mut pose.stroke)
             .changed();
     });
     changed |= ui

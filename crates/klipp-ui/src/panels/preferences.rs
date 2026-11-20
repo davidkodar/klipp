@@ -1,3 +1,4 @@
+use crate::widgets::colour_field::ColourField;
 use crate::inspector::rows::Switch;
 use crate::prefs::Preferences;
 use crate::theme::KlippTheme;
@@ -3023,7 +3024,7 @@ impl PreferencesPanel {
                 );
                 let mut widget_ui = ui.new_child(egui::UiBuilder::new().max_rect(widget_rect));
                 let mut col = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-                if widget_ui.color_edit_button_srgba(&mut col).changed() {
+                if widget_ui.colour_srgba(&mut col).changed() {
                     *rgb = [col.r(), col.g(), col.b()];
                     *dirty = true;
                 }
@@ -4040,7 +4041,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Default colour", theme, |ui| {
             let mut c = egui::Color32::from_rgb(prefs.title.default_color[0], prefs.title.default_color[1], prefs.title.default_color[2]);
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 prefs.title.default_color = [c.r(), c.g(), c.b()];
                 *dirty = true;
             }
@@ -4089,7 +4090,7 @@ impl PreferencesPanel {
         for (i, color) in prefs.timeline.clip_colors.iter_mut().enumerate() {
             Self::setting_row(ui, &format!("Colour {}", i + 1), theme, |ui| {
                 let mut c = egui::Color32::from_rgb(color[0], color[1], color[2]);
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     *color = [c.r(), c.g(), c.b()];
                     colors_changed = true;
                 }
@@ -4169,7 +4170,7 @@ impl PreferencesPanel {
         Self::setting_row(ui, "Colour", theme, |ui| {
             let pc = &mut prefs.viewer.focus_peaking_color;
             let mut c = egui::Color32::from_rgb(pc[0], pc[1], pc[2]);
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 *pc = [c.r(), c.g(), c.b()];
                 *dirty = true;
             }
@@ -4185,7 +4186,7 @@ impl PreferencesPanel {
         Self::setting_row(ui, "Grid colour", theme, |ui| {
             let gc = &mut prefs.viewer.grid_color;
             let mut c = egui::Color32::from_rgba_unmultiplied(gc[0], gc[1], gc[2], gc[3]);
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 *gc = [c.r(), c.g(), c.b(), c.a()];
                 *dirty = true;
             }
@@ -4317,7 +4318,7 @@ impl PreferencesPanel {
 
                 // Color swatch
                 let mut c = egui::Color32::from_rgb(stop.color[0], stop.color[1], stop.color[2]);
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     stop.color = [c.r(), c.g(), c.b()];
                     any_changed = true;
                 }

@@ -3,6 +3,7 @@
 //! choice is a chip rendered by the real title engine on the clip's
 //! own text, so what is picked is what will play.
 
+use crate::widgets::colour_field::ColourField;
 use crate::browser::title_previews::TitlePreviews;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -809,7 +810,7 @@ pub fn template_fields(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_cor
                 ui.horizontal(|ui| {
                     ui.label(field.label.as_str());
                     let mut col = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-                    if ui.color_edit_button_srgba(&mut col).changed() {
+                    if ui.colour_srgba(&mut col).changed() {
                         set(V::Colour(col.to_srgba_unmultiplied()), true);
                     }
                 });
@@ -1035,12 +1036,12 @@ fn show_loops(
                     }
                     TitleLoop::ColorBlend { color_a, color_b, rate_hz } => {
                         let mut a = egui::Color32::from_rgba_unmultiplied(color_a[0], color_a[1], color_a[2], color_a[3]);
-                        if ui.color_edit_button_srgba(&mut a).changed() {
+                        if ui.colour_srgba(&mut a).changed() {
                             *color_a = a.to_array();
                             changed = true;
                         }
                         let mut b = egui::Color32::from_rgba_unmultiplied(color_b[0], color_b[1], color_b[2], color_b[3]);
-                        if ui.color_edit_button_srgba(&mut b).changed() {
+                        if ui.colour_srgba(&mut b).changed() {
                             *color_b = b.to_array();
                             changed = true;
                         }
@@ -1329,7 +1330,7 @@ pub fn show_style_card(
 fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId, tb: &TextBox, fx: &LayerFx, cmds: &mut Vec<AppCommand>) {
     rail_row(ui, theme, "Fill", |ui| {
         let mut col = to_c32(tb.color);
-        if ui.color_edit_button_srgba(&mut col).changed() {
+        if ui.colour_srgba(&mut col).changed() {
             cmds.push(AppCommand::UpdateTitleData {
                 clip_id,
                 text: tb.text.clone(),
@@ -1351,12 +1352,12 @@ fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId
         }
         if on {
             let mut b = to_c32(bottom);
-            if ui.color_edit_button_srgba(&mut b).on_hover_text("Bottom").changed() {
+            if ui.colour_srgba(&mut b).on_hover_text("Bottom").changed() {
                 bottom = b.to_array();
                 send = true;
             }
             let mut t = to_c32(top);
-            if ui.color_edit_button_srgba(&mut t).on_hover_text("Top").changed() {
+            if ui.colour_srgba(&mut t).on_hover_text("Top").changed() {
                 top = t.to_array();
                 send = true;
             }
@@ -1380,7 +1381,7 @@ fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId
                 on = true;
             }
             let mut c = to_c32(color);
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 color = c.to_array();
                 send = true;
                 on = true;
@@ -1413,7 +1414,7 @@ fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId
                 on = true;
             }
             let mut c = to_c32(color);
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 color = c.to_array();
                 send = true;
                 on = true;
@@ -1442,7 +1443,7 @@ fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId
                 on = true;
             }
             let mut c = to_c32(color);
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 color = c.to_array();
                 send = true;
                 on = true;

@@ -1,3 +1,4 @@
+use crate::widgets::colour_field::ColourField;
 pub(crate) mod keyframe_selection;
 mod vector_path;
 pub mod key_column;
@@ -721,7 +722,7 @@ fn show_template_controls(
                         });
                 }
                 crate::parameterized_templates::TemplateValue::Color(color) => {
-                    changed = ui.color_edit_button_rgba_unmultiplied(color).changed();
+                    changed = ui.colour_rgba_unmultiplied(color).changed();
                 }
             }
         });
@@ -2491,12 +2492,12 @@ fn show_title_pinned_core_textbox(
     let mut color_key_toggled = false;
     ui.horizontal(|ui| {
         // Larger swatch to match the reference (~44x28 px). egui's
-        // default color_edit_button is tiny; bumping interact_size
+        // default colour swatch is tiny; bumping interact_size
         // in a scoped Ui sizes the swatch up without custom popup code.
         let swatch_changed = ui
             .scope(|ui| {
                 ui.spacing_mut().interact_size = egui::vec2(44.0, 28.0);
-                ui.color_edit_button_srgba(&mut col).changed()
+                ui.colour_srgba(&mut col).changed()
             })
             .inner;
         if swatch_changed {
@@ -3069,7 +3070,7 @@ fn show_title_effects_group(
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(g.color[0], g.color[1], g.color[2], g.color[3]);
-                    if ui.color_edit_button_srgba(&mut col).changed() {
+                    if ui.colour_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleGlowLayer {
                             clip_id,
                             index: i as u32,
@@ -3220,7 +3221,7 @@ fn show_title_effects_group(
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(ol.color[0], ol.color[1], ol.color[2], ol.color[3]);
-                    if ui.color_edit_button_srgba(&mut col).changed() {
+                    if ui.colour_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleOutlineLayer {
                             clip_id,
                             index: i as u32,
@@ -3404,7 +3405,7 @@ fn show_title_effects_group(
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(sh.color[0], sh.color[1], sh.color[2], sh.color[3]);
-                    if ui.color_edit_button_srgba(&mut col).changed() {
+                    if ui.colour_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleShadowLayer {
                             clip_id,
                             index: i as u32,
@@ -3617,7 +3618,7 @@ fn show_title_effects_group(
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(sh.color[0], sh.color[1], sh.color[2], sh.color[3]);
-                    if ui.color_edit_button_srgba(&mut col).changed() {
+                    if ui.colour_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleInnerShadowLayer {
                             clip_id,
                             index: i as u32,
@@ -4186,7 +4187,7 @@ fn show_title_shape_editor(
             let mut c = egui::Color32::from_rgba_premultiplied(
                 cur_fill[0], cur_fill[1], cur_fill[2], cur_fill[3],
             );
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 cmds.push(AppCommand::SetTitleShapeFill {
                     clip_id,
                     object_id: object_id.0,
@@ -4220,7 +4221,7 @@ fn show_title_shape_editor(
             let mut c = egui::Color32::from_rgba_premultiplied(
                 cur_stroke_color[0], cur_stroke_color[1], cur_stroke_color[2], cur_stroke_color[3],
             );
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 cmds.push(AppCommand::SetTitleShapeStroke {
                     clip_id,
                     object_id: object_id.0,
@@ -4499,7 +4500,7 @@ fn effect_color_row(
         let swatch_changed = ui
             .scope(|ui| {
                 ui.spacing_mut().interact_size = egui::vec2(swatch_w, row_h);
-                ui.color_edit_button_srgba(color).changed()
+                ui.colour_srgba(color).changed()
             })
             .inner;
         if swatch_changed {
@@ -5690,7 +5691,7 @@ fn show_title_editor(
     }
     if bg_kind > 0 {
         let mut bg_col = egui::Color32::from_rgba_premultiplied(bg_color[0], bg_color[1], bg_color[2], bg_color[3]);
-        if ui.color_edit_button_srgba(&mut bg_col).changed() {
+        if ui.colour_srgba(&mut bg_col).changed() {
             cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind, color: [bg_col.r(), bg_col.g(), bg_col.b(), bg_col.a()] });
         }
         // Round-trip stable: convert alpha to percentage and back to ensure the slider
@@ -5816,11 +5817,11 @@ fn show_title_editor(
         let mut color_changed = false;
         ui.horizontal(|ui| {
             ui.label("Face:");
-            color_changed |= ui.color_edit_button_srgba(&mut face_col).changed();
+            color_changed |= ui.colour_srgba(&mut face_col).changed();
         });
         ui.horizontal(|ui| {
             ui.label("Side:");
-            color_changed |= ui.color_edit_button_srgba(&mut side_col).changed();
+            color_changed |= ui.colour_srgba(&mut side_col).changed();
         });
         crate::param_focus::tag_keys(ui, kfs_lighting);
         let resp_lighting = rows::param_row(
@@ -6279,7 +6280,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -6330,7 +6331,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -6403,7 +6404,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -6908,7 +6909,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -7042,7 +7043,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -7317,7 +7318,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -7560,7 +7561,7 @@ fn show_transition_inspector(
                         (transition.user_params.color[1] * 255.0) as u8,
                         (transition.user_params.color[2] * 255.0) as u8,
                     );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
+                    if ui.colour_srgba(&mut color).changed() {
                         let mut new_params = transition.user_params;
                         new_params.color = [
                             color.r() as f32 / 255.0,
@@ -8184,7 +8185,7 @@ fn show_generator_editor(
                 let mut c = egui::Color32::from_rgba_premultiplied(
                     color[0], color[1], color[2], color[3],
                 );
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     cmds.push(AppCommand::UpdateGeneratorData {
                         clip_id,
                         data: klipp_core::GeneratorData::SolidColor {
@@ -8262,7 +8263,7 @@ fn show_generator_editor(
                         corners.top_right[0], corners.top_right[1],
                         corners.top_right[2], corners.top_right[3],
                     );
-                    if ui.color_edit_button_srgba(&mut tl).changed() {
+                    if ui.colour_srgba(&mut tl).changed() {
                         let mut new_corners = corners;
                         new_corners.top_left = [tl.r(), tl.g(), tl.b(), tl.a()];
                         cmds.push(AppCommand::UpdateGeneratorData {
@@ -8276,7 +8277,7 @@ fn show_generator_editor(
                     }
                     ui.label(egui::RichText::new("TL").size(10.0).color(theme.text_dim));
                     ui.add_space(8.0);
-                    if ui.color_edit_button_srgba(&mut tr).changed() {
+                    if ui.colour_srgba(&mut tr).changed() {
                         let mut new_corners = corners;
                         new_corners.top_right = [tr.r(), tr.g(), tr.b(), tr.a()];
                         cmds.push(AppCommand::UpdateGeneratorData {
@@ -8300,7 +8301,7 @@ fn show_generator_editor(
                         corners.bottom_right[0], corners.bottom_right[1],
                         corners.bottom_right[2], corners.bottom_right[3],
                     );
-                    if ui.color_edit_button_srgba(&mut bl).changed() {
+                    if ui.colour_srgba(&mut bl).changed() {
                         let mut new_corners = corners;
                         new_corners.bottom_left = [bl.r(), bl.g(), bl.b(), bl.a()];
                         cmds.push(AppCommand::UpdateGeneratorData {
@@ -8314,7 +8315,7 @@ fn show_generator_editor(
                     }
                     ui.label(egui::RichText::new("BL").size(10.0).color(theme.text_dim));
                     ui.add_space(8.0);
-                    if ui.color_edit_button_srgba(&mut br).changed() {
+                    if ui.colour_srgba(&mut br).changed() {
                         let mut new_corners = corners;
                         new_corners.bottom_right = [br.r(), br.g(), br.b(), br.a()];
                         cmds.push(AppCommand::UpdateGeneratorData {
@@ -8334,7 +8335,7 @@ fn show_generator_editor(
                     let mut c = egui::Color32::from_rgba_premultiplied(
                         top[0], top[1], top[2], top[3],
                     );
-                    if ui.color_edit_button_srgba(&mut c).changed() {
+                    if ui.colour_srgba(&mut c).changed() {
                         cmds.push(AppCommand::UpdateGeneratorData {
                             clip_id,
                             data: klipp_core::GeneratorData::Gradient {
@@ -8353,7 +8354,7 @@ fn show_generator_editor(
                     let mut c = egui::Color32::from_rgba_premultiplied(
                         bottom[0], bottom[1], bottom[2], bottom[3],
                     );
-                    if ui.color_edit_button_srgba(&mut c).changed() {
+                    if ui.colour_srgba(&mut c).changed() {
                         cmds.push(AppCommand::UpdateGeneratorData {
                             clip_id,
                             data: klipp_core::GeneratorData::Gradient {
@@ -8508,14 +8509,14 @@ fn show_generator_editor(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Text").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(new_text[0], new_text[1], new_text[2], new_text[3]);
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     new_text = [c.r(), c.g(), c.b(), c.a()];
                 }
             });
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Background").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(new_bg[0], new_bg[1], new_bg[2], new_bg[3]);
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     new_bg = [c.r(), c.g(), c.b(), c.a()];
                 }
             });
@@ -8578,7 +8579,7 @@ fn show_generator_editor(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Text").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(new_text[0], new_text[1], new_text[2], new_text[3]);
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     new_text = [c.r(), c.g(), c.b(), c.a()];
                     changed = true;
                 }
@@ -8586,7 +8587,7 @@ fn show_generator_editor(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Background").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(new_bg[0], new_bg[1], new_bg[2], new_bg[3]);
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     new_bg = [c.r(), c.g(), c.b(), c.a()];
                     changed = true;
                 }
@@ -8632,9 +8633,9 @@ fn show_generator_editor(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Colours").strong().size(11.0));
                 let mut ca = egui::Color32::from_rgba_premultiplied(a2[0], a2[1], a2[2], a2[3]);
-                if ui.color_edit_button_srgba(&mut ca).changed() { a2 = [ca.r(), ca.g(), ca.b(), ca.a()]; changed = true; }
+                if ui.colour_srgba(&mut ca).changed() { a2 = [ca.r(), ca.g(), ca.b(), ca.a()]; changed = true; }
                 let mut cb = egui::Color32::from_rgba_premultiplied(b2[0], b2[1], b2[2], b2[3]);
-                if ui.color_edit_button_srgba(&mut cb).changed() { b2 = [cb.r(), cb.g(), cb.b(), cb.a()]; changed = true; }
+                if ui.colour_srgba(&mut cb).changed() { b2 = [cb.r(), cb.g(), cb.b(), cb.a()]; changed = true; }
             });
             if ui.add(egui::Slider::new(&mut angle, 0.0..=360.0).text("Angle").suffix("\u{00b0}")).changed() { changed = true; }
             if ui.add(egui::Slider::new(&mut drift, -30.0..=30.0).text("Drift").suffix("\u{00b0}/s")).changed() { changed = true; }
@@ -8656,7 +8657,7 @@ fn show_generator_editor(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Colour").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(col[0], col[1], col[2], col[3]);
-                if ui.color_edit_button_srgba(&mut c).changed() { col = [c.r(), c.g(), c.b(), c.a()]; changed = true; }
+                if ui.colour_srgba(&mut c).changed() { col = [c.r(), c.g(), c.b(), c.a()]; changed = true; }
             });
             if ui.add(egui::Slider::new(&mut amt, 0.0..=1.0).text("Amount")).changed() { changed = true; }
             if ui.add(egui::Slider::new(&mut size, 1.0..=8.0).text("Size").suffix(" px")).changed() { changed = true; }
@@ -8682,7 +8683,7 @@ fn show_generator_editor(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Colour").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(col[0], col[1], col[2], col[3]);
-                if ui.color_edit_button_srgba(&mut c).changed() { col = [c.r(), c.g(), c.b(), c.a()]; changed = true; }
+                if ui.colour_srgba(&mut c).changed() { col = [c.r(), c.g(), c.b(), c.a()]; changed = true; }
             });
             if changed {
                 cmds.push(AppCommand::UpdateGeneratorData {
@@ -8715,7 +8716,7 @@ fn show_generator_editor(
                 let mut c = egui::Color32::from_rgba_premultiplied(
                     color[0], color[1], color[2], color[3],
                 );
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     cmds.push(AppCommand::UpdateGeneratorData {
                         clip_id,
                         data: klipp_core::GeneratorData::Polygon {
@@ -8788,7 +8789,7 @@ fn show_generator_editor(
                 let mut c = egui::Color32::from_rgba_premultiplied(
                     color[0], color[1], color[2], color[3],
                 );
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     cmds.push(AppCommand::UpdateGeneratorData {
                         clip_id,
                         data: klipp_core::GeneratorData::Star {

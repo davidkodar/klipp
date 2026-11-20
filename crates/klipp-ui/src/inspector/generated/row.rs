@@ -15,6 +15,7 @@
 //! - a reset writes the presentation's reset hint, or the default;
 //! - a choice's labels name its stored index and never rename it;
 //! - a value the row can't read as its kind is shown read-only and kept.
+use crate::widgets::colour_field::ColourField;
 use crate::widgets::menu::SubmenuRows;
 
 use super::custom;
@@ -684,12 +685,12 @@ fn colour_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Pres
             // the colour as it is. Edited as premultiplied, lowering the
             // alpha darkened the stored colour with it.
             let mut c = [bytes[0], bytes[1], bytes[2], bytes[3]];
-            if ui.color_edit_button_srgba_unmultiplied(&mut c).changed() {
+            if ui.colour_srgba_unmultiplied(&mut c).changed() {
                 changed = Some(c.to_vec());
             }
         } else {
             let mut c = [bytes[0], bytes[1], bytes[2]];
-            if ui.color_edit_button_srgb(&mut c).changed() {
+            if ui.colour_srgb(&mut c).changed() {
                 // Any alpha the bytes carry is kept.
                 changed = Some(c.iter().copied().chain(bytes.get(3).copied()).collect());
             }

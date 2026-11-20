@@ -9,6 +9,7 @@
 //! per-row rendering, AppState flag for visibility, edits flow back as
 //! AppCommands through the existing handlers.
 
+use crate::widgets::colour_field::ColourField;
 use crate::state::AppState;
 use crate::widgets::timecode_edit::timecode_edit;
 use klipp_core::{AppCommand, ClipId, Fps, Timecode, TrackId};
@@ -176,7 +177,7 @@ fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.label("Spoken word");
                 let [r, g, b, a] = form.active_color;
                 let mut c = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                if ui.colour_srgba(&mut c).changed() {
                     form.active_color = c.to_array();
                 }
             }
@@ -595,14 +596,14 @@ fn render_style_form(ui: &mut egui::Ui, st: &SubTrack, state: &mut AppState, cmd
             ui.end_row();
             ui.label("Colour");
             ui.horizontal(|ui| {
-                ui.color_edit_button_srgba_unmultiplied(&mut draft.color);
+                ui.colour_srgba_unmultiplied(&mut draft.color);
                 ui.checkbox(&mut draft.bold, "Bold");
             });
             ui.end_row();
             ui.label("Outline");
             ui.horizontal(|ui| {
                 ui.add(crate::widgets::number_field(&mut draft.outline).range(0.0..=12.0).speed(0.1).suffix(" px"));
-                ui.color_edit_button_srgba_unmultiplied(&mut draft.outline_color);
+                ui.colour_srgba_unmultiplied(&mut draft.outline_color);
             });
             ui.end_row();
             ui.label("Backing");

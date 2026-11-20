@@ -3,6 +3,7 @@
 //! highlights, and the key light's puck. The bevel, the brush, what it
 //! reflects, the lights' colours and the rim light fold under Details.
 
+use crate::widgets::colour_field::ColourField;
 use klipp_core::title_material::{MetalLight, MetalPreset, TitleMaterial};
 use klipp_core::{AppCommand, ClipId};
 use klipp_timeline::TextBox;
@@ -32,7 +33,7 @@ fn colour(ui: &mut egui::Ui, label: &str, rgb: [u8; 3]) -> Option<[u8; 3]> {
     ui.horizontal(|ui| {
         ui.label(label);
         let mut c = rgb;
-        ui.color_edit_button_srgb(&mut c).changed().then_some(c)
+        ui.colour_srgb(&mut c).changed().then_some(c)
     })
     .inner
 }

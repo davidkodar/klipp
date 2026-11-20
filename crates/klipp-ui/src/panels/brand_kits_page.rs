@@ -4,6 +4,7 @@
 //! saved to the user's kits; a kit imported from a `.klippbrand`, or
 //! exported to one.
 
+use crate::widgets::colour_field::ColourField;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -349,7 +350,7 @@ fn edit(ui: &mut egui::Ui, d: &mut Draft, templates: &[String], theme: &KlippThe
 fn colour(ui: &mut egui::Ui, c: &mut Option<String>) {
     match c.as_deref().and_then(parse_hex) {
         Some(mut rgb) => {
-            if ui.color_edit_button_srgb(&mut rgb).changed() {
+            if ui.colour_srgb(&mut rgb).changed() {
                 *c = Some(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
             }
             ui.label(c.clone().unwrap_or_default());

@@ -1,3 +1,4 @@
+use crate::widgets::colour_field::ColourField;
 use klipp_timeline::GradeAccess;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -3648,7 +3649,7 @@ fn color_fade_row(
             ui.add_space(4.0);
             // Colour picker — reads/writes on change.
             let mut c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
-            if ui.color_edit_button_srgba(&mut c).changed() {
+            if ui.colour_srgba(&mut c).changed() {
                 cmds.push(update(idx, BuiltinEffect::ColorFade { color: [c.r(), c.g(), c.b(), c.a()], duration_secs: duration, mode, progress: 0.0 }));
             }
         }

@@ -1,5 +1,6 @@
 pub mod color_slider;
 pub mod color_wheel;
+pub mod colour_field;
 pub mod curves_editor;
 pub mod easing_curve;
 pub mod grade_drag;

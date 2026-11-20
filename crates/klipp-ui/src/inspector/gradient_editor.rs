@@ -6,6 +6,7 @@
 //! than two are left. A drag, of a handle or of a number, is one undo
 //! step; every other edit is one of its own.
 
+use crate::widgets::colour_field::ColourField;
 use klipp_core::fill_gradient::{GradientKind, GradientRamp, GradientStop, MAX_GRADIENT_STOPS};
 use klipp_core::{AppCommand, ClipId};
 use klipp_timeline::TextGradient;
@@ -130,7 +131,7 @@ pub(super) fn show(
         let hi = stops.get(selected + 1).map_or(1.0, |s| s.position);
         let stop = &mut stops[selected];
         let mut c = egui::Color32::from_rgba_unmultiplied(stop.color[0], stop.color[1], stop.color[2], stop.color[3]);
-        let picked = ui.color_edit_button_srgba(&mut c).changed();
+        let picked = ui.colour_srgba(&mut c).changed();
         let stop_keys = keys.as_ref().map(|k| k.keys.get(selected).cloned().unwrap_or_default());
         let toggled = match (&keys, &stop_keys) {
             (Some(k), Some(sk)) => {
