@@ -816,7 +816,7 @@ impl eframe::App for KlippApp {
     /// drop ordered after that races with the device shutdown and
     /// SIGSEGVs. Drop everything that owns GPU resources HERE while
     /// the device is still healthy.
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::ON_EXIT);
         // Use eprintln! alongside tracing — when SIGSEGV strikes
         // before tracing-subscriber flushes the file buffer, the

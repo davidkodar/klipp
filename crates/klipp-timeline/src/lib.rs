@@ -141,4 +141,6 @@ pub use sequence::{
 };
 
 pub mod vector_path;
+pub mod veylvik;
+pub use veylvik::{compositions_used, fork_shared_compositions, CompositionId};
 pub use vector_path::{StrokeGlow, PathTrim, TrimRange, TrimKeyframe, VectorPath, PathPose, PathContour, PathVertex, PathKeyframe, ShapePreset};

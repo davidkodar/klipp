@@ -2071,6 +2071,7 @@ impl Track {
             speed_keyframes: Vec::new(),
             keep_pitch: false,
             sound_apart: false,
+            composition: None,
             hold: None,
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
@@ -2390,6 +2391,7 @@ impl Track {
             speed_keyframes: speed_a,
             keep_pitch: clip.keep_pitch,
             sound_apart: clip.sound_apart,
+            composition: clip.composition,
             hold: clip.hold,
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
@@ -2475,6 +2477,7 @@ impl Track {
             speed_keyframes: speed_b,
             keep_pitch: clip.keep_pitch,
             sound_apart: clip.sound_apart,
+            composition: clip.composition,
             hold: clip.hold,
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
@@ -3011,6 +3014,11 @@ pub struct Clip {
     /// the sound clip's on top.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sound_apart: bool,
+    /// The Veylvik composition the clip's picture is shown through, its
+    /// own media as the footage; `None` shows the media as it is. See
+    /// [`crate::veylvik`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition: Option<crate::veylvik::CompositionId>,
     /// A freeze frame (#2773): the source time shown for the clip's whole
     /// length, whatever its speed, its sound silent. Its length is its
     /// timeline length; `None` plays the clip.
@@ -3603,6 +3611,7 @@ impl Clip {
             speed_keyframes: Vec::new(),
             keep_pitch: false,
             sound_apart: false,
+            composition: None,
             hold: None,
             source_rotation: 0,
             enabled: true,
@@ -3724,6 +3733,7 @@ impl Clip {
             speed_keyframes: Vec::new(),
             keep_pitch: false,
             sound_apart: false,
+            composition: None,
             hold: None,
             source_rotation: 0,
             enabled: true,
@@ -3834,6 +3844,7 @@ impl Clip {
             speed_keyframes: Vec::new(),
             keep_pitch: false,
             sound_apart: false,
+            composition: None,
             hold: None,
             source_rotation: 0,
             enabled: true,

@@ -64,6 +64,9 @@ pub struct ConsolidateOptions {
     /// (#3009): copied with their licences into `fonts/`, or listed with
     /// why not. [`crate::project_fonts::fonts_used`] names them.
     pub fonts: Vec<crate::project_fonts::CollectFont>,
+    /// The project's Veylvik compositions, as it holds them now: those
+    /// its clips name are written into the destination.
+    pub compositions: crate::compositions::Compositions,
 }
 
 /// What a consolidation copies (#77).
@@ -888,6 +891,14 @@ pub fn consolidate_project(
             return Err(ConsolidateError::SaveFailed(e));
         }
     }
+    // The clips' Veylvik compositions, as held now, saved or not.
+    match crate::compositions::save_compositions(&options.dest_dir, &new_seqs, &options.compositions) {
+        Ok(missing) => plan.warnings.extend(missing),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&options.dest_dir);
+            return Err(ConsolidateError::SaveFailed(format!("the Veylvik compositions: {e}")));
+        }
+    }
     // The titles' fonts, with their licences, listed beside the project
     // (#3009); one that can't go is said, not fatal.
     let (fonts, font_warnings) = crate::project_fonts::copy_fonts(&options.fonts, &options.dest_dir);
@@ -1213,6 +1224,7 @@ mod tests {
                 mode: ConsolidateMode::Collect,
                 looks: Vec::new(),
                 fonts: Vec::new(),
+                compositions: Default::default(),
             },
             None,
         )
@@ -1243,6 +1255,7 @@ mod tests {
                 mode: ConsolidateMode::Collect,
                 looks: Vec::new(),
                 fonts: Vec::new(),
+                compositions: Default::default(),
             },
             None,
         )

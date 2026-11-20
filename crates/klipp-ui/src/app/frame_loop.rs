@@ -871,6 +871,7 @@ impl KlippApp {
                 let import_report = self.state.last_import_report.clone();
                 let title_assets = self.state.title_assets.clone();
                 let looks = self.state.looks.clone();
+                let compositions = self.state.compositions.clone();
                 let backup_count = self.prefs.editing.backup_count;
                 let zoom = self.state.timeline_zoom;
                 let scroll_x = self.state.timeline_scroll_x;
@@ -898,7 +899,11 @@ impl KlippApp {
                         .and_then(|()| {
                             klipp_project::import_report::save(&autosave_path, import_report.as_ref())?;
                             klipp_project::save_looks(&autosave_path, &looks)
-                                .map_err(|e| format!("failed to persist Looks: {e}"))
+                                .map_err(|e| format!("failed to persist Looks: {e}"))?;
+                            // The clips' Veylvik compositions, so a recovery has them.
+                            klipp_project::compositions::save_compositions(&autosave_path, &sequences, &compositions)
+                                .map(|_| ())
+                                .map_err(|e| format!("failed to save the Veylvik compositions: {e}"))
                         })
                         .map(|()| autosave_path);
                         let _ = tx.send(result);

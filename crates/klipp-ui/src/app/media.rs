@@ -1935,6 +1935,7 @@ impl KlippApp {
             include_skims,
             mode,
             looks: self.state.looks.clone(),
+            compositions: self.state.compositions.clone(),
             // The titles' fonts as this machine has them (#3009).
             fonts: klipp_project::project_fonts::fonts_used(&self.state.sequences)
                 .into_iter()

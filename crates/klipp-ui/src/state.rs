@@ -1668,6 +1668,10 @@ pub struct AppState {
     /// read from here at render time, and Inspector edits write
     /// back to here.
     pub title_assets: std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
+    /// The Veylvik compositions the clips are shown through, by id, as
+    /// their files' bytes: read on open, written on save, carried by
+    /// Collect (see `klipp_project::compositions`).
+    pub compositions: klipp_project::compositions::Compositions,
     pub project_path: Option<PathBuf>,
     pub created_at: Option<String>,
     /// Free-form project notes — shot list, delivery specs, anything
@@ -5051,6 +5055,7 @@ impl Default for AppState {
             whoosh_media_ids: std::collections::HashMap::new(),
             hyperzoom_preset_registry: crate::hyperzoom_presets::HyperzoomPresetRegistry::new(),
             title_assets: std::collections::HashMap::new(),
+            compositions: Default::default(),
             project_path: None,
             created_at: None,
             dirty: false,

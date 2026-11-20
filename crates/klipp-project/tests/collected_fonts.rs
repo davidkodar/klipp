@@ -72,7 +72,7 @@ fn a_collected_project_draws_its_titles_in_its_own_fonts() {
         CollectFont { family: "Zebas Neue".into(), source: Ok((vec![system.join("ZebasNeue-Regular.ttf")], system.join("OFL.txt"))) },
         CollectFont { family: "Locked Face".into(), source: Err("its licence does not allow embedding".into()) },
     ];
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts, compositions: Default::default() };
     let result = consolidate_project(&source, &MediaPool::new(), &[seq], &ColorSettings::default(), options, None).expect("collected");
     assert_eq!(result.fonts_copied, ["Zebas Neue"]);
     assert!(result.warnings.iter().any(|w| w == "font Locked Face not copied: its licence does not allow embedding"), "{:?}", result.warnings);
