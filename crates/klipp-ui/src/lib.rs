@@ -93,6 +93,8 @@ pub mod subject_track;
 pub mod graded_thumbs;
 pub mod icons;
 pub mod inspector;
+#[cfg(test)]
+pub(crate) mod screen_texts;
 pub mod spelling;
 pub mod auditions;
 pub mod role_badge;

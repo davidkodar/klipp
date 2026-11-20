@@ -2031,6 +2031,11 @@ mod folded_menu_tests {
         for _ in 0..3 { texts = frame(Vec::new()); }
         for click in clicks {
             let at = texts.iter().rev().find(|(s, _)| s == click).unwrap_or_else(|| panic!("{click} at {width}: {texts:?}")).1.center();
+            // The pointer reaches the spot a frame before it presses, as a hand
+            // does. Pressed in the frame it arrived, a submenu it opened by
+            // hover was still at egui 0.34's first, size-unknown place, and
+            // egui read the click as outside the menu and closed it.
+            frame(vec![egui::Event::PointerMoved(at)]);
             frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
             frame(vec![button(at, false)]);
             for _ in 0..3 { texts = frame(Vec::new()); }

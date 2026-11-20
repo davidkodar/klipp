@@ -4187,10 +4187,7 @@ mod frame_glide_section_tests {
         let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 9000.0))), events, ..Default::default() }, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| show(ui, &KlippTheme::default(), &state, Some((clip, 0.0, true)), None, &mut cmds));
         });
-        let texts = out.shapes.iter().filter_map(|s| match &s.shape {
-            egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-            _ => None,
-        }).collect();
+        let texts = crate::screen_texts::screen_texts(&out.shapes);
         (cmds, texts)
     }
 

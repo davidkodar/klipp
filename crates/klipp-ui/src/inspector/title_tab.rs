@@ -1600,14 +1600,7 @@ mod gallery_tests {
                 });
             },
         );
-        let texts = out
-            .shapes
-            .iter()
-            .filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-                _ => None,
-            })
-            .collect();
+        let texts = crate::screen_texts::screen_texts(&out.shapes);
         (texts, picked)
     }
 
@@ -1649,14 +1642,7 @@ mod gallery_tests {
                     });
                 },
             );
-            let texts: Vec<(String, egui::Pos2)> = out
-                .shapes
-                .iter()
-                .filter_map(|s| match &s.shape {
-                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-                    _ => None,
-                })
-                .collect();
+            let texts: Vec<(String, egui::Pos2)> = crate::screen_texts::screen_texts(&out.shapes);
             (texts, picked)
         };
         let is_open = || ctx.memory(|m| m.data.get_temp::<Option<egui::Id>>(egui::Id::new("title_open_picker"))).flatten() == Some(id);
@@ -1697,13 +1683,7 @@ mod gallery_tests {
                     });
                 },
             );
-            out.shapes
-                .iter()
-                .filter_map(|s| match &s.shape {
-                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-                    _ => None,
-                })
-                .collect()
+            crate::screen_texts::screen_texts(&out.shapes)
         };
         let find = |texts: &[(String, egui::Pos2)], prefix: &str| texts.iter().find(|(t, _)| t.starts_with(prefix)).map(|(_, p)| *p);
         let texts = run(Vec::new(), &mut slot);

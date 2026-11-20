@@ -927,6 +927,9 @@ impl Grade {
 
     pub(super) fn click_at(&mut self, at: egui::Pos2) {
         let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        // Arrives a frame before it presses, as a hand does (see
+        // `parity_harness::Run::click_last`).
+        self.frame(vec![egui::Event::PointerMoved(at)]);
         self.frame(vec![egui::Event::PointerMoved(at), button(true)]);
         self.frame(vec![egui::Event::PointerMoved(at), button(false)]);
         self.frame(vec![egui::Event::PointerGone]);

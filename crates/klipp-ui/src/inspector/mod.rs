@@ -8894,10 +8894,7 @@ mod selection_underline_tests {
                 });
             },
         );
-        let texts = out.shapes.iter().filter_map(|s| match &s.shape {
-            egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-            _ => None,
-        }).collect();
+        let texts = crate::screen_texts::screen_texts(&out.shapes);
         (cmds, texts)
     }
 
@@ -8955,10 +8952,7 @@ mod selection_underline_tests {
                     });
                 },
             );
-            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-                _ => None,
-            }).collect();
+            let texts: Vec<(String, egui::Pos2)> = crate::screen_texts::screen_texts(&out.shapes);
             (cmds, texts)
         };
         frame(Vec::new());
@@ -9005,10 +8999,7 @@ mod selection_underline_tests {
                     });
                 },
             );
-            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-                _ => None,
-            }).collect();
+            let texts: Vec<(String, egui::Pos2)> = crate::screen_texts::screen_texts(&out.shapes);
             (cmds, texts)
         };
         frame(Vec::new());
@@ -9155,10 +9146,7 @@ mod title_row_style_tests {
                 egui::CentralPanel::default().show(ctx, |ui| show_title_editor(ui, &KlippTheme::default(), clip, state, &mut cmds, &mut chips));
             },
         );
-        let texts = out.shapes.iter().filter_map(|s| match &s.shape {
-            egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
-            _ => None,
-        }).collect();
+        let texts = crate::screen_texts::screen_texts(&out.shapes);
         let rules = out.shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::LineSegment { points, .. } if points[0].y == points[1].y && (points[1].x - points[0].x).abs() > 100.0 => Some(points[0].y),
             _ => None,
@@ -9433,6 +9421,10 @@ mod fits_its_column_tests {
         state.sequences[0].tracks[v].clips.push(clip);
         let prefs = crate::prefs::Preferences::default();
         let ctx = egui::Context::default();
+        // Only what Klipp draws: egui 0.34's debug builds outline a widget
+        // whose rect changed id between the two frames (here the scroll
+        // bar's strip as the layout settles), in red past the column.
+        ctx.all_styles_mut(|s| s.debug.warn_if_rect_changes_id = false);
         crate::icons::install(&ctx);
         let mut panel = NewInspectorPanel { key_column: keys, key_column_w: 150.0, ..Default::default() };
         let mut right = 0.0_f32;
@@ -9447,9 +9439,13 @@ mod fits_its_column_tests {
                     let _ = panel.show(ui, &state, &prefs, &KlippTheme::default(), &mut active);
                 });
             });
-            right = out.shapes.iter().map(|s| s.shape.visual_bounding_rect()).filter(|r| r.is_finite()).map(|r| r.right()).fold(0.0, f32::max);
+            // What is drawn, as far as it shows: a shape's part outside its
+            // clip is never seen (egui 0.34's scroll-edge fade spans 3 px
+            // past the column, clipped there).
+            let shown = |s: &egui::epaint::ClippedShape| s.shape.visual_bounding_rect().intersect(s.clip_rect);
+            right = out.shapes.iter().map(shown).filter(|r| r.is_finite() && r.is_positive()).map(|r| r.right()).fold(0.0, f32::max);
             // What runs over, by its text where it has one.
-            over = out.shapes.iter().filter(|s| s.shape.visual_bounding_rect().right() > edge + 1.0).map(|s| match &s.shape {
+            over = out.shapes.iter().filter(|s| shown(s).is_positive() && shown(s).right() > edge + 1.0).map(|s| match &s.shape {
                 egui::Shape::Text(t) => format!("text {:?} to {:.0}", t.galley.text(), s.shape.visual_bounding_rect().right()),
                 other => format!("{} to {:.0}", match other { egui::Shape::Rect(_) => "rect", egui::Shape::LineSegment { points, .. } => return format!("line {points:?}"), egui::Shape::Path(_) => "path", _ => "shape" }, s.shape.visual_bounding_rect().right()),
             }).collect();

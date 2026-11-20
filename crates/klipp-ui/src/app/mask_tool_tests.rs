@@ -213,6 +213,13 @@ fn alt_click_insert_and_delete_points() {
 
     let from = v.sent.len();
     let edge = at(&v, 0.5, 0.7);
+    // A moment's pause first, as a hand takes: egui counts clicks within
+    // 0.6 s as a triple-click, and since 0.34 only clicks at one spot as
+    // one double-click, so the Alt-click a moment ago elsewhere made this
+    // pair a triple-click, where 0.29 had read its first click as a double.
+    for _ in 0..16 {
+        v.frame(Vec::new());
+    }
     v.frame(vec![egui::Event::PointerMoved(edge), button(edge, true)]);
     v.frame(vec![button(edge, false)]);
     v.frame(vec![button(edge, true)]);
