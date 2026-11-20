@@ -751,6 +751,9 @@ impl klipp_compose::GpuPixels for GpuLinearFrame {
                 .get_or_init(|| Arc::new(download_linear(&self.buf, self.width, self.height))),
         )
     }
+    fn on_device(&self) -> Option<(klipp_compose::OnDevice<'_>, u32, u32)> {
+        Some((klipp_compose::OnDevice::Linear(&self.buf), self.width, self.height))
+    }
 }
 
 /// Bring a linear f32 frame down from the shared GPU context.

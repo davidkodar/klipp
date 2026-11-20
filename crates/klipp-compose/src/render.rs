@@ -94,6 +94,22 @@ pub trait GpuPixels: Send + Sync {
     fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool;
     /// The frame on the CPU: display-referred linear RGBA.
     fn read(&self) -> Arc<Vec<f32>>;
+    /// The frame where it lies on the render's device, and its size, for
+    /// a consumer that takes it there rather than from [`Self::read`]:
+    /// expanded as `read` would expand it, it is the same picture. `None`
+    /// (the default) where the frame has no such buffer.
+    fn on_device(&self) -> Option<(OnDevice<'_>, u32, u32)> {
+        None
+    }
+}
+
+/// A frame's pixels on the device (see [`GpuPixels::on_device`]).
+pub enum OnDevice<'a> {
+    /// Linear RGBA f32, as [`GpuPixels::read`] gives them.
+    Linear(&'a wgpu::Buffer),
+    /// sRGB-encoded RGBA8, straight alpha: `read` gives each colour byte
+    /// through `klipp_effects::srgb_u8_to_linear_f32_rgba`.
+    Srgb8(&'a wgpu::Buffer),
 }
 
 /// A clip's pixels on their way into its grade: on the CPU, still on the

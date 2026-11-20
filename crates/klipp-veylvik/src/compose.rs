@@ -44,6 +44,51 @@ pub struct Compositor {
     queue: Arc<wgpu::Queue>,
     state: Mutex<State>,
     renders: std::sync::atomic::AtomicU64,
+    bridge: OnceLock<Bridge>,
+}
+
+/// Klipp's sRGB bytes to linear floats on the device (`srgb8_to_linear.wgsl`).
+struct Bridge {
+    pipeline: wgpu::ComputePipeline,
+    layout: wgpu::BindGroupLayout,
+    lut: wgpu::Buffer,
+}
+
+impl Bridge {
+    fn new(device: &wgpu::Device) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("veylvik footage srgb8"), source: wgpu::ShaderSource::Wgsl(include_str!("shaders/srgb8_to_linear.wgsl").into()) });
+        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("veylvik footage srgb8"),
+            entries: &[
+                storage(0, true),
+                storage(1, false),
+                storage(2, true),
+                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("veylvik footage srgb8"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("veylvik footage srgb8"),
+            layout: Some(&pipeline_layout),
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        // The tables of Klipp's own expansion, made by it: every byte once.
+        let bytes: Vec<u8> = (0..=255u8).flat_map(|b| [b, b, b, b]).collect();
+        let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&bytes);
+        let pixels = linear.as_chunks::<4>().0;
+        let table: Vec<f32> = pixels.iter().map(|p| p[0]).chain(pixels.iter().map(|p| p[3])).collect();
+        let lut = wgpu::util::DeviceExt::create_buffer_init(device, &wgpu::util::BufferInitDescriptor { label: Some("veylvik footage srgb8 table"), contents: bytemuck::cast_slice(&table), usage: wgpu::BufferUsages::STORAGE });
+        Self { pipeline, layout, lut }
+    }
 }
 
 /// A composition's bytes and what reading them gave.
@@ -90,7 +135,7 @@ impl Compositor {
     /// Veylvik's renderer on `device`.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, adapter: wgpu::AdapterInfo) -> Result<Self, String> {
         let renderer = Renderer::from_device((*device).clone(), (*queue).clone(), adapter).map_err(|e| e.to_string())?;
-        Ok(Self { renderer: Arc::new(renderer), device, queue, state: Mutex::new(State::default()), renders: Default::default() })
+        Ok(Self { renderer: Arc::new(renderer), device, queue, state: Mutex::new(State::default()), renders: Default::default(), bridge: OnceLock::new() })
     }
 
     /// The one compositor of this process, on Klipp's shared GPU context:
@@ -234,23 +279,83 @@ impl Compositor {
         Ok(Live { source, current, fps, spare: None })
     }
 
-    /// Klipp's frame as linear floats in the working space on the device.
+    /// Klipp's frame as linear floats in the working space on the device:
+    /// copied or expanded there when it is there, else sent up.
     fn on_gpu(&self, frame: &SourceFrame) -> Result<Arc<dyn GpuFramePixels>, String> {
+        let (w, h) = (frame.width, frame.height);
+        let pixels = u64::from(w) * u64::from(h);
+        if let SourcePixels::Gpu(g) = &frame.pixels {
+            match g.on_device() {
+                Some((klipp_compose::OnDevice::Linear(buf), fw, fh)) if (fw, fh) == (w, h) && buf.size() >= pixels * 16 => {
+                    let out = self.footage_buffer(pixels);
+                    let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("veylvik footage copy") });
+                    encoder.copy_buffer_to_buffer(buf, 0, &out, 0, pixels * 16);
+                    self.queue.submit([encoder.finish()]);
+                    return Ok(Arc::new(Footage::on_device(out, w, h, &self.device, &self.queue)));
+                }
+                Some((klipp_compose::OnDevice::Srgb8(buf), fw, fh)) if (fw, fh) == (w, h) && buf.size() >= pixels * 4 => {
+                    let out = self.footage_buffer(pixels);
+                    self.expand_srgb8(buf, &out, pixels);
+                    return Ok(Arc::new(Footage::on_device(out, w, h, &self.device, &self.queue)));
+                }
+                _ => {}
+            }
+        }
         let linear = match &frame.pixels {
             SourcePixels::Linear(p) => Arc::clone(p),
-            // A decoder's frame on the GPU, read back to be sent up again
-            // as floats: correct, not yet fast.
             SourcePixels::Gpu(g) => g.read(),
             SourcePixels::SceneReferred { codes, transfer, source_to_working } => Arc::new(codes.to_scene_linear_rgba(*transfer, *source_to_working)),
         };
-        if linear.len() != frame.width as usize * frame.height as usize * 4 {
-            return Err(format!("Klipp's frame holds {} values for {}×{}", linear.len(), frame.width, frame.height));
+        if linear.len() as u64 != pixels * 4 {
+            return Err(format!("Klipp's frame holds {} values for {w}×{h}", linear.len()));
         }
         let buffer = wgpu::util::DeviceExt::create_buffer_init(
             self.device.as_ref(),
             &wgpu::util::BufferInitDescriptor { label: Some("veylvik footage"), contents: bytemuck::cast_slice(&linear), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC },
         );
-        Ok(Arc::new(Footage { buffer, linear }))
+        let footage = Footage::on_device(buffer, w, h, &self.device, &self.queue);
+        let _ = footage.linear.set(linear);
+        Ok(Arc::new(footage))
+    }
+
+    fn footage_buffer(&self, pixels: u64) -> wgpu::Buffer {
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("veylvik footage"),
+            size: pixels * 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// `src`'s sRGB bytes into `dst` as linear floats, `pixels` of them.
+    fn expand_srgb8(&self, src: &wgpu::Buffer, dst: &wgpu::Buffer, pixels: u64) {
+        let bridge = self.bridge.get_or_init(|| Bridge::new(&self.device));
+        const GROUP: u64 = 256;
+        const MAX_X: u64 = 65_535;
+        let groups = pixels.div_ceil(GROUP);
+        let (x, y) = (groups.min(MAX_X), groups.div_ceil(MAX_X));
+        let count = wgpu::util::DeviceExt::create_buffer_init(
+            self.device.as_ref(),
+            &wgpu::util::BufferInitDescriptor { label: Some("veylvik footage srgb8 count"), contents: bytemuck::cast_slice(&[pixels as u32, (x * GROUP) as u32, 0, 0]), usage: wgpu::BufferUsages::UNIFORM },
+        );
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("veylvik footage srgb8"),
+            layout: &bridge.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: dst.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: bridge.lut.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: count.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("veylvik footage srgb8") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("veylvik footage srgb8"), timestamp_writes: None });
+            pass.set_pipeline(&bridge.pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups(x as u32, y as u32, 1);
+        }
+        self.queue.submit([encoder.finish()]);
     }
 
     fn tell_once(&self, id: CompositionId, why: &str) {
@@ -350,10 +455,21 @@ fn rate_of(fps: f64) -> Time {
     }
 }
 
-/// Klipp's frame handed to Veylvik as footage.
+/// Klipp's frame handed to Veylvik as footage: linear floats on the device,
+/// read back only if something on the CPU asks.
 struct Footage {
     buffer: wgpu::Buffer,
-    linear: Arc<Vec<f32>>,
+    width: u32,
+    height: u32,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    linear: OnceLock<Arc<Vec<f32>>>,
+}
+
+impl Footage {
+    fn on_device(buffer: wgpu::Buffer, width: u32, height: u32, device: &Arc<wgpu::Device>, queue: &Arc<wgpu::Queue>) -> Self {
+        Self { buffer, width, height, device: Arc::clone(device), queue: Arc::clone(queue), linear: OnceLock::new() }
+    }
 }
 
 impl GpuFramePixels for Footage {
@@ -361,7 +477,7 @@ impl GpuFramePixels for Footage {
         &self.buffer
     }
     fn read(&self) -> Arc<Vec<f32>> {
-        Arc::clone(&self.linear)
+        Arc::clone(self.linear.get_or_init(|| Arc::new(read_back(&self.device, &self.queue, &self.buffer).unwrap_or_else(|| vec![0.0; self.width as usize * self.height as usize * 4]))))
     }
 }
 
