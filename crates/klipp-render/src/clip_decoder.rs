@@ -378,6 +378,26 @@ impl RenderDecoder {
         })
     }
 
+    /// Read from `secs` next, as [`Self::open`] at `secs` would, keeping
+    /// the file and its decoder: a hardware decoder takes far longer to
+    /// make than a seek. A still image, whose one frame was read, can't
+    /// be read again this way: that is an error, and the caller opens it.
+    pub fn seek_to(&mut self, secs: f64) -> Result<(), RenderError> {
+        if self.still {
+            return Err(RenderError::Source("a still image is opened again rather than sought".into()));
+        }
+        let secs = secs.max(0.0);
+        klipp_media::seek_video(&mut self.format_ctx, (secs * 1_000_000.0) as i64).map_err(RenderError::Decode)?;
+        // What the decoder held is of the old place.
+        self.decoder.flush();
+        self.skip_until_secs = secs;
+        self.demuxer_eof = false;
+        self.decoder_eof = false;
+        self.eof_sent = false;
+        self.last_scene = None;
+        Ok(())
+    }
+
     /// Whether the file is a still image: its one frame is the clip's
     /// picture throughout, not a file that ended early.
     pub fn is_still(&self) -> bool {

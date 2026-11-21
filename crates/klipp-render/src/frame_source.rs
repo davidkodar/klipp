@@ -103,6 +103,18 @@ impl ClipStream {
         }
     }
 
+    /// Read from `secs` on, the decoder kept: nothing held from before.
+    fn restart(&mut self, secs: f64) -> Result<(), crate::error::RenderError> {
+        self.decoder.seek_to(secs)?;
+        self.previous = None;
+        self.current = None;
+        self.next = None;
+        self.ended = false;
+        self.error = None;
+        self.held_warned = false;
+        Ok(())
+    }
+
     /// Advance to the last frame at or before `secs` (half a *source*
     /// frame of tolerance). Before the first frame, the first frame;
     /// past the end, the last — a transition holding an edge frame.
@@ -315,6 +327,19 @@ impl<'a> ExportFrameSource<'a> {
                 (c + sc, r + sr)
             },
         )
+    }
+
+    /// Read `clip` from `source_secs` on: the frame asked for next may be
+    /// before the one shown last, or far past it, which a clip's decoder,
+    /// reading on, never reaches by itself. Its decoder is kept and moved
+    /// there; where it can't be (a still, a failed seek), it is opened
+    /// there again on the next frame. For a viewer that scrubs: an export
+    /// reads on and never asks.
+    pub fn seek(&mut self, clip: &Clip, source_secs: f64) {
+        let Some(stream) = self.streams.get_mut(&clip.id) else { return };
+        if stream.restart(source_secs).is_err() {
+            self.streams.remove(&clip.id);
+        }
     }
 
     /// Close the decoders of clips the frame just rendered did not use.

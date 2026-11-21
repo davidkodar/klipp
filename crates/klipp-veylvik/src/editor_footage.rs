@@ -111,9 +111,13 @@ impl EditorFootage {
                     Some((at, made)) if (at - secs).abs() < 0.5 * frame_secs => made,
                     _ => {
                         // An export's decoder reads on, never back: a scrub
-                        // back, or a jump far ahead, starts one at the frame.
-                        if source.is_none() || secs < last - 0.5 * frame_secs || secs > last + JUMP_SECS {
-                            source = Some(fresh());
+                        // back, or a jump far ahead, moves it to the frame,
+                        // the decoder kept (made again, a scrub waited
+                        // ~180 ms on a 4K file before decoding anything).
+                        match source.as_mut() {
+                            None => source = Some(fresh()),
+                            Some(s) if secs < last - 0.5 * frame_secs || secs > last + JUMP_SECS => s.seek(&clip, secs),
+                            Some(_) => {}
                         }
                         last = secs;
                         decode(source.as_mut().expect("just made"), secs)
