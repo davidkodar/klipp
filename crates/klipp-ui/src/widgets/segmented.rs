@@ -25,6 +25,12 @@ pub fn segmented(ui: &mut Ui, labels: &[&str], active: usize, theme: &KlippTheme
 
 /// Draw the control into `rect`. Returns the segment clicked.
 pub fn segmented_in(ui: &mut Ui, rect: Rect, labels: &[&str], active: usize, theme: &KlippTheme, font: FontId) -> Option<usize> {
+    segmented_in_with_hovers(ui, rect, labels, &[], active, theme, font)
+}
+
+/// [`segmented_in`], each segment saying `hovers[i]` while the pointer
+/// is over it (none for a missing or empty one).
+pub fn segmented_in_with_hovers(ui: &mut Ui, rect: Rect, labels: &[&str], hovers: &[String], active: usize, theme: &KlippTheme, font: FontId) -> Option<usize> {
     let resp: Response = ui.allocate_rect(rect, Sense::click());
     let painter = ui.painter().clone();
     painter.rect_filled(rect, crate::theme::radius::PANEL, theme.bg_panel);
@@ -38,6 +44,7 @@ pub fn segmented_in(ui: &mut Ui, rect: Rect, labels: &[&str], active: usize, the
     let pointer: Option<Pos2> = ui.input(|i| i.pointer.interact_pos());
     let mut x = rect.min.x + 2.0;
     let mut clicked = None;
+    let mut over = None;
     for (i, label) in labels.iter().enumerate() {
         let w = widths[i] * stretch;
         let seg = Rect::from_min_size(Pos2::new(x, rect.min.y + 2.0), Vec2::new(w, rect.height() - 4.0));
@@ -53,7 +60,13 @@ pub fn segmented_in(ui: &mut Ui, rect: Rect, labels: &[&str], active: usize, the
         if resp.clicked() && under {
             clicked = Some(i);
         }
+        if under && resp.hovered() {
+            over = Some(i);
+        }
         x += w;
+    }
+    if let Some(text) = over.and_then(|i| hovers.get(i)).filter(|t| !t.is_empty()) {
+        resp.on_hover_text(text.as_str());
     }
     clicked
 }
