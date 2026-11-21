@@ -162,7 +162,7 @@ impl ToolbarPanel {
         let ws_size = crate::widgets::segmented::segmented_size(ui, &labels, &ws_font, crate::theme::control::REGULAR);
         let active = workspaces.iter().position(|w| w.0 == state.active_workspace).unwrap_or(0);
         let picked = match switcher_place(toolbar_rect, left_end + 10.0, switcher_right, ws_size) {
-            SwitcherPlace::Tabs(ws_rect) => crate::widgets::segmented::segmented_in(ui, ws_rect, &labels, active, theme, ws_font),
+            SwitcherPlace::Tabs(ws_rect) => crate::widgets::segmented::segmented_in_with_hovers(ui, ws_rect, &labels, &page_hovers(ui.ctx()), active, theme, ws_font),
             // Too narrow for them all: the one shown, the others a click away.
             SwitcherPlace::Menu(rect) => {
                 let mut chosen = active;
@@ -1505,6 +1505,18 @@ fn selection_span(state: &AppState) -> Option<(klipp_core::Timecode, klipp_core:
     (to > from).then_some((from, to))
 }
 
+/// What each page tab says on hover, in the tabs' order (Edit, Colour,
+/// Composite, Veylvik, Export), with the page's key where it has one.
+fn page_hovers(ctx: &egui::Context) -> Vec<String> {
+    vec![
+        "Cut and arrange clips on the timeline".to_owned(),
+        crate::keybindings::tip(ctx, "Grade the clip under the playhead", "toggle_color_panel"),
+        "Build effects as a node graph".to_owned(),
+        "Open the selected clip in Veylvik, to compose it in 3D and effects; Klipp plays and exports the result".to_owned(),
+        "Render the sequence to a file".to_owned(),
+    ]
+}
+
 /// Where the workspace switcher goes on the bar.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SwitcherPlace {
@@ -1857,6 +1869,47 @@ pub(crate) mod narrow_bar_tests {
                 let filled = fills(&out);
                 assert!(filled.len() == 1 && filled[0].contains(at), "{width} px, {label} open: one tab filled, its own: {filled:?}");
             }
+        }
+    }
+
+    /// Each page tab, hovered, says what the page is for; Colour also
+    /// gives its key.
+    #[test]
+    fn each_page_tab_says_what_it_is_for_on_hover() {
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut panel = ToolbarPanel { logo_texture: None };
+        let mut state = AppState::default();
+        let kb = crate::keybindings::KeyBindings::default();
+        let mut time = 0.0;
+        let mut frame = |state: &mut AppState, events| {
+            time += 0.1;
+            ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
+                egui::Panel::top("toolbar").exact_size(MENU_BAR_HEIGHT).show(ctx, |ui| {
+                    panel.show(ui, state, &[], &theme, &kb);
+                });
+            })
+        };
+        let texts = |out: &egui::FullOutput| -> Vec<(String, egui::Pos2)> {
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect()
+        };
+        for _ in 0..3 { frame(&mut state, Vec::new()); }
+        let hovers = page_hovers(&ctx);
+        assert!(hovers[1].ends_with(&format!("({})", kb.display_for("toggle_color_panel"))), "Colour gives its key: {}", hovers[1]);
+        for (label, hover) in ["Edit", "Colour", "Composite", "Veylvik", "Export"].into_iter().zip(&hovers) {
+            let drawn = texts(&frame(&mut state, Vec::new()));
+            let at = drawn.iter().rev().find(|(t, p)| t == label && p.y < 40.0).unwrap_or_else(|| panic!("no {label} tab")).1;
+            let mut shown = false;
+            // Moved there, then resting: a tooltip waits for the pointer to stop.
+            frame(&mut state, vec![egui::Event::PointerMoved(at)]);
+            for _ in 0..15 {
+                let out = frame(&mut state, Vec::new());
+                shown |= texts(&out).iter().any(|(t, _)| t == hover);
+            }
+            assert!(shown, "{label} hovered: \"{hover}\" not shown");
         }
     }
 
