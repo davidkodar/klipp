@@ -321,16 +321,40 @@ impl Compositor {
             .live
             .keys()
             .map(|k| k.composition)
+            .chain(state.parsed.keys().copied())
             .filter(|id| match (state.compositions.get(id), compositions.get(id)) {
                 (Some(a), Some(b)) => !Arc::ptr_eq(a, b) && a != b,
                 _ => true,
             })
             .collect();
-        state.live.retain(|k, _| !changed.contains(&k.composition));
-        state.order.retain(|k| !changed.contains(&k.composition));
         state.parsed.retain(|id, _| !changed.contains(id));
         state.told.retain(|id| !changed.contains(id));
         state.compositions = compositions;
+        // A composition edited (in the Veylvik tab, say) is taken by the
+        // clip sources it has, in place: no frame of its clips shows the
+        // media while it would be made again. One that is gone, or can't
+        // be read or made now, is let go.
+        let mut parsed: HashMap<CompositionId, Result<Composition, String>> = HashMap::new();
+        for id in &changed {
+            if state.compositions.contains_key(id) {
+                parsed.insert(*id, Self::composition(&mut state, *id));
+            }
+        }
+        let mut gone = Vec::new();
+        for (key, slot) in state.live.iter_mut() {
+            if !changed.contains(&key.composition) {
+                continue;
+            }
+            let taken = match (slot, parsed.get(&key.composition)) {
+                (Slot::Ready(live), Some(Ok(c))) => live.source.set_composition(c.clone()).is_ok(),
+                _ => false,
+            };
+            if !taken {
+                gone.push(*key);
+            }
+        }
+        state.live.retain(|k, _| !gone.contains(k));
+        state.order.retain(|k| !gone.contains(k));
         drop(state);
         // A render waiting on one that is gone asks again.
         self.prepared.notify_all();
