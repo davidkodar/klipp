@@ -131,7 +131,6 @@ impl super::KlippApp {
             self.veylvik_tab.failed = Some(why.clone());
             return Err(why);
         };
-        let (again, assets_again) = (composition.clone(), assets.clone());
         let setup = editor::Setup {
             interface: editor::HOST_INTERFACE,
             context: ctx.clone(),
@@ -148,12 +147,7 @@ impl super::KlippApp {
             renderer: klipp_veylvik::Compositor::shared().map(|c| c.renderer()),
         };
         match editor::Editor::new(setup) {
-            Ok(mut e) => {
-                // Opened once more now the editor knows its host: the
-                // first opening read the clip's media before it did.
-                if let Err(err) = e.set_composition(ctx, again, assets_again) {
-                    tracing::warn!("the Veylvik tab's composition could not be opened again: {err}");
-                }
+            Ok(e) => {
                 self.veylvik_tab.editor = Some(e);
                 Ok(())
             }
