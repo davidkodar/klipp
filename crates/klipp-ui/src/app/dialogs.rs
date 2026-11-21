@@ -1408,7 +1408,7 @@ impl KlippApp {
                         let picker = egui::Id::new("consolidate-destination");
                         if ui.button("\u{2026}").clicked() {
                             crate::file_dialog::pick_path(picker, || {
-                                rfd::FileDialog::new()
+                                crate::file_dialog::new()
                                     .set_title("Choose Consolidation Destination")
                                     .pick_folder()
                             });

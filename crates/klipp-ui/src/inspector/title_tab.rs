@@ -882,7 +882,7 @@ pub fn template_fields(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_cor
                     ui.label(egui::RichText::new(name).color(theme.text_dim)).on_hover_text(path.as_str());
                     if ui.button("Choose\u{2026}").clicked() {
                         crate::file_dialog::spawn_pick(
-                            || rfd::FileDialog::new().set_title("Picture").add_filter("Images", &["png", "jpg", "jpeg", "webp", "tif", "tiff", "exr"]).pick_file(),
+                            || crate::file_dialog::new().set_title("Picture").add_filter("Images", &["png", "jpg", "jpeg", "webp", "tif", "tiff", "exr"]).pick_file(),
                             move |chosen| vec![AppCommand::SetTitleField { clip_id, index, value: V::Picture(chosen.display().to_string()), done: true }],
                         );
                     }

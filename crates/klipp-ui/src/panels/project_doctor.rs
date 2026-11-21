@@ -364,7 +364,7 @@ fn apply_fix(action: &FixAction, cmds: &mut Vec<AppCommand>) {
                 .unwrap_or_else(|| "media file".to_string());
             let media_id = *media_id;
             crate::file_dialog::spawn(move || {
-                rfd::FileDialog::new()
+                crate::file_dialog::new()
                     .set_title(format!("Relink: {original_name}"))
                     .set_directory(start_dir)
                     .pick_file()
@@ -412,7 +412,7 @@ fn apply_fix(action: &FixAction, cmds: &mut Vec<AppCommand>) {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "LUT".to_string());
             crate::file_dialog::spawn(move || {
-                rfd::FileDialog::new()
+                crate::file_dialog::new()
                     .set_title(format!("Relink LUT: {original_name}"))
                     .set_directory(start_dir)
                     .add_filter("LUT", &["cube", "3dl", "csp"])

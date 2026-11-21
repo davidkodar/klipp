@@ -1642,7 +1642,7 @@ impl KlippApp {
                             let picker = egui::Id::new("export-output-path");
                             if ui.button("...").clicked() {
                                 crate::file_dialog::pick_path(picker, || {
-                                    rfd::FileDialog::new().set_title("Export to...").save_file()
+                                    crate::file_dialog::new().set_title("Export to...").save_file()
                                 });
                             }
                             if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
@@ -2883,7 +2883,7 @@ impl KlippApp {
             }
             if ui.add_enabled(!self.export_dialog.delivery_busy, egui::Button::new("Check a File\u{2026}")).on_hover_text("A finished file against the spec: read with ffprobe, its loudness measured").clicked() {
                 let picker = egui::Id::new("delivery-check-file");
-                crate::file_dialog::pick_path(picker, || rfd::FileDialog::new().set_title("Check a file against the spec").pick_file());
+                crate::file_dialog::pick_path(picker, || crate::file_dialog::new().set_title("Check a file against the spec").pick_file());
             }
             if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(egui::Id::new("delivery-check-file")) {
                 self.export_dialog.delivery_busy = true;

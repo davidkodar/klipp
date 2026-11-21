@@ -29,14 +29,62 @@
 //! that failed) says it with [`notify()`], and the app shows it as a toast.
 //!
 //! rfd's Linux backend talks to the desktop portal over D-Bus and is
-//! safe off the main thread. The pickers are not parented to the window,
-//! so nothing ties them to the UI thread either.
+//! safe off the main thread. Every picker is made with [`new`], which
+//! names Klipp's window as its parent: the desktop then shows it as
+//! Klipp's dialog, floating over the window. Unparented, it was a window
+//! of its own, and with Klipp full screen the compositor made the picker
+//! full screen too.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use klipp_core::AppCommand;
+
+/// Klipp's window, for pickers to name as their parent.
+struct Parent {
+    window: raw_window_handle::RawWindowHandle,
+    display: raw_window_handle::RawDisplayHandle,
+}
+
+// SAFETY: the handles name the app's one window and its display, which
+// live as long as the process: a picker reads them on its worker thread
+// only while the app runs, and the portal is told the window, never given
+// it to draw into.
+unsafe impl Send for Parent {}
+unsafe impl Sync for Parent {}
+
+impl raw_window_handle::HasWindowHandle for Parent {
+    fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        // SAFETY: valid for as long as the app's window is (see above).
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(self.window) })
+    }
+}
+
+impl raw_window_handle::HasDisplayHandle for Parent {
+    fn display_handle(&self) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        // SAFETY: as the window's.
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(self.display) })
+    }
+}
+
+static PARENT: Mutex<Option<Parent>> = Mutex::new(None);
+
+/// Name `window` as the parent of every picker from now on: the app's
+/// window, each frame it has one.
+pub fn set_parent_window(window: &(impl raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle)) {
+    let (Ok(w), Ok(d)) = (window.window_handle(), window.display_handle()) else { return };
+    *PARENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Parent { window: w.as_raw(), display: d.as_raw() });
+}
+
+/// A file picker, Klipp's window its parent when there is one.
+pub fn new() -> rfd::FileDialog {
+    let dialog = rfd::FileDialog::new();
+    match PARENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        Some(parent) => dialog.set_parent(parent),
+        None => dialog,
+    }
+}
 
 /// A picker is on screen. One at a time: the portal would stack a second
 /// dialog over the first.

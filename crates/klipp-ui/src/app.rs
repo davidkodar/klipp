@@ -908,6 +908,9 @@ impl eframe::App for KlippApp {
     /// still does in the same place of the same frame.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // File pickers float over this window as its dialogs, full screen
+        // or not.
+        crate::file_dialog::set_parent_window(frame);
         self.frame_update(&ctx, frame);
     }
 }

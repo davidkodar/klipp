@@ -155,7 +155,7 @@ pub fn show_workspace_manager_dialog(
                                     Ok(json) => {
                                         let file_name = format!("{}.json", sanitize(&ws.name));
                                         crate::file_dialog::spawn(move || {
-                                            if let Some(path) = rfd::FileDialog::new()
+                                            if let Some(path) = crate::file_dialog::new()
                                                 .set_title("Export Workspace")
                                                 .add_filter("Klipp workspace (JSON)", &["json"])
                                                 .set_file_name(file_name)
@@ -205,7 +205,7 @@ pub fn show_workspace_manager_dialog(
                 let picker = egui::Id::new("workspace-manager-import");
                 if ui.button("Import JSON\u{2026}").clicked() {
                     crate::file_dialog::pick_path(picker, || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Import Workspace")
                             .add_filter("Klipp workspace (JSON)", &["json"])
                             .pick_file()

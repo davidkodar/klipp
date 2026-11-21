@@ -791,7 +791,7 @@ impl KlippApp {
             }
             None => {
                 let step = await_path(UNSAVED_SAVE_PICKER.into(), self.unsaved_save_waiting, clicked, || {
-                    rfd::FileDialog::new().set_title("Save Project").pick_folder()
+                    crate::file_dialog::new().set_title("Save Project").pick_folder()
                 });
                 self.unsaved_save_waiting = step == Awaited::Waiting;
                 match step {

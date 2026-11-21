@@ -69,6 +69,7 @@ semver = "1"
 uuid = { workspace = true }
 tracing = { workspace = true }
 rfd = "0.17"
+raw-window-handle = "0.6"
 # The desktop portal's appearance settings (theme/portal.rs). The same
 # build the accessibility bridge already pulls in.
 zbus = "4.4"

@@ -1141,7 +1141,7 @@ impl LaunchScreen {
         if choose_clicked {
             self.folder_view = true;
             crate::file_dialog::spawn(|| {
-                rfd::FileDialog::new()
+                crate::file_dialog::new()
                     .set_title("Projects Folder")
                     .pick_folder()
                     .map(|path| vec![AppCommand::SetProjectsFolder { path }])

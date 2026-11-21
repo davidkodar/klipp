@@ -37,7 +37,7 @@ impl CustomEditor for LutFileEditor {
             if ui.button("Browse\u{2026}").on_hover_text("Choose a .cube, .3dl or .csp file").clicked() {
                 let addr = ctx.addr.clone();
                 crate::file_dialog::spawn_pick(
-                    || rfd::FileDialog::new().set_title("LUT for this effect").add_filter("LUT files", &["cube", "3dl", "csp"]).pick_file(),
+                    || crate::file_dialog::new().set_title("LUT for this effect").add_filter("LUT files", &["cube", "3dl", "csp"]).pick_file(),
                     move |chosen| vec![with(addr, portable(&chosen))],
                 );
             }

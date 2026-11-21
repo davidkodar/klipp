@@ -198,7 +198,7 @@ impl KlippApp {
             // Ctrl+Shift+S — Save As
             if kb.is_action_pressed("save_project_as", i) {
                 crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
+                    crate::file_dialog::new()
                         .set_title("Save Project As")
                         .add_filter("Klipp Project", &["klipp"])
                         .set_file_name("project.klipp")

@@ -3881,7 +3881,7 @@ fn show_title_effects_group(
                 ui.horizontal(|ui| {
                     if ui.button("Browse\u{2026}").clicked() {
                         crate::file_dialog::spawn(move || {
-                            rfd::FileDialog::new()
+                            crate::file_dialog::new()
                                 .add_filter("Images", &{
                                     let mut exts: Vec<&str> = klipp_core::media_extensions::IMAGE_EXTENSIONS.to_vec();
                                     exts.push("tga");
@@ -4037,7 +4037,7 @@ fn show_title_effects_group(
 /// One image file, chosen by the user. Blocks, so it runs inside
 /// `file_dialog::spawn`.
 fn pick_image_file() -> Option<String> {
-    rfd::FileDialog::new()
+    crate::file_dialog::new()
         .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
         .pick_file()
         .map(|p| p.to_string_lossy().to_string())

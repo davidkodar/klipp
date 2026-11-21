@@ -46,7 +46,7 @@ pub fn project_dir_of(picked: &Path) -> PathBuf {
 /// The Open Project dialog: a file dialog, so double-clicking into a
 /// project and picking its `project.json` opens it.
 pub fn pick_project_commands() -> Vec<AppCommand> {
-    rfd::FileDialog::new()
+    crate::file_dialog::new()
         .set_title("Open Project")
         .add_filter("Klipp project (project.json)", &["json"])
         .pick_file()

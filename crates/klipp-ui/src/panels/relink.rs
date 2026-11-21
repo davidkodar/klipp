@@ -170,7 +170,7 @@ impl RelinkPanel {
             let searching = self.scan.is_some();
             if ui.add_enabled(!searching, egui::Button::new("Search Folder\u{2026}")).clicked() {
                 crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
+                    crate::file_dialog::new()
                         .set_title("Select folder to search for media")
                         .pick_folder()
                         .map(|dir| vec![AppCommand::RelinkAllFromDirectory { directory: dir }])
@@ -443,7 +443,7 @@ fn browse_button(ui: &mut egui::Ui, state: &AppState, media_id: klipp_core::Medi
     let ext = item.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
     let title = format!("Locate {}", item.filename);
     crate::file_dialog::spawn(move || {
-        let mut dialog = rfd::FileDialog::new().set_title(title);
+        let mut dialog = crate::file_dialog::new().set_title(title);
         if !ext.is_empty() {
             dialog = dialog.add_filter(ext.to_uppercase(), &[ext.as_str()]);
         }

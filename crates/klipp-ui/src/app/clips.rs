@@ -1383,7 +1383,7 @@ impl KlippApp {
                             self.state.timecode_display().position(self.state.playhead).replace([':', ';'], "-")
                         );
                         crate::file_dialog::spawn(move || {
-                            if let Some(path) = rfd::FileDialog::new()
+                            if let Some(path) = crate::file_dialog::new()
                                 .set_title("Save Frame As")
                                 .add_filter("PNG Image", &["png"])
                                 .set_file_name(&default_name)

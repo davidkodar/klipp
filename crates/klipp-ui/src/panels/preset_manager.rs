@@ -153,7 +153,7 @@ pub fn show_preset_manager_dialog(
                                     Ok(json) => {
                                         let file_name = format!("{}.json", sanitize(&preset.name));
                                         crate::file_dialog::spawn(move || {
-                                            if let Some(path) = rfd::FileDialog::new()
+                                            if let Some(path) = crate::file_dialog::new()
                                                 .set_title("Export Preset")
                                                 .add_filter("Klipp preset (JSON)", &["json"])
                                                 .set_file_name(file_name)
@@ -208,7 +208,7 @@ pub fn show_preset_manager_dialog(
                 let picker = egui::Id::new("preset-manager-import");
                 if ui.button("Import JSON\u{2026}").clicked() {
                     crate::file_dialog::pick_path(picker, || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Import Preset")
                             .add_filter("Klipp preset (JSON)", &["json"])
                             .pick_file()

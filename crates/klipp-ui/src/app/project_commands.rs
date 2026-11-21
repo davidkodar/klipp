@@ -305,7 +305,7 @@ impl KlippApp {
                         let written = self.unnamed_project.clone().filter(|w| self.state.project_path.as_ref() == Some(w));
                         let name = crate::project_paths::offered_name(&root, written.as_deref());
                         crate::file_dialog::spawn(move || {
-                            rfd::FileDialog::new()
+                            crate::file_dialog::new()
                                 .set_title("Save Project")
                                 .set_directory(&root)
                                 .set_file_name(&name)
