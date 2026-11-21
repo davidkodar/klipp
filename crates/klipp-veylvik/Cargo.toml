@@ -8,10 +8,10 @@ license.workspace = true
 # Klipp's GPU device, its footage from Klipp's decoder. Pinned to an exact
 # Veylvik revision so every Klipp build names the Veylvik it was tested with.
 [dependencies]
-veylvik-document = { git = "https://github.com/davidkodar/veylvik", rev = "6886b22" }
-veylvik-render = { git = "https://github.com/davidkodar/veylvik", rev = "6886b22" }
-veylvik-editor = { git = "https://github.com/davidkodar/veylvik", rev = "6886b22" }
-veylvik-io = { git = "https://github.com/davidkodar/veylvik", rev = "6886b22" }
+veylvik-document = { git = "https://github.com/davidkodar/veylvik", rev = "f150ae5" }
+veylvik-render = { git = "https://github.com/davidkodar/veylvik", rev = "f150ae5" }
+veylvik-editor = { git = "https://github.com/davidkodar/veylvik", rev = "f150ae5" }
+veylvik-io = { git = "https://github.com/davidkodar/veylvik", rev = "f150ae5" }
 wgpu = { workspace = true }
 klipp-core = { workspace = true }
 klipp-media = { workspace = true }

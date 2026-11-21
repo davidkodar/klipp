@@ -159,7 +159,10 @@ impl super::KlippApp {
             renderer: klipp_veylvik::Compositor::shared().map(|c| c.renderer()),
         };
         match editor::Editor::new(setup) {
-            Ok(e) => {
+            Ok(mut e) => {
+                // The pictures it prepares to play, in Klipp's cache folder:
+                // Klipp's clear-cache clears them with the rest.
+                e.set_playback_folder(dirs::cache_dir().map(|d| d.join("klipp").join("veylvik-playback")));
                 self.veylvik_tab.editor = Some(e);
                 Ok(())
             }
