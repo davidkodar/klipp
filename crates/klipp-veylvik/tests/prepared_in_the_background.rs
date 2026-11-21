@@ -130,7 +130,16 @@ fn a_composition_that_cannot_be_made_shows_the_media() {
     let again = Instant::now();
     let live = frame(&mut r, &sequence(Some(id)), true);
     assert!(worst(&live, &plain) < 1e-6, "the media, live");
-    assert!(again.elapsed() < Duration::from_secs(2), "not prepared again");
-    assert!(!klipp_veylvik::preparing());
+    assert!(again.elapsed() < Duration::from_secs(2), "the view never waits");
+    // The view has its own clip source, tried once on a thread of its own:
+    // it fails there too, and is then not tried again.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while klipp_veylvik::preparing() {
+        assert!(Instant::now() < deadline, "the view's try ends");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let live = frame(&mut r, &sequence(Some(id)), true);
+    assert!(worst(&live, &plain) < 1e-6, "the media, live, after its try");
+    assert!(!klipp_veylvik::preparing(), "not prepared again");
     klipp_veylvik::set_project_compositions(Compositions::new());
 }
