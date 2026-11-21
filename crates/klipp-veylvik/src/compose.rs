@@ -196,6 +196,10 @@ struct LiveKey {
     generation: u64,
     /// The media's state when its clip source was made.
     media_state: u64,
+    /// For a live view: its frames of the media are its own (8-bit
+    /// streams, proxies), not an export's, so neither is given a picture
+    /// made of the other's.
+    live: bool,
 }
 
 /// A composition for one clip's media: being made ready, ready, or what
@@ -392,7 +396,7 @@ impl Compositor {
             // this waited.
             let media = clip.media_id();
             let media_state = media.and_then(|m| state.media_states.get(&m).copied()).unwrap_or(0);
-            let key = LiveKey { composition: id, media, working, footage: [frame.width, frame.height], generation: state.generation, media_state };
+            let key = LiveKey { composition: id, media, working, footage: [frame.width, frame.height], generation: state.generation, media_state, live };
             match state.live.get(&key) {
                 Some(Slot::Ready(_)) => break key,
                 Some(Slot::Failed(why)) => return Err(Declined::Failed(why.clone())),
@@ -726,7 +730,7 @@ fn salt(key: &LiveKey) -> u64 {
     });
     let media = key.media.map(|m| m.0.as_u64_pair()).unwrap_or((0, 0));
     let working = key.working as u64;
-    [media.0, media.1, working, u64::from(key.footage[0]) << 32 | u64::from(key.footage[1]), key.generation, key.media_state, key.composition.0.as_u64_pair().0]
+    [media.0, media.1, working, u64::from(key.footage[0]) << 32 | u64::from(key.footage[1]), key.generation, key.media_state, u64::from(key.live), key.composition.0.as_u64_pair().0]
         .into_iter()
         .fold(session, |acc, part| crate::mix(acc ^ part))
 }
