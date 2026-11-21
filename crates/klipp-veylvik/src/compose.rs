@@ -59,6 +59,9 @@ pub struct Compositor {
     /// Told when a composition being prepared is ready or failed.
     prepared: Condvar,
     renders: AtomicU64,
+    /// Pictures Veylvik gave: renders that showed the composition, not
+    /// the media in its place.
+    composed: AtomicU64,
     bridge: OnceLock<Bridge>,
 }
 
@@ -279,7 +282,7 @@ impl Compositor {
                 Err(e) => tracing::warn!("Veylvik's compiled programs not kept between runs: {e}"),
             }
         }
-        Ok(Self { renderer: Arc::new(renderer), device, queue, state: Mutex::new(State::default()), prepared: Condvar::new(), renders: Default::default(), bridge: OnceLock::new() })
+        Ok(Self { renderer: Arc::new(renderer), device, queue, state: Mutex::new(State::default()), prepared: Condvar::new(), renders: Default::default(), composed: Default::default(), bridge: OnceLock::new() })
     }
 
     /// The one compositor of this process, on Klipp's shared GPU context:
@@ -316,6 +319,11 @@ impl Compositor {
     /// Pictures asked of Veylvik so far, rendered or failed.
     pub fn renders(&self) -> u64 {
         self.renders.load(Ordering::Relaxed)
+    }
+
+    /// Pictures Veylvik gave so far: renders that showed a composition.
+    pub fn composed(&self) -> u64 {
+        self.composed.load(Ordering::Relaxed)
     }
 
     /// Whether a composition is being made ready now.
@@ -521,6 +529,7 @@ impl Compositor {
         rendered?;
         let out = Arc::new(out);
         live.spare = Some(Arc::clone(&out));
+        self.composed.fetch_add(1, Ordering::Relaxed);
         Ok(SourceFrame { pixels: SourcePixels::Gpu(out), width: w, height: h, pts: frame.pts })
     }
 

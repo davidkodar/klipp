@@ -3278,6 +3278,7 @@ dependencies = [
  "klipp-spelling",
  "klipp-timeline",
  "klipp-title",
+ "klipp-veylvik",
  "libc",
  "png 0.18.1",
  "serde",
