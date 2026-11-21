@@ -11,9 +11,18 @@
 //!
 //! A composition that can't be read or rendered shows the clip's media as
 //! it is, said once in the log.
+//!
+//! A composition is made ready on a thread of its own the first time a
+//! clip shows it: read, its sources found and its kernels compiled, which
+//! can take a driver many seconds. Meanwhile a live render (the viewer)
+//! shows the clip's media and [`preparing`] says so; any other render (an
+//! export, a still) waits for it. Once one is ready, [`revision`] moves on,
+//! so what showed the media draws the frame again.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use klipp_compose::{FrameSource, GpuPixels, SourceFrame, SourcePixels};
 use klipp_core::{MediaId, WorkingColorspace};
@@ -37,13 +46,19 @@ const FOOTAGE_BUDGET: u64 = 256 << 20;
 /// Clip sources kept at once; the oldest goes past it.
 const LIVE_MAX: usize = 16;
 
+/// How long a render that waits waits for a composition to be ready
+/// before it shows the media and says why.
+const PREPARE_WAIT: Duration = Duration::from_secs(300);
+
 /// Veylvik's renderer on Klipp's device, and the compositions it shows.
 pub struct Compositor {
     renderer: Arc<Renderer>,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     state: Mutex<State>,
-    renders: std::sync::atomic::AtomicU64,
+    /// Told when a composition being prepared is ready or failed.
+    prepared: Condvar,
+    renders: AtomicU64,
     bridge: OnceLock<Bridge>,
 }
 
@@ -101,7 +116,7 @@ type Current = Arc<Mutex<Option<(i64, Arc<dyn GpuFramePixels>)>>>;
 struct State {
     compositions: Compositions,
     parsed: HashMap<CompositionId, Parsed>,
-    live: HashMap<LiveKey, Live>,
+    live: HashMap<LiveKey, Slot>,
     /// Live keys, oldest first.
     order: Vec<LiveKey>,
     /// Bumped when the media changes under the same clip: a frame Veylvik
@@ -119,6 +134,29 @@ struct LiveKey {
     generation: u64,
 }
 
+/// A composition for one clip's media: being made ready, ready, or what
+/// stopped it.
+enum Slot {
+    Preparing,
+    Ready(Box<Live>),
+    Failed(String),
+}
+
+/// Why a render gave no picture: the media is shown instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Declined {
+    /// Still being made ready, and the render was live: nothing to say.
+    Preparing,
+    /// It can't be shown, for this reason.
+    Failed(String),
+}
+
+impl From<String> for Declined {
+    fn from(why: String) -> Self {
+        Declined::Failed(why)
+    }
+}
+
 /// One composition rendering for one clip's media: its frames and Klipp's
 /// frame the footage is read from.
 struct Live {
@@ -131,11 +169,26 @@ struct Live {
 
 static SHARED: OnceLock<Option<Arc<Compositor>>> = OnceLock::new();
 
+/// Bumped each time a composition is ready or failed: see [`revision`].
+static REVISION: AtomicU64 = AtomicU64::new(0);
+
+/// Moves on each time a composition being prepared is ready, or failed: a
+/// view that showed a clip's media meanwhile draws it again.
+pub fn revision() -> u64 {
+    REVISION.load(Ordering::Acquire)
+}
+
+/// Whether a composition is being made ready now: what the viewer shows of
+/// its clip is the media until then.
+pub fn preparing() -> bool {
+    matches!(SHARED.get(), Some(Some(c)) if c.preparing())
+}
+
 impl Compositor {
     /// Veylvik's renderer on `device`.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, adapter: wgpu::AdapterInfo) -> Result<Self, String> {
         let renderer = Renderer::from_device((*device).clone(), (*queue).clone(), adapter).map_err(|e| e.to_string())?;
-        Ok(Self { renderer: Arc::new(renderer), device, queue, state: Mutex::new(State::default()), renders: Default::default(), bridge: OnceLock::new() })
+        Ok(Self { renderer: Arc::new(renderer), device, queue, state: Mutex::new(State::default()), prepared: Condvar::new(), renders: Default::default(), bridge: OnceLock::new() })
     }
 
     /// The one compositor of this process, on Klipp's shared GPU context:
@@ -163,7 +216,12 @@ impl Compositor {
 
     /// Pictures asked of Veylvik so far, rendered or failed.
     pub fn renders(&self) -> u64 {
-        self.renders.load(std::sync::atomic::Ordering::Relaxed)
+        self.renders.load(Ordering::Relaxed)
+    }
+
+    /// Whether a composition is being made ready now.
+    pub fn preparing(&self) -> bool {
+        self.state().live.values().any(|s| matches!(s, Slot::Preparing))
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -188,6 +246,9 @@ impl Compositor {
         state.parsed.retain(|id, _| !changed.contains(id));
         state.told.retain(|id| !changed.contains(id));
         state.compositions = compositions;
+        drop(state);
+        // A render waiting on one that is gone asks again.
+        self.prepared.notify_all();
     }
 
     /// The media under the clips changed (a file replaced or relinked, a
@@ -197,6 +258,8 @@ impl Compositor {
         state.generation += 1;
         state.live.clear();
         state.order.clear();
+        drop(state);
+        self.prepared.notify_all();
     }
 
     /// `inner` with every clip that names a composition shown through it,
@@ -221,22 +284,46 @@ impl Compositor {
     }
 
     /// `clip`'s picture at `secs` in its media through composition `id`,
-    /// `frame` being Klipp's own frame of it there. `Err` says why not.
-    fn render(&self, clip: &Clip, id: CompositionId, secs: f64, fps: f64, frame: &SourceFrame, working: WorkingColorspace) -> Result<SourceFrame, String> {
-        self.renders.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    /// `frame` being Klipp's own frame of it there, in `working`. A
+    /// composition not ready yet is made ready on a thread of its own: for a
+    /// `live` view this gives [`Declined::Preparing`] meanwhile; else it waits.
+    fn render(self: &Arc<Self>, clip: &Clip, id: CompositionId, secs: f64, fps: f64, frame: &SourceFrame, (working, live): (WorkingColorspace, bool)) -> Result<SourceFrame, Declined> {
+        self.renders.fetch_add(1, Ordering::Relaxed);
         let footage = self.on_gpu(frame)?;
         let mut state = self.state();
-        let composition = Self::composition(&mut state, id)?;
-        let key = LiveKey { composition: id, media: clip.media_id(), working, footage: [frame.width, frame.height], generation: state.generation };
-        if let std::collections::hash_map::Entry::Vacant(slot) = state.live.entry(key) {
-            slot.insert(self.live(composition, key, fps)?);
-            state.order.push(key);
-            while state.order.len() > LIVE_MAX {
-                let old = state.order.remove(0);
-                state.live.remove(&old);
+        let deadline = Instant::now() + PREPARE_WAIT;
+        let key = loop {
+            // Asked again each time round: the media may have changed while
+            // this waited.
+            let key = LiveKey { composition: id, media: clip.media_id(), working, footage: [frame.width, frame.height], generation: state.generation };
+            match state.live.get(&key) {
+                Some(Slot::Ready(_)) => break key,
+                Some(Slot::Failed(why)) => return Err(Declined::Failed(why.clone())),
+                Some(Slot::Preparing) => {}
+                None => {
+                    let composition = Self::composition(&mut state, id)?;
+                    state.live.insert(key, Slot::Preparing);
+                    state.order.push(key);
+                    while state.order.len() > LIVE_MAX {
+                        let old = state.order.remove(0);
+                        state.live.remove(&old);
+                    }
+                    if let Err(why) = self.prepare(composition, key, fps) {
+                        state.live.insert(key, Slot::Failed(why.clone()));
+                        return Err(Declined::Failed(why));
+                    }
+                }
             }
-        }
-        let live = state.live.get_mut(&key).expect("just made");
+            if live {
+                return Err(Declined::Preparing);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(Declined::Failed(format!("not ready after {} s", PREPARE_WAIT.as_secs())));
+            }
+            state = self.prepared.wait_timeout(state, left).unwrap_or_else(|e| e.into_inner()).0;
+        };
+        let Some(Slot::Ready(live)) = state.live.get_mut(&key) else { unreachable!("ready, just seen") };
         let index = frame_index(secs, live.fps);
         *live.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((index, footage));
         let ([w, h], _, _) = live.source.format().map_err(|e| e.to_string())?;
@@ -258,6 +345,36 @@ impl Compositor {
         let out = Arc::new(out);
         live.spare = Some(Arc::clone(&out));
         Ok(SourceFrame { pixels: SourcePixels::Gpu(out), width: w, height: h, pts: frame.pts })
+    }
+
+    /// Make `composition` ready for `key` on a thread of its own, its slot
+    /// [`Slot::Preparing`] until then.
+    fn prepare(self: &Arc<Self>, composition: Composition, key: LiveKey, fps: f64) -> Result<(), String> {
+        let compositor = Arc::clone(self);
+        std::thread::Builder::new().name("klipp-veylvik-prepare".into()).spawn(move || {
+            let started = Instant::now();
+            let made = compositor.live(composition, key, fps).and_then(|live| {
+                // The kernels compiled now, so the first frame doesn't wait
+                // on a driver compiling one.
+                compositor.renderer.compile_kernels().map_err(|e| e.to_string())?;
+                Ok(live)
+            });
+            tracing::info!("a clip's Veylvik composition {} prepared in {:.1} s{}", key.composition, started.elapsed().as_secs_f64(), made.as_ref().err().map(|e| format!(" and failed: {e}")).unwrap_or_default());
+            let mut state = compositor.state();
+            // Gone meanwhile (the media or the composition changed): what
+            // was made is of the old one.
+            if let Some(slot @ Slot::Preparing) = state.live.get_mut(&key) {
+                *slot = match made {
+                    Ok(live) => Slot::Ready(Box::new(live)),
+                    Err(why) => Slot::Failed(why),
+                };
+            }
+            drop(state);
+            REVISION.fetch_add(1, Ordering::Release);
+            compositor.prepared.notify_all();
+        })
+        .map(|_| ())
+        .map_err(|e| format!("no thread to prepare it on ({e})"))
     }
 
     fn live(&self, composition: Composition, key: LiveKey, fps: f64) -> Result<Live, String> {
@@ -404,6 +521,10 @@ impl klipp_compose::source_wrap::SourceWrap for Wrap {
         // The lock let go before the renderer starts: starting reads it.
         let any = PROJECT.lock().unwrap_or_else(|e| e.into_inner()).is_some();
         any && Compositor::shared().is_some()
+    }
+
+    fn revision(&self) -> u64 {
+        revision()
     }
 
     fn wrap<'a>(&self, inner: &'a mut dyn FrameSource, working: WorkingColorspace) -> Box<dyn FrameSource + 'a> {
@@ -571,9 +692,11 @@ impl FrameSource for CompositionSource<'_> {
         let frame = self.inner.frame(clip, source_secs, width, height)?;
         let Some(id) = Self::composed(clip) else { return Some(frame) };
         let fps = self.inner.media_fps(clip).filter(|f| *f > 0.0).unwrap_or(25.0);
-        match self.compositor.render(clip, id, source_secs, fps, &frame, self.working) {
+        let live = self.inner.shows_live();
+        match self.compositor.render(clip, id, source_secs, fps, &frame, (self.working, live)) {
             Ok(picture) => Some(picture),
-            Err(why) => {
+            Err(Declined::Preparing) => Some(frame),
+            Err(Declined::Failed(why)) => {
                 self.compositor.tell_once(id, &why);
                 Some(frame)
             }
@@ -638,6 +761,10 @@ impl FrameSource for CompositionSource<'_> {
             return None;
         }
         self.inner.temporal_frames_on_gpu(clip, working, width, height)
+    }
+
+    fn shows_live(&mut self) -> bool {
+        self.inner.shows_live()
     }
 
     // The media's own facts and other media stay the source's.

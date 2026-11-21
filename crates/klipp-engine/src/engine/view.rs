@@ -443,6 +443,12 @@ impl ViewerSource<'_> {
 }
 
 impl FrameSource for ViewerSource<'_> {
+    // The viewer: a composition still being prepared shows as its media,
+    // and the frame is drawn again once it is ready.
+    fn shows_live(&mut self) -> bool {
+        true
+    }
+
     fn media_fps(&mut self, clip: &Clip) -> Option<f64> {
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
         Some(pool.get(&clip.media_id()?)?.fps.as_f64())

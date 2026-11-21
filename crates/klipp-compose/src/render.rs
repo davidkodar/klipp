@@ -210,6 +210,14 @@ pub trait FrameSource {
         None
     }
 
+    /// Whether this source feeds a live view (the viewer playing or
+    /// parked), which shows a picture still being prepared as its media
+    /// meanwhile and draws it again once it is ready. `false` (the
+    /// default): a render that waits for every picture, as an export does.
+    fn shows_live(&mut self) -> bool {
+        false
+    }
+
     /// The file a still image's frames are read from, stamped now, when
     /// `clip` shows one (#2092): its picture is the same every frame while
     /// this is, so the GPU stack keeps it and asks for no frame. `None`

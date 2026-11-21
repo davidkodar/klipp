@@ -2283,6 +2283,9 @@ pub struct PlaybackEngine {
     /// When the tick may next look at the layout, by what the last look
     /// cost ([`layout_check_wait`]).
     layout_check_due: std::time::Instant,
+    /// The render hook's revision when the viewer last drew: see
+    /// [`Self::tick_pictures_ready`].
+    pictures_revision: u64,
     /// What was under the playhead when the layout was last looked at
     /// (see [`under_playhead_fingerprint`]); an edit that changes it is
     /// shown by seeking there again.
@@ -3373,6 +3376,7 @@ impl PlaybackEngine {
             last_composite_path: None,
             layout_fingerprint: 0,
             layout_check_due: std::time::Instant::now(),
+            pictures_revision: klipp_compose::source_wrap::revision(),
             under_playhead_fingerprint: (Timecode::zero(), 0),
             quiet_seek: false,
             sdr_transfer: klipp_core::SdrTransfer::Srgb,
@@ -3701,6 +3705,7 @@ impl PlaybackEngine {
                 }
             }
             self.tick_layout_check();
+            self.tick_pictures_ready();
             // Full-quality refresh of the parked frame when playback ran
             // on the skim substitute (optimised playback). Runs every
             // tick: paused it debounces/polls/paints, any other state it
@@ -10939,6 +10944,27 @@ impl PlaybackEngine {
         self.layout_check_due = now + layout_check_wait(now.elapsed());
         if changed {
             self.show_edit_at_playhead();
+        }
+    }
+
+    /// A picture the viewer showed as its media while it was prepared (a
+    /// clip's Veylvik composition) is ready: nothing kept of the frames
+    /// drawn meanwhile is used again, and the parked frame is drawn anew.
+    /// Playing, the next frame is.
+    fn tick_pictures_ready(&mut self) {
+        let now = klipp_compose::source_wrap::revision();
+        if now == self.pictures_revision {
+            return;
+        }
+        self.pictures_revision = now;
+        self.frame_cache.clear();
+        self.cached_pregrade_frame = None;
+        self.pregrade_source = None;
+        self.cached_pregrade_at = None;
+        self.retained_primary = None;
+        if self.state != PlaybackState::Playing {
+            self.show_edit_at_playhead();
+            (self.repaint_cb)();
         }
     }
 

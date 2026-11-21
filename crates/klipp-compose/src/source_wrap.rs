@@ -16,6 +16,11 @@ pub trait SourceWrap: Send + Sync {
     /// Whether renders now need wrapping: `false` and the source is read
     /// as it is, at no cost.
     fn active(&self) -> bool;
+    /// Moves on when a wrapped render would now give another picture than
+    /// it gave a live view before (a composition made ready meanwhile).
+    fn revision(&self) -> u64 {
+        0
+    }
     /// `inner` as a render in `working` reads it.
     fn wrap<'a>(&self, inner: &'a mut dyn FrameSource, working: WorkingColorspace) -> Box<dyn FrameSource + 'a>;
 }
@@ -26,6 +31,12 @@ static WRAP: OnceLock<Arc<dyn SourceWrap>> = OnceLock::new();
 /// process: a second call is refused, with `false`.
 pub fn install(wrap: Arc<dyn SourceWrap>) -> bool {
     WRAP.set(wrap).is_ok()
+}
+
+/// The installed wrapper's [`SourceWrap::revision`]: a live view that
+/// sees it move on draws its frame again. 0 with none.
+pub fn revision() -> u64 {
+    WRAP.get().map_or(0, |w| w.revision())
 }
 
 thread_local! {

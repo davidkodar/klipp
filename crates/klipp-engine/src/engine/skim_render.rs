@@ -205,6 +205,12 @@ impl SkimSource {
 }
 
 impl FrameSource for SkimSource {
+    // The viewer: a composition still being prepared shows as its media,
+    // and the frame is drawn again once it is ready.
+    fn shows_live(&mut self) -> bool {
+        true
+    }
+
     fn frame(&mut self, clip: &Clip, _source_secs: f64, _width: u32, _height: u32) -> Option<SourceFrame> {
         let f = self.frames.get(&clip.id)?;
         Some(SourceFrame { pixels: f.source_pixels(), width: f.width, height: f.height, pts: f.pts })
