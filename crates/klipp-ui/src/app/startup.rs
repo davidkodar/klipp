@@ -120,6 +120,7 @@ impl KlippApp {
             prefs.playback.background_performance.to_scheduler_policy();
 
         let mut app = Self {
+            veylvik_tab: super::veylvik_tab::VeylvikTab::new(cc.wgpu_render_state.clone()),
             cmd_tx: klipp_engine::commands::EngineSender::new(cmd_tx),
             event_rx,
             control_inbox: None,

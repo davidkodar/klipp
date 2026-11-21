@@ -660,8 +660,9 @@ impl KlippApp {
             self.sync_compositions_to_engine();
             self.sync_sequence_to_engine();
         }
-        // The compositions' assets are in the folder they were opened from.
-        let assets_dir = self.state.project_path.clone();
+        // The compositions' assets are in the folder they were opened
+        // from, or the session's for a project never saved.
+        let assets_dir = Some(self.compositions_home());
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
         match klipp_project::save_project_full(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), Some(self.state.timeline_track_scale), &self.state.title_assets) {
             Ok(()) => {
@@ -690,9 +691,11 @@ impl KlippApp {
                     self.lock_seen_path = None;
                 }
                 self.state.project_path = Some(path.to_path_buf());
-                // Their assets are read from the new home from now on.
+                // Their assets are read from the new home from now on, the
+                // Veylvik page's editor's too.
                 if new_home {
                     self.sync_compositions_to_engine();
+                    self.veylvik_tab.reopen();
                 }
                 // Grade stills kept only in memory (no folder, or a
                 // read-only one) are written with the project's new home.

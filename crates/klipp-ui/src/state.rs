@@ -885,6 +885,8 @@ pub enum Workspace {
     Color,
     /// Layering a clip's pictures on its node graph (#2758).
     Composite,
+    /// A clip's Veylvik composition, in Veylvik's own editor.
+    Veylvik,
     Export,
 }
 
@@ -900,7 +902,7 @@ impl Workspace {
     /// and [`browser_borrow_for`] puts back what was there on the way
     /// out.
     pub fn borrows_the_browser(self) -> bool {
-        matches!(self, Workspace::Color | Workspace::Composite | Workspace::Export)
+        matches!(self, Workspace::Color | Workspace::Composite | Workspace::Veylvik | Workspace::Export)
     }
 }
 
@@ -1709,6 +1711,10 @@ pub struct AppState {
     /// raises, settled into `unsaved` by comparing digests (#2626). Not
     /// the unsaved mark itself, which only `unsaved` is.
     pub dirty: bool,
+    /// The Veylvik page shows and its editor has the keyboard: Klipp's
+    /// own keys are those of the app alone (save, quit) until a press
+    /// elsewhere takes it back.
+    pub veylvik_keys: bool,
     /// The project differs from what was last loaded or saved, as of the
     /// last time `dirty` was settled (#2626).
     pub unsaved: bool,
@@ -4936,7 +4942,7 @@ impl AppState {
     /// Whether the viewers sit side by side in the current workspace.
     pub fn viewers_side_by_side(&self) -> bool {
         match self.active_workspace {
-            Workspace::Edit => self.dual_viewers,
+            Workspace::Edit | Workspace::Veylvik => self.dual_viewers,
             Workspace::Color | Workspace::Composite => self.color_dual_viewers,
             Workspace::Export => self.export_dual_viewers,
         }
@@ -4945,7 +4951,7 @@ impl AppState {
     /// Flip the viewer layout of the current workspace.
     pub fn toggle_viewer_layout(&mut self) {
         let flag = match self.active_workspace {
-            Workspace::Edit => &mut self.dual_viewers,
+            Workspace::Edit | Workspace::Veylvik => &mut self.dual_viewers,
             Workspace::Color | Workspace::Composite => &mut self.color_dual_viewers,
             Workspace::Export => &mut self.export_dual_viewers,
         };
@@ -5059,6 +5065,7 @@ impl Default for AppState {
             project_path: None,
             created_at: None,
             dirty: false,
+            veylvik_keys: false,
             unsaved: false,
             saved_digest: None,
             recorded_tracks: Default::default(),

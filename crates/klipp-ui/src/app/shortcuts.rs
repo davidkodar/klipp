@@ -58,6 +58,13 @@ impl KlippApp {
                 self.shortcuts_app(ctx, &mut cmds);
                 return cmds;
             }
+            KeyScope::Guest => {
+                self.shortcuts_app(ctx, &mut cmds);
+                if ctx.input(|i| self.key_bindings.is_action_pressed("save_project", i)) {
+                    cmds.push(AppCommand::SaveProject);
+                }
+                return cmds;
+            }
             _ => {}
         }
         // Before/After is looked at straight after a value is typed or a node
@@ -69,7 +76,7 @@ impl KlippApp {
         }
         self.shortcuts_ctrl_global(ctx, ctx.egui_wants_keyboard_input(), &mut cmds);
         match scope {
-            KeyScope::CtrlOnly | KeyScope::Nothing | KeyScope::AppOnly => return cmds,
+            KeyScope::CtrlOnly | KeyScope::Nothing | KeyScope::AppOnly | KeyScope::Guest => return cmds,
             KeyScope::GradeCanvas => {
                 let kb = self.key_bindings.clone();
                 ctx.input(|i| grade_node_keys(&mut self.state, &kb, i, &mut cmds));
@@ -1413,6 +1420,8 @@ pub(super) enum KeyScope {
     AppOnly,
     /// None: a dialog has the keys (#2551).
     Nothing,
+    /// The app's and saving: the Veylvik page's editor has the keys.
+    Guest,
 }
 
 /// The shortcuts that run under `state`'s focus (#1742). A node canvas
@@ -1445,6 +1454,8 @@ pub(super) fn key_scope(state: &crate::state::AppState, text_editing: bool) -> K
     match state.active_panel {
         _ if state.dialog_open() => KeyScope::Nothing,
         _ if state.project_path.is_none() => KeyScope::AppOnly,
+        // Veylvik's editor has the keys; Ctrl+S still saves the project.
+        _ if state.veylvik_keys && state.active_workspace == crate::state::Workspace::Veylvik => KeyScope::Guest,
         // A field left by Enter keeps the single keys (#2943): typing
         // goes on in the inspector until a click elsewhere or Escape.
         _ if text_editing || state.field_keys_held => KeyScope::CtrlOnly,
@@ -1640,6 +1651,20 @@ mod key_scope_tests {
         assert_eq!(key_scope(&state, false), KeyScope::AppOnly);
         state.project_path = Some(crate::project_paths::UNTITLED.into());
         assert_eq!(key_scope(&state, false), KeyScope::All);
+    }
+
+    /// The Veylvik page's editor has the keys while it is the last thing
+    /// pressed on: Klipp's own are the app's and saving; anywhere else,
+    /// or with the page gone, they are Klipp's again.
+    #[test]
+    fn the_veylvik_editor_keeps_its_keys_but_save() {
+        let mut state = AppState { project_path: Some("/projects/a.klipp".into()), active_workspace: crate::state::Workspace::Veylvik, veylvik_keys: true, ..Default::default() };
+        assert_eq!(key_scope(&state, false), KeyScope::Guest);
+        state.veylvik_keys = false;
+        assert_eq!(key_scope(&state, false), KeyScope::All);
+        state.veylvik_keys = true;
+        state.active_workspace = crate::state::Workspace::Edit;
+        assert_eq!(key_scope(&state, false), KeyScope::All, "a flag left from the page is not the editor's");
     }
 
     /// #2551: a dialog keeps its keys, typed into a field or not; a

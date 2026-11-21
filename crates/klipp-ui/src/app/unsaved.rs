@@ -68,6 +68,18 @@ impl crate::state::AppState {
         )
         .map_err(|e| tracing::warn!("The project's digest could not be made: {e}"))
         .ok()
+        // The clips' Veylvik compositions are the project's too: an edit
+        // in the Veylvik tab is unsaved until a save writes it.
+        .map(|digest| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            digest.hash(&mut h);
+            for id in klipp_timeline::compositions_used(&self.sequences) {
+                id.0.as_u128().hash(&mut h);
+                self.compositions.get(&id).map(|b| &b[..]).hash(&mut h);
+            }
+            h.finish()
+        })
     }
 
     /// The project as it now is is the saved one: after a load (before
@@ -447,5 +459,36 @@ mod tests {
         s.dirty = true;
         assert!(unsaved(&mut s), "restored from an auto-save: unsaved until saved");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A change to a clip's Veylvik composition (an edit in the Veylvik
+    /// tab) is unsaved until a save writes it, and going back to the
+    /// saved one is saved again; a composition no clip names is not the
+    /// project's. The digest left them out, and closing lost the edit
+    /// without asking.
+    #[test]
+    fn a_compositions_edit_is_unsaved() {
+        let a = MediaId::new();
+        let id = klipp_timeline::CompositionId::new();
+        let mut clip = Clip::media(a, t(0.0), t(4.0), t(0.0), t(4.0));
+        clip.composition = Some(id);
+        let mut seq = Sequence::new_default();
+        seq.tracks = vec![track("V1", TrackKind::Video, vec![clip])];
+        let mut s = AppState { sequences: vec![seq], media_pool: pool(&[a]), project_path: Some(PathBuf::from("/projects/a.klipp")), ..Default::default() };
+        let saved: std::sync::Arc<[u8]> = b"{\"before\":1}".as_slice().into();
+        s.compositions.insert(id, saved.clone());
+        s.mark_saved();
+        s.compositions.insert(id, b"{\"after\":1}".as_slice().into());
+        s.dirty = true;
+        s.settle_unsaved();
+        assert!(s.unsaved, "an edited composition is unsaved");
+        s.compositions.insert(id, saved);
+        s.dirty = true;
+        s.settle_unsaved();
+        assert!(!s.unsaved, "back as saved");
+        s.compositions.insert(klipp_timeline::CompositionId::new(), b"{}".as_slice().into());
+        s.dirty = true;
+        s.settle_unsaved();
+        assert!(!s.unsaved, "one no clip names is not the project's");
     }
 }

@@ -157,12 +157,22 @@ impl KlippApp {
     /// Tell every render the project's Veylvik compositions as they are now.
     pub(super) fn sync_compositions_to_engine(&self) {
         klipp_veylvik::set_project_compositions(self.state.compositions.clone());
-        // Each one's assets in its folder in the project, once it has one.
-        let assets = match &self.state.project_path {
-            Some(dir) => self.state.compositions.keys().map(|id| (*id, klipp_project::compositions::composition_dir(dir, *id))).collect(),
-            None => Default::default(),
-        };
+        // Each one's assets in its folder in the project.
+        let assets = self.state.compositions.keys().map(|id| (*id, self.composition_assets_dir(*id))).collect();
         klipp_veylvik::set_project_assets(assets);
+    }
+
+    /// The folder the project's compositions and their assets are in now:
+    /// the project's, or until its first save the session's own, which
+    /// that save takes them from.
+    pub(super) fn compositions_home(&self) -> std::path::PathBuf {
+        // Untitled is a placeholder, not a folder.
+        self.state.project_path.clone().filter(|p| !crate::project_paths::is_untitled(Some(p))).unwrap_or_else(unsaved_compositions_home)
+    }
+
+    /// Composition `id`'s folder, its assets beside its file.
+    pub(super) fn composition_assets_dir(&self, id: klipp_timeline::CompositionId) -> std::path::PathBuf {
+        klipp_project::compositions::composition_dir(&self.compositions_home(), id)
     }
 
     /// Tell the decoders each file's camera log format. The decoder is what
@@ -443,6 +453,12 @@ mod engine_send_tests {
         assert!(sent > 100, "the scan found only {sent} sends: has the field been renamed?");
         assert!(astray.is_empty(), "sent to the engine, which does nothing with them — send them through send_commands:\n{}", astray.join("\n"));
     }
+}
+
+/// Where a project never saved keeps its compositions' assets: the
+/// session's own folder, laid out as a project's.
+fn unsaved_compositions_home() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("klipp-unsaved-compositions-{}", std::process::id()))
 }
 
 /// What `item`'s decoded frames are made from, as one number: its file as

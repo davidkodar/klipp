@@ -67,6 +67,7 @@ mod caption_translation;
 mod delivery_check;
 mod reuse_marks;
 mod main_layout;
+mod veylvik_tab;
 mod dialogs;
 mod control_bridge;
 mod proxies;
@@ -350,6 +351,8 @@ pub struct KlippApp {
     /// The playback engine's channel, taking only what it acts on: a UI
     /// command sent there did nothing, silently (#437).
     cmd_tx: klipp_engine::commands::EngineSender,
+    /// The Veylvik page: its editor, made the first time it shows.
+    veylvik_tab: veylvik_tab::VeylvikTab,
     event_rx: Receiver<AppEvent>,
     /// Commands from the control socket (klipp-control / klipp-mcp).
     ///

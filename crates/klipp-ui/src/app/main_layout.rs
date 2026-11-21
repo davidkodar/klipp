@@ -183,6 +183,15 @@ impl KlippApp {
                     self.render_toolbar_panel(ui, toolbar_rect, all_cmds);
                     self.render_status_bar_panel(ui, statusbar_rect);
 
+                    // The Veylvik page is Veylvik's editor, the whole window
+                    // between the toolbar and the status bar.
+                    if self.state.active_workspace == crate::state::Workspace::Veylvik {
+                        let area = egui::Rect::from_min_max(egui::pos2(full.min.x, main_top), egui::pos2(full.max.x, main_bottom));
+                        self.render_veylvik_page(ui, area);
+                        return;
+                    }
+                    self.state.veylvik_keys = false;
+
                     if browser_open {
                         self.render_browser_panel(ui, browser_rect, all_cmds);
                     } else {
@@ -1733,6 +1742,7 @@ pub(super) fn show_panel(state: &mut crate::state::AppState, layout: &mut crate:
         Some("edit") => state.active_workspace = Workspace::Edit,
         Some("colour" | "color") => state.active_workspace = Workspace::Color,
         Some("composite") => state.active_workspace = Workspace::Composite,
+        Some("veylvik") => state.active_workspace = Workspace::Veylvik,
         Some("export") => state.active_workspace = Workspace::Export,
         _ => {}
     }

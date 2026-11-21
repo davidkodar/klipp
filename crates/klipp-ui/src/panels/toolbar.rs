@@ -156,7 +156,7 @@ impl ToolbarPanel {
         // ═══════════════════════════════════════════
         // A segmented control: the labels in one field, the active one
         // lit, sized to its titles so none is ever clipped.
-        let workspaces = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Export, "Export")];
+        let workspaces = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Veylvik, "Veylvik"), (Workspace::Export, "Export")];
         let ws_font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
         let labels: Vec<&str> = workspaces.iter().map(|w| w.1).collect();
         let ws_size = crate::widgets::segmented::segmented_size(ui, &labels, &ws_font, crate::theme::control::REGULAR);
@@ -1242,7 +1242,7 @@ impl ToolbarPanel {
             // the third one plainly wrong — clicking "Audio Mixing" put
             // you in Export — and the other two disagree with the tabs
             // for no reason a user can see.
-            for (ws, label) in &[(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Export, "Export")] {
+            for (ws, label) in &[(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Veylvik, "Veylvik"), (Workspace::Export, "Export")] {
                 if menu_toggle(ui, label, "", state.active_workspace == *ws).clicked() { state.active_workspace = *ws; ui.close_kind(egui::UiKind::Menu); }
             }
             ui.separator();
@@ -1824,7 +1824,7 @@ pub(crate) mod narrow_bar_tests {
                 });
             })
         };
-        let pages = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Export, "Export")];
+        let pages = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Veylvik, "Veylvik"), (Workspace::Export, "Export")];
         let tabs = |out: &egui::FullOutput| -> Vec<(String, egui::Pos2, egui::Color32)> {
             out.shapes.iter().filter_map(|s| match &s.shape {
                 egui::Shape::Text(t) if pages.iter().any(|(_, l)| *l == t.galley.text()) && t.pos.y < 40.0 => {

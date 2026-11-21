@@ -874,7 +874,7 @@ impl KlippApp {
                 let compositions = self.state.compositions.clone();
                 // Their assets, from the folder they are in, so a recovery
                 // has them too.
-                let assets_dir = self.state.project_path.clone();
+                let assets_dir = Some(self.compositions_home());
                 let backup_count = self.prefs.editing.backup_count;
                 let zoom = self.state.timeline_zoom;
                 let scroll_x = self.state.timeline_scroll_x;
