@@ -79,3 +79,46 @@ fn a_composition_reads_its_assets_from_its_folder_in_the_project() {
     klipp_veylvik::set_project_compositions(Compositions::new());
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A composition from a shared project naming a file outside its folder
+/// (an absolute path, a way up, a link leading out) reads none of it: the
+/// clip shows its media.
+#[test]
+fn a_composition_reads_nothing_outside_its_folder() {
+    if klipp_effects::gpu_context::GpuContext::shared().is_none() {
+        assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required, but there is no GPU");
+        eprintln!("UNVERIFIED: no GPU");
+        return;
+    }
+    let _ = klipp_veylvik::install();
+    let root = std::env::temp_dir().join(format!("klipp_veylvik_outside_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let folder = root.join("project/media/veylvik/one");
+    std::fs::create_dir_all(&folder).unwrap();
+    // The user's own file, outside the project, red.
+    let secret = root.join("secret.png");
+    png(&secret, [255, 0, 0]);
+    std::os::unix::fs::symlink(&secret, folder.join("link.png")).unwrap();
+    let at = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    let middle = ((H / 2 * W + W / 2) * 4) as usize;
+    for (n, name) in [secret.display().to_string(), "../../../../secret.png".to_string(), "link.png".to_string()].into_iter().enumerate() {
+        let id = CompositionId(uuid::Uuid::from_u128(100 + n as u128));
+        let mut c = veylvik_document::blank(W, H, Time { ticks: 24, rate: 1 }).unwrap();
+        c.frame_count = 24;
+        c.nodes.get_mut(&c.output).unwrap().operation = Operation::Image(nodes::Image { asset: name.clone() });
+        let mut clip = Clip::media(MediaId(uuid::Uuid::from_u128(9)), at(0.0), at(1.0), at(0.0), at(1.0));
+        clip.composition = Some(id);
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
+        let mut track = Track::new("V", TrackKind::Video);
+        track.clips = vec![clip];
+        seq.tracks = vec![track];
+        klipp_veylvik::set_project_assets(HashMap::from([(id, folder.clone())]));
+        klipp_veylvik::set_project_compositions([(id, Arc::<[u8]>::from(serde_json::to_vec(&c).unwrap()))].into());
+        let shown = r.render(&seq, at(0.5), W, H, &mut Black, RenderOptions::default());
+        assert!(shown[middle] < 0.05, "{name}: the file outside was read: {:?}", &shown[middle..middle + 4]);
+    }
+    klipp_veylvik::set_project_compositions(Compositions::new());
+    let _ = std::fs::remove_dir_all(&root);
+}
