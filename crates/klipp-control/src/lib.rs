@@ -911,6 +911,7 @@ fn handle(
             | ControlCommand::RelinkMedia { .. }
             | ControlCommand::MakeProxies { .. }
             | ControlCommand::TagMedia { .. }
+            | ControlCommand::VeylvikComposition { .. }
             | ControlCommand::ListMedia
             | ControlCommand::ImportMedia { .. }
             | ControlCommand::CreateMulticam { .. }

@@ -39,6 +39,7 @@ klipp-nodes = { workspace = true }
 klipp-effects = { workspace = true }
 klipp-compose = { workspace = true }
 klipp-render = { workspace = true }
+klipp-veylvik = { workspace = true }
 klipp-title = { workspace = true }
 klipp-plugin = { workspace = true }
 klipp-spelling = { workspace = true }

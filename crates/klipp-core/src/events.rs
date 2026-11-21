@@ -1810,6 +1810,10 @@ pub enum AppCommand {
     /// only, never the document. For harnesses driving the app (the
     /// control socket's `show_panel`, test hooks only).
     ShowPanel { workspace: Option<String>, inspector_tab: Option<String> },
+    /// Give `clip_id` a Veylvik composition made of its media when it has
+    /// none (one step, as opening it on the Veylvik page does); `open`
+    /// also selects the clip and shows the Veylvik page with it.
+    VeylvikComposition { clip_id: ClipId, open: bool },
     /// Play these pointer steps into the app's input, one a frame, as a
     /// mouse's events (the control socket's `pointer`, test hooks only):
     /// the input only, never the document by itself.

@@ -102,10 +102,10 @@ mod routing_tests {
         // 160 with collect_project (#3241), 161 with publish_kit (#3312),
         // 162 with covers (#3311), 163 with pace (#3313), 165 with
         // pick_grey (#3781) and read_chart (#3782), 167 with track_mask
-        // (#3811) and show_matte (#3816).
-        for (variant, area) in [("PickGrey", "colour"), ("ReadChart", "colour"), ("TrackMask", "editing"), ("ShowMatte", "editing")] {
+        // (#3811) and show_matte (#3816), 168 with veylvik_composition.
+        for (variant, area) in [("PickGrey", "colour"), ("ReadChart", "colour"), ("TrackMask", "editing"), ("ShowMatte", "editing"), ("VeylvikComposition", "media")] {
             assert_eq!(area_of.get(variant).copied(), Some(area), "{variant}");
         }
-        assert_eq!(routed_all.len(), 167);
+        assert_eq!(routed_all.len(), 168);
     }
 }

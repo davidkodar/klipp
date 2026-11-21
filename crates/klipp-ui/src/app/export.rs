@@ -4051,6 +4051,17 @@ impl KlippApp {
                 self.state.control_shared.pointer_steps.store(self.pointer.pending(), std::sync::atomic::Ordering::SeqCst);
                 true
             }
+            AppCommand::VeylvikComposition { clip_id, open } => {
+                match self.veylvik_composition_for(*clip_id) {
+                    Ok(_) if *open => {
+                        self.state.selected_clip = Some(*clip_id);
+                        self.state.active_workspace = crate::state::Workspace::Veylvik;
+                    }
+                    Ok(_) => {}
+                    Err(why) => self.state.toast.show(format!("No Veylvik composition for that clip: {why}")),
+                }
+                true
+            }
             AppCommand::ShowPanel { workspace, inspector_tab } => {
                 if super::main_layout::show_panel(&mut self.state, &mut self.layout, workspace.as_deref(), inspector_tab.as_deref()) {
                     self.layout_dirty = true;

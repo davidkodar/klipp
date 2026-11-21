@@ -355,3 +355,8 @@ Arguments:
 - `path`: Where to write the PNG; omit for a temp file
 - `timeout_ms`: How long to wait for that frame (default 3000)
 - `wait_for_new_frame`: Wait for a frame rendered after the last change. Defaults to true when a change was made since the last screenshot, so 'change then look' captures the result, not the old frame.
+
+## klipp_veylvik_composition
+
+A clip's Veylvik composition: the effects, text, 3D and tracking built on the clip in Veylvik, which the clip then shows in every view and export, with its grade and effects from Klipp on top. By clip_id, as klipp_list_clips gives it. On its own it reads the composition: its size, frame rate and length in frames, its nodes (each one's id, label and kind, and which is the output) and its folder in the project, where the files it names are read; or it says the clip has none. make: true gives a clip that has none one made of its media, the clip's footage alone, as one step that undo takes back. open: true also selects the clip and shows the Veylvik page with it, where the person edits it in Veylvik's own editor; each change there is one step of Klipp's undo. A clip needs media (a video or a still) for a composition. Its nodes are edited on the Veylvik page, not by this tool.
+

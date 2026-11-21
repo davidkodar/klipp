@@ -42,7 +42,7 @@ fn fault(message: impl Into<String>) -> veylvik_render::Error {
 
 pub mod compose;
 pub mod editor_footage;
-pub use compose::{install, media_changed, preparing, revision, set_media_states, set_project_assets, set_project_compositions, Compositor, CompositionSource, Compositions, Declined, CLIP_MEDIA_KEY};
+pub use compose::{install, media_changed, preparing, project_assets, project_compositions, revision, set_media_states, set_project_assets, set_project_compositions, Compositor, CompositionSource, Compositions, Declined, CLIP_MEDIA_KEY};
 
 /// Klipp's frames of one clip's media at a time in the media, on the GPU at
 /// the size it was made for: the clip's `temporal_frames_on_gpu`.

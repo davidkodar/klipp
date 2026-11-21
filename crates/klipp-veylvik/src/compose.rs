@@ -719,6 +719,16 @@ pub fn set_project_compositions(compositions: Compositions) {
     *project = (!compositions.is_empty()).then_some(compositions);
 }
 
+/// The open project's compositions, as the app last said.
+pub fn project_compositions() -> Compositions {
+    PROJECT.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
+}
+
+/// Composition `id`'s folder in the open project, as the app last said.
+pub fn project_assets(id: CompositionId) -> Option<std::path::PathBuf> {
+    ASSETS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(&id).cloned()
+}
+
 /// Each composition's assets folder in the open project: see
 /// [`Compositor::set_assets`]. Held for a compositor not started yet.
 pub fn set_project_assets(assets: HashMap<CompositionId, std::path::PathBuf>) {

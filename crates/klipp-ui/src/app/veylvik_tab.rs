@@ -174,7 +174,7 @@ impl super::KlippApp {
 
     /// `clip`'s composition, read; one made of its media and given to it
     /// when it has none.
-    fn veylvik_composition_for(&mut self, clip: ClipId) -> Result<(klipp_veylvik::Composition, CompositionId), String> {
+    pub(super) fn veylvik_composition_for(&mut self, clip: ClipId) -> Result<(klipp_veylvik::Composition, CompositionId), String> {
         let seq = self.state.sequence();
         let (t, c) = seq.find_clip(clip).ok_or("the clip is no longer on the timeline")?;
         let it = &seq.tracks[t].clips[c];
