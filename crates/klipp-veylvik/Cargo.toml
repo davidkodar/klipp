@@ -13,6 +13,7 @@ veylvik-render = { git = "https://github.com/davidkodar/veylvik", rev = "c90716f
 veylvik-editor = { git = "https://github.com/davidkodar/veylvik", rev = "c90716f" }
 wgpu = { workspace = true }
 klipp-core = { workspace = true }
+klipp-media = { workspace = true }
 klipp-color = { workspace = true }
 klipp-nodes = { workspace = true }
 klipp-compose = { workspace = true }

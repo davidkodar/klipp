@@ -817,7 +817,7 @@ fn frame_time(index: i64, fps: f64) -> Time {
 
 /// `fps` as Veylvik's exact rate: whole rates as they are, NTSC's as
 /// thousandths over 1001.
-fn rate_of(fps: f64) -> Time {
+pub(crate) fn rate_of(fps: f64) -> Time {
     let ntsc = fps * 1001.0 / 1000.0;
     if (fps - fps.round()).abs() < 1e-6 {
         Time { ticks: fps.round() as i64, rate: 1 }
