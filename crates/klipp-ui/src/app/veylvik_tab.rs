@@ -153,6 +153,12 @@ impl super::KlippApp {
             }
             self.veylvik_follow(clip);
             self.veylvik_settings_out();
+            // The editor's own Preferences… (its File menu, Ctrl+,): Klipp's,
+            // on its Veylvik tab.
+            if self.veylvik_tab.editor.as_mut().is_some_and(|e| e.take_preferences_request()) {
+                self.preferences_panel.open_page("veylvik");
+                self.state.show_preferences = true;
+            }
             self.veylvik_take_edits();
         });
         self.state.veylvik_keys = self.veylvik_tab.has_keyboard();
