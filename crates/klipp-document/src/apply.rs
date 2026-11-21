@@ -40,6 +40,10 @@ pub struct Effects {
     /// The project's colour set-up as a command left it (#1875), for the
     /// host to take on and hand to the engine.
     pub project_colour: Option<Box<klipp_core::ProjectColour>>,
+    /// Veylvik compositions as a command left them, in order: the
+    /// project holds them, not the document, so the host puts each in (or
+    /// takes it out, for none).
+    pub compositions: Vec<(klipp_timeline::CompositionId, Option<std::sync::Arc<[u8]>>)>,
 }
 
 impl Effects {
@@ -51,6 +55,7 @@ impl Effects {
         self.rerender_titles.extend(other.rerender_titles);
         self.refresh_media_pictures.extend(other.refresh_media_pictures);
         self.reprobe_media.extend(other.reprobe_media);
+        self.compositions.extend(other.compositions);
         if other.project_colour.is_some() {
             self.project_colour = other.project_colour;
         }
@@ -203,6 +208,9 @@ impl DocumentView<'_> {
     pub fn apply_inverse(&mut self, cmd: &EditCommand) -> Effects {
         let mut effects = Effects::default();
         match cmd {
+            EditCommand::SetComposition { id, before, .. } => {
+                effects.compositions.push((*id, before.clone()));
+            }
             EditCommand::SetProjectColour { old, grades, .. } => {
                 for g in grades.iter().rev() {
                     put_picture(self.sequences, g, true);
@@ -971,6 +979,9 @@ impl DocumentView<'_> {
     pub fn apply_forward(&mut self, cmd: &EditCommand) -> Effects {
         let mut effects = Effects::default();
         match cmd {
+            EditCommand::SetComposition { id, after, .. } => {
+                effects.compositions.push((*id, after.clone()));
+            }
             EditCommand::SetProjectColour { new, grades, .. } => {
                 for g in grades {
                     put_picture(self.sequences, g, false);

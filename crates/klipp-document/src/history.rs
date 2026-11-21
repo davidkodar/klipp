@@ -657,6 +657,16 @@ pub enum EditCommand {
         old_fade_in_b: f32,
     },
 
+    /// A clip's Veylvik composition changed: an edit in the Veylvik tab,
+    /// or one made for a clip. Its file's bytes before and after, none for
+    /// a composition not there; `label` is what the menu says.
+    SetComposition {
+        id: klipp_timeline::CompositionId,
+        before: Option<std::sync::Arc<[u8]>>,
+        after: Option<std::sync::Arc<[u8]>>,
+        label: String,
+    },
+
     /// A clip replaced whole, in place: for an edit that touches many of
     /// a clip's fields at once — Paste Attributes — where one snapshot
     /// either side is simpler and safer than a command per field.
@@ -960,7 +970,8 @@ impl EditCommand {
             | EditCommand::SetMediaColorLabel { .. }
             | EditCommand::RelinkMedia { .. }
             | EditCommand::RenameBin { .. }
-            | EditCommand::BatchRenameMediaItems { .. } => Scope::Project,
+            | EditCommand::BatchRenameMediaItems { .. }
+            | EditCommand::SetComposition { .. } => Scope::Project,
             EditCommand::Named { edit, .. } => edit.scope(),
             EditCommand::Batch(commands) if !commands.is_empty() && commands.iter().all(|c| c.scope() == Scope::Project) => Scope::Project,
             _ => Scope::Sequence,
@@ -970,6 +981,7 @@ impl EditCommand {
     pub fn label(&self) -> &str {
         match self {
             EditCommand::Named { label, .. } => label,
+            EditCommand::SetComposition { label, .. } => label,
             EditCommand::SetProjectColour { .. } => "Project Colour",
             EditCommand::AddTitleClip { .. } => "Add Title",
             EditCommand::RetargetTransition { .. } => "Retarget Transition",

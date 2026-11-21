@@ -98,6 +98,11 @@ impl KlippApp {
                 let _ = self.cmd_tx.send(AppCommand::SetGlobalLutEnabled(colour.output_lut_enabled));
             }
         }
+        // Veylvik compositions an undo or redo put back, before the
+        // sequence goes: a clip naming one finds it.
+        if !effects.compositions.is_empty() {
+            self.veylvik_compositions_put_back(&effects.compositions);
+        }
         if effects.sync_sequence {
             self.sync_sequence_to_engine();
         }

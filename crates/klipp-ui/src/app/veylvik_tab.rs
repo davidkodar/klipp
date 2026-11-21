@@ -183,14 +183,15 @@ impl super::KlippApp {
         let composition = klipp_veylvik::Composition::from_host_footage(klipp_veylvik::CLIP_MEDIA_KEY, &label, None, size, rate, frames).map_err(|e| e.to_string())?;
         let bytes: Arc<[u8]> = serde_json::to_vec(&composition).map_err(|e| e.to_string())?.into();
         let id = CompositionId::new();
-        self.state.compositions.insert(id, bytes);
-        let seq = self.state.sequence_mut();
-        if let Some(c) = seq.tracks[t].clips.get_mut(c) {
-            c.composition = Some(id);
-        }
-        self.state.dirty = true;
-        self.sync_compositions_to_engine();
-        self.sync_sequence_to_engine();
+        let old = it.clone();
+        let mut new = it.clone();
+        new.composition = Some(id);
+        // One step: the composition, and the clip naming it.
+        let edits = [
+            crate::history::EditCommand::SetComposition { id, before: None, after: Some(bytes), label: "Veylvik: Make composition".into() },
+            crate::history::EditCommand::ReplaceClip { description: "Veylvik composition", old: Box::new(old), new: Box::new(new) },
+        ];
+        self.apply_edits_as_one(&edits, "Veylvik: Make Composition");
         Ok((composition, id))
     }
 
@@ -206,23 +207,45 @@ impl super::KlippApp {
         Some(EditorFootage::new(item.path.clone(), log, klipp_engine::video_decoder::working_colorspace(), fps, [item.resolution.width, item.resolution.height], Some(frames), super::engine_sync::media_state(item), device))
     }
 
-    /// The editor's changes into the project: its composition as it is now
-    /// whenever its revision moved on.
+    /// The editor's changes into the project, each as a step of Klipp's
+    /// one list (an edit) or a move over one (its own undo and redo).
     fn veylvik_take_edits(&mut self) {
-        let (Some(editor), Some(open)) = (self.veylvik_tab.editor.as_ref(), self.veylvik_tab.open.as_mut()) else { return };
-        let revision = editor.revision();
-        if revision == open.revision {
-            return;
-        }
-        open.revision = revision;
-        match serde_json::to_vec(editor.composition()) {
-            Ok(bytes) => {
-                self.state.compositions.insert(open.composition, bytes.into());
-                self.state.dirty = true;
-                self.sync_compositions_to_engine();
+        let (Some(editor), Some(open)) = (self.veylvik_tab.editor.as_mut(), self.veylvik_tab.open.as_mut()) else { return };
+        let changes = editor.take_changes();
+        let Some(last) = changes.last() else { return };
+        open.revision = editor.revision();
+        let bytes: Arc<[u8]> = match serde_json::to_vec(editor.composition()) {
+            Ok(b) => b.into(),
+            Err(e) => return tracing::warn!("a Veylvik edit could not be written into the project: {e}"),
+        };
+        // Several in one frame: one step, the last one's kind and name.
+        let kind = match last.kind {
+            klipp_veylvik::veylvik_document::ChangeKind::Edit => crate::state::CompositionChange::Edit,
+            klipp_veylvik::veylvik_document::ChangeKind::Undo => crate::state::CompositionChange::Undo,
+            klipp_veylvik::veylvik_document::ChangeKind::Redo => crate::state::CompositionChange::Redo,
+        };
+        let id = open.composition;
+        self.state.take_composition_change(id, kind, &last.label, bytes);
+        self.sync_compositions_to_engine();
+    }
+
+    /// Compositions an undo or redo of Klipp's put back: the tab opens
+    /// its clip's again if it was one of them.
+    pub(super) fn veylvik_compositions_put_back(&mut self, changed: &[(CompositionId, Option<Arc<[u8]>>)]) {
+        for (id, bytes) in changed {
+            match bytes {
+                Some(b) => {
+                    self.state.compositions.insert(*id, b.clone());
+                }
+                None => {
+                    self.state.compositions.remove(id);
+                }
             }
-            Err(e) => tracing::warn!("a Veylvik edit could not be written into the project: {e}"),
+            if self.veylvik_tab.open.as_ref().is_some_and(|o| o.composition == *id) {
+                self.veylvik_tab.reopen();
+            }
         }
+        self.sync_compositions_to_engine();
     }
 }
 
@@ -268,5 +291,53 @@ mod tests {
         s.selected_clip = None;
         s.playhead = t(5.0);
         assert_eq!(opened(&s), None, "nothing under the playhead");
+    }
+
+    fn bytes(text: &str) -> Arc<[u8]> {
+        text.as_bytes().into()
+    }
+
+    fn steps(s: &crate::state::AppState) -> (usize, usize) {
+        (s.project_history.undo_entries().len(), s.project_history.redo_entries().len())
+    }
+
+    /// An edit in the tab is one step of Klipp's, named for the editor's;
+    /// the editor's own undo and redo move over it rather than adding
+    /// steps; with an edit of Klipp's after it, the editor's undo is a
+    /// step of its own; Klipp's undo of a step puts the bytes before back.
+    #[test]
+    fn the_tabs_edits_are_klipps_steps_and_its_undo_moves_over_them() {
+        use crate::state::CompositionChange as C;
+        let id = CompositionId::new();
+        let mut s = crate::state::AppState::default();
+        s.compositions.insert(id, bytes("v0"));
+        s.take_composition_change(id, C::Edit, "Move node", bytes("v1"));
+        s.take_composition_change(id, C::Edit, "Blur", bytes("v2"));
+        assert_eq!(steps(&s), (2, 0));
+        assert_eq!(s.project_history.undo_label(), Some("Veylvik: Blur"));
+
+        // The editor's undo, then its redo: Klipp's list moves, no more.
+        s.take_composition_change(id, C::Undo, "Blur", bytes("v1"));
+        assert_eq!(steps(&s), (1, 1), "moved over, not added");
+        assert_eq!(s.compositions[&id], bytes("v1"));
+        s.take_composition_change(id, C::Redo, "Blur", bytes("v2"));
+        assert_eq!(steps(&s), (2, 0));
+        assert_eq!(s.compositions[&id], bytes("v2"));
+
+        // Nothing changed: nothing recorded.
+        s.take_composition_change(id, C::Edit, "Nothing", bytes("v2"));
+        assert_eq!(steps(&s), (2, 0));
+
+        // An edit of Klipp's after the tab's: the editor's undo can't move
+        // over a step that isn't next, and is one of its own.
+        s.push_history(crate::history::EditCommand::SetComposition { id: CompositionId::new(), before: None, after: Some(bytes("other")), label: "Other".into() });
+        s.take_composition_change(id, C::Undo, "Blur", bytes("v1"));
+        assert_eq!(steps(&s).0, 4);
+        assert_eq!(s.project_history.undo_label(), Some("Veylvik: Undo Blur"));
+
+        // Klipp's undo of that step: the bytes before it.
+        let entry = s.take_undo().expect("a step");
+        let crate::history::EditCommand::SetComposition { before, .. } = &entry.command else { panic!("{:?}", entry.command) };
+        assert_eq!(before.as_deref(), Some(&b"v2"[..]));
     }
 }

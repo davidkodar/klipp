@@ -877,6 +877,14 @@ impl AppState {
     }
 }
 
+/// What the Veylvik tab's editor did to its composition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompositionChange {
+    Edit,
+    Undo,
+    Redo,
+}
+
 /// Workspace mode — determines panel arrangement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Workspace {
@@ -6244,6 +6252,56 @@ impl AppState {
     /// project's or the active sequence's, whichever top step moved last.
     pub fn next_undo(&self) -> Option<crate::history::Scope> {
         later(self.active_history().undo_stamp(), self.project_history.undo_stamp())
+    }
+
+    /// The step an undo would take next, from whichever history holds it.
+    pub fn next_undo_command(&self) -> Option<&EditCommand> {
+        let history = match self.next_undo()? {
+            crate::history::Scope::Project => &self.project_history,
+            crate::history::Scope::Sequence => self.active_history(),
+        };
+        history.undo_entries().last().map(|e| &e.command)
+    }
+
+    /// The step a redo would put back next.
+    pub fn next_redo_command(&self) -> Option<&EditCommand> {
+        let history = match self.next_redo()? {
+            crate::history::Scope::Project => &self.project_history,
+            crate::history::Scope::Sequence => self.active_history(),
+        };
+        history.redo_entries().last().map(|e| &e.command)
+    }
+
+    /// A change the Veylvik tab's editor made to composition `id`, which
+    /// is `now`. An edit is a step of Klipp's, named for the editor's. Its
+    /// own undo or redo moves over the step Klipp holds for that edit, so
+    /// the one list of steps stays one; when Klipp holds none to move over
+    /// (an edit of Klipp's came after), it is a step of its own.
+    pub fn take_composition_change(&mut self, id: klipp_timeline::CompositionId, kind: CompositionChange, label: &str, now: std::sync::Arc<[u8]>) {
+        let before = self.compositions.get(&id).cloned();
+        if before.as_deref() == Some(&now[..]) {
+            return;
+        }
+        self.compositions.insert(id, now.clone());
+        self.dirty = true;
+        let is = |c: Option<&EditCommand>, from: &Option<std::sync::Arc<[u8]>>, to: &Option<std::sync::Arc<[u8]>>| {
+            matches!(c, Some(EditCommand::SetComposition { id: i, before: b, after: a, .. }) if *i == id && b == from && a == to)
+        };
+        let now = Some(now);
+        let label = match kind {
+            CompositionChange::Edit => format!("Veylvik: {label}"),
+            CompositionChange::Undo if is(self.next_undo_command(), &now, &before) => {
+                self.take_undo();
+                return;
+            }
+            CompositionChange::Redo if is(self.next_redo_command(), &before, &now) => {
+                self.take_redo();
+                return;
+            }
+            CompositionChange::Undo => format!("Veylvik: Undo {label}"),
+            CompositionChange::Redo => format!("Veylvik: Redo {label}"),
+        };
+        self.push_history(EditCommand::SetComposition { id, before, after: now, label });
     }
 
     /// Which history redo puts the next step back from: the step taken

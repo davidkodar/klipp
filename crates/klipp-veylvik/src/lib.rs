@@ -13,6 +13,7 @@ pub use veylvik_document::{Composition, Time};
 pub use veylvik_editor::host::{Host, Pick, Picked};
 pub use veylvik_editor::ClipSource;
 pub use veylvik_editor;
+pub use veylvik_document;
 pub use veylvik_render::{FrameSource, HostFrame, HostMedia, HostPixels, HostSource, Renderer, SourceInfo};
 
 use klipp_core::WorkingColorspace;
