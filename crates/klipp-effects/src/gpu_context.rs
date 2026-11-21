@@ -78,6 +78,13 @@ pub fn memory_hints() -> wgpu::MemoryHints {
     wgpu::MemoryHints::MemoryUsage
 }
 
+/// The features Klipp asks a device for, the engine's and the UI's alike:
+/// GPU timing, and a pipeline cache for Veylvik's compiled programs to be
+/// kept between runs, each where the adapter offers it.
+pub fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    timing_features(adapter) | (adapter.features() & wgpu::Features::PIPELINE_CACHE)
+}
+
 pub fn timing_features(adapter: &wgpu::Adapter) -> wgpu::Features {
     if adapter.features().contains(crate::gpu::timing::FEATURES) {
         crate::gpu::timing::FEATURES
@@ -182,7 +189,7 @@ impl GpuContext {
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("klipp-shared"),
-                required_features: timing_features(&adapter),
+                required_features: device_features(&adapter),
                 required_limits: device_limits(&adapter),
                 memory_hints: memory_hints(),
                 ..Default::default()

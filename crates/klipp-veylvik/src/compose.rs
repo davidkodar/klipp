@@ -255,6 +255,15 @@ impl Compositor {
     /// Veylvik's renderer on `device`.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, adapter: wgpu::AdapterInfo) -> Result<Self, String> {
         let renderer = Renderer::from_device((*device).clone(), (*queue).clone(), adapter).map_err(|e| e.to_string())?;
+        // Compiled programs kept between runs, in Klipp's cache folder (its
+        // clear-cache clears them): a new build of Klipp doesn't compile
+        // every kernel again. A device that can't keep them works as before.
+        if let Some(folder) = dirs::cache_dir().map(|d| d.join("klipp").join("veylvik-pipelines")) {
+            match renderer.use_pipeline_cache(&folder) {
+                Ok(kept) => tracing::debug!("Veylvik's compiled programs {} in {}", if kept { "kept" } else { "not kept (the device can't)" }, folder.display()),
+                Err(e) => tracing::warn!("Veylvik's compiled programs not kept between runs: {e}"),
+            }
+        }
         Ok(Self { renderer: Arc::new(renderer), device, queue, state: Mutex::new(State::default()), prepared: Condvar::new(), renders: Default::default(), bridge: OnceLock::new() })
     }
 
@@ -458,10 +467,12 @@ impl Compositor {
         let compositor = Arc::clone(self);
         std::thread::Builder::new().name("klipp-veylvik-prepare".into()).spawn(move || {
             let started = Instant::now();
+            // Made here, on this thread: a composition that films a scene
+            // makes Veylvik's 3D renderer, its pipelines compiled then.
             let made = compositor.live(composition, key, fps, frames).and_then(|live| {
-                // The kernels compiled now, so the first frame doesn't wait
-                // on a driver compiling one.
-                compositor.renderer.compile_kernels().map_err(|e| e.to_string())?;
+                // Its kernels compiled now, so its first frame doesn't wait
+                // on a driver compiling one; kept on disk for the next run.
+                live.source.compile().map_err(|e| e.to_string())?;
                 Ok(live)
             });
             tracing::info!("a clip's Veylvik composition {} prepared in {:.1} s{}", key.composition, started.elapsed().as_secs_f64(), made.as_ref().err().map(|e| format!(" and failed: {e}")).unwrap_or_default());

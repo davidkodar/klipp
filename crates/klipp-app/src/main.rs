@@ -614,7 +614,7 @@ fn main() -> Result<()> {
                     label: Some("egui wgpu device"),
                     // Timestamps where the adapter has them, to time each
                     // track's GPU work (#3207); never asked of one without.
-                    required_features: klipp_effects::gpu_context::timing_features(adapter),
+                    required_features: klipp_effects::gpu_context::device_features(adapter),
                     required_limits: klipp_effects::gpu_context::device_limits(adapter),
                     memory_hints: klipp_effects::gpu_context::memory_hints(),
                     ..Default::default()
