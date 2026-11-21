@@ -109,8 +109,67 @@ impl Bridge {
 /// A composition's bytes and what reading them gave.
 type Parsed = (Arc<[u8]>, Result<Composition, String>);
 
-/// Klipp's frame a render reads as its footage, by its index.
-type Current = Arc<Mutex<Option<(i64, Arc<dyn GpuFramePixels>)>>>;
+/// What a render reads its footage from: Klipp's frame at the time
+/// rendered and, for a composition that reads other times, Klipp's readers
+/// of the clip's other frames. Set for one render only.
+type Current = Arc<Mutex<Option<Now>>>;
+
+struct Now {
+    index: i64,
+    frame: Arc<dyn GpuFramePixels>,
+    neighbours: Option<Neighbours>,
+    /// Asked for another frame with no readers to give it.
+    missed: bool,
+}
+
+/// Klipp's readers of a clip's other frames, by clip time (as its own
+/// temporal nodes read them): those its viewer holds on the GPU first,
+/// else decoded from the file. Either may be missing.
+pub(crate) struct Neighbours {
+    pub(crate) gpu: Option<klipp_compose::GpuFrameProviderFn>,
+    pub(crate) cpu: Option<klipp_compose::LinearFrameProviderFn>,
+    /// Where the clip starts in its media, in seconds: clip time 0.
+    pub(crate) source_in: f64,
+}
+
+/// One frame asked of the compositor.
+struct Ask<'a> {
+    clip: &'a Clip,
+    id: CompositionId,
+    secs: f64,
+    fps: f64,
+    frame: &'a SourceFrame,
+    working: WorkingColorspace,
+    live: bool,
+    /// The media's length in frames, when the source knows it.
+    frames: Option<u32>,
+    /// Klipp's readers of the clip's other frames, asked for only when the
+    /// composition reads other times: with the file's reader too, or only
+    /// the frames held on the GPU (opening the file costs every frame).
+    neighbours: &'a mut dyn FnMut(Reach) -> Neighbours,
+}
+
+/// How far a composition reads past the frame rendered, as learnt from
+/// what it asked for: each render begins with its clip source's.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(crate) enum Reach {
+    /// The frame rendered alone.
+    Frame,
+    /// Frames the viewer holds on the GPU (the one before and after).
+    Held,
+    /// Any frame, read from the file when not held.
+    Files,
+}
+
+impl Reach {
+    fn wider(self) -> Option<Reach> {
+        match self {
+            Reach::Frame => Some(Reach::Held),
+            Reach::Held => Some(Reach::Files),
+            Reach::Files => None,
+        }
+    }
+}
 
 #[derive(Default)]
 struct State {
@@ -163,6 +222,9 @@ struct Live {
     source: ClipSource,
     current: Current,
     fps: f64,
+    /// How far it has read: Klipp's readers of the clip's other frames
+    /// that go with every render from now on.
+    reach: Reach,
     /// The last picture, kept to be written into again once nothing holds it.
     spare: Option<Arc<Composed>>,
 }
@@ -287,7 +349,8 @@ impl Compositor {
     /// `frame` being Klipp's own frame of it there, in `working`. A
     /// composition not ready yet is made ready on a thread of its own: for a
     /// `live` view this gives [`Declined::Preparing`] meanwhile; else it waits.
-    fn render(self: &Arc<Self>, clip: &Clip, id: CompositionId, secs: f64, fps: f64, frame: &SourceFrame, (working, live): (WorkingColorspace, bool)) -> Result<SourceFrame, Declined> {
+    fn render(self: &Arc<Self>, ask: Ask<'_>) -> Result<SourceFrame, Declined> {
+        let Ask { clip, id, secs, fps, frame, working, live, frames, neighbours } = ask;
         self.renders.fetch_add(1, Ordering::Relaxed);
         let footage = self.on_gpu(frame)?;
         let mut state = self.state();
@@ -308,7 +371,7 @@ impl Compositor {
                         let old = state.order.remove(0);
                         state.live.remove(&old);
                     }
-                    if let Err(why) = self.prepare(composition, key, fps) {
+                    if let Err(why) = self.prepare(composition, key, fps, frames) {
                         state.live.insert(key, Slot::Failed(why.clone()));
                         return Err(Declined::Failed(why));
                     }
@@ -325,7 +388,6 @@ impl Compositor {
         };
         let Some(Slot::Ready(live)) = state.live.get_mut(&key) else { unreachable!("ready, just seen") };
         let index = frame_index(secs, live.fps);
-        *live.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((index, footage));
         let ([w, h], _, _) = live.source.format().map_err(|e| e.to_string())?;
         let out = match live.spare.take().and_then(|s| Arc::try_unwrap(s).ok()).filter(|c| (c.width, c.height) == (w, h)) {
             Some(mut reused) => {
@@ -338,9 +400,22 @@ impl Compositor {
         // microseconds, say) can fall a hair before it, and Veylvik then
         // asks for the frame before, which Klipp hasn't given it.
         let at = frame_time(index, live.fps);
-        let rendered = live.source.render(at, [w, h], &out.buffer, &working_pixels(working)).map_err(|e| e.to_string());
-        // Klipp's frame is the footage of this render only.
-        *live.current.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let attempt = |live: &mut Live, readers: Option<Neighbours>| {
+            *live.current.lock().unwrap_or_else(|e| e.into_inner()) = Some(Now { index, frame: Arc::clone(&footage), neighbours: readers, missed: false });
+            let rendered = live.source.render(at, [w, h], &out.buffer, &working_pixels(working)).map_err(|e| e.to_string());
+            // Klipp's frames are the footage of this render only.
+            let now = live.current.lock().unwrap_or_else(|e| e.into_inner()).take();
+            (rendered, now.is_some_and(|n| n.missed))
+        };
+        let mut readers = |reach| (reach != Reach::Frame).then(|| neighbours(reach));
+        let (mut rendered, mut missed) = attempt(live, readers(live.reach));
+        // It read another time and found none: from now on, and this frame
+        // again, with Klipp's readers reaching further.
+        while rendered.is_err() && missed {
+            let Some(wider) = live.reach.wider() else { break };
+            live.reach = wider;
+            (rendered, missed) = attempt(live, readers(wider));
+        }
         rendered?;
         let out = Arc::new(out);
         live.spare = Some(Arc::clone(&out));
@@ -349,11 +424,11 @@ impl Compositor {
 
     /// Make `composition` ready for `key` on a thread of its own, its slot
     /// [`Slot::Preparing`] until then.
-    fn prepare(self: &Arc<Self>, composition: Composition, key: LiveKey, fps: f64) -> Result<(), String> {
+    fn prepare(self: &Arc<Self>, composition: Composition, key: LiveKey, fps: f64, frames: Option<u32>) -> Result<(), String> {
         let compositor = Arc::clone(self);
         std::thread::Builder::new().name("klipp-veylvik-prepare".into()).spawn(move || {
             let started = Instant::now();
-            let made = compositor.live(composition, key, fps).and_then(|live| {
+            let made = compositor.live(composition, key, fps, frames).and_then(|live| {
                 // The kernels compiled now, so the first frame doesn't wait
                 // on a driver compiling one.
                 compositor.renderer.compile_kernels().map_err(|e| e.to_string())?;
@@ -377,18 +452,37 @@ impl Compositor {
         .map_err(|e| format!("no thread to prepare it on ({e})"))
     }
 
-    fn live(&self, composition: Composition, key: LiveKey, fps: f64) -> Result<Live, String> {
+    fn live(self: &Arc<Self>, composition: Composition, key: LiveKey, fps: f64, frames: Option<u32>) -> Result<Live, String> {
         let current: Current = Arc::default();
         let held = Arc::clone(&current);
+        // Weak: the compositor holds this through its clip sources.
+        let compositor = Arc::downgrade(self);
+        let [w, h] = key.footage;
         let fetch: crate::FrameFetch = Box::new(move |at| {
             let want = frame_index(at, fps);
-            match &*held.lock().unwrap_or_else(|e| e.into_inner()) {
-                Some((index, frame)) if *index == want => Some(Arc::clone(frame)),
-                _ => None,
+            let mut held = held.lock().unwrap_or_else(|e| e.into_inner());
+            let now = held.as_mut()?;
+            if now.index == want {
+                return Some(Arc::clone(&now.frame));
             }
+            let compositor = compositor.upgrade()?;
+            let found = now.neighbours.as_mut().and_then(|readers| {
+                // A quarter into the frame, in clip time: inside it
+                // whichever way a reader rounds.
+                let t = (want as f64 + 0.25) / fps - readers.source_in;
+                if let Some(frame) = readers.gpu.as_mut().and_then(|read| read(t)).and_then(|g| compositor.linear_on_device(g, w, h)) {
+                    return Some(frame);
+                }
+                let (pixels, fw, fh) = readers.cpu.as_mut()?(t)?;
+                ((fw, fh) == (w, h) && pixels.len() == w as usize * h as usize * 4).then(|| compositor.upload(pixels, w, h))
+            });
+            // None here: a render reaching further may find it.
+            now.missed |= found.is_none();
+            found
         });
-        let [w, h] = key.footage;
-        let info = SourceInfo { width: w, height: h, duration: None, frame_rate: Some(rate_of(fps)), frames: None, description: "the clip's media in Klipp".into() };
+        let rate = rate_of(fps);
+        let duration = frames.map(|n| Time { ticks: i64::from(n) * i64::from(rate.rate), rate: rate.ticks as u32 });
+        let info = SourceInfo { width: w, height: h, duration, frame_rate: Some(rate), frames, description: "the clip's media in Klipp".into() };
         let footage = ClipFootage::new(info, fps, [w, h], working_pixels(key.working), salt(&key), fetch);
         let host = Arc::new(KlippHost::new());
         host.insert(CLIP_MEDIA_KEY, Arc::new(HostSource::new(footage, FOOTAGE_BUDGET)));
@@ -396,7 +490,7 @@ impl Compositor {
         // folder of its own to find assets in yet.
         let assets = std::env::temp_dir().join("klipp-veylvik-assets");
         let source = ClipSource::new(Arc::clone(&self.renderer), composition, assets, Some(host as Arc<dyn crate::Host>)).map_err(|e| e.to_string())?;
-        Ok(Live { source, current, fps, spare: None })
+        Ok(Live { source, current, fps, reach: Reach::Frame, spare: None })
     }
 
     /// Klipp's frame as linear floats in the working space on the device:
@@ -429,13 +523,34 @@ impl Compositor {
         if linear.len() as u64 != pixels * 4 {
             return Err(format!("Klipp's frame holds {} values for {w}×{h}", linear.len()));
         }
+        Ok(self.upload(linear, w, h))
+    }
+
+    /// Linear floats from the CPU, sent up.
+    fn upload(&self, linear: Arc<Vec<f32>>, w: u32, h: u32) -> Arc<dyn GpuFramePixels> {
         let buffer = wgpu::util::DeviceExt::create_buffer_init(
             self.device.as_ref(),
             &wgpu::util::BufferInitDescriptor { label: Some("veylvik footage"), contents: bytemuck::cast_slice(&linear), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC },
         );
         let footage = Footage::on_device(buffer, w, h, &self.device, &self.queue);
         let _ = footage.linear.set(linear);
-        Ok(Arc::new(footage))
+        Arc::new(footage)
+    }
+
+    /// A frame of Klipp's on the device as linear floats `w` × `h`: as it
+    /// is, or a viewer stream's sRGB bytes expanded there. `None` for bytes
+    /// at another size.
+    fn linear_on_device(&self, frame: Arc<dyn GpuFramePixels>, w: u32, h: u32) -> Option<Arc<dyn GpuFramePixels>> {
+        let pixels = u64::from(w) * u64::from(h);
+        if !frame.srgb8() {
+            return (frame.buffer().size() >= pixels * 16).then_some(frame);
+        }
+        if frame.source_size().is_some_and(|s| s != (w, h)) || frame.buffer().size() < pixels * 4 {
+            return None;
+        }
+        let out = self.footage_buffer(pixels);
+        self.expand_srgb8(frame.buffer(), &out, pixels);
+        Some(Arc::new(Footage::on_device(out, w, h, &self.device, &self.queue)))
     }
 
     fn footage_buffer(&self, pixels: u64) -> wgpu::Buffer {
@@ -693,7 +808,16 @@ impl FrameSource for CompositionSource<'_> {
         let Some(id) = Self::composed(clip) else { return Some(frame) };
         let fps = self.inner.media_fps(clip).filter(|f| *f > 0.0).unwrap_or(25.0);
         let live = self.inner.shows_live();
-        match self.compositor.render(clip, id, source_secs, fps, &frame, (self.working, live)) {
+        let frames = self.inner.media_range(clip).map(|(start, end)| ((end - start).max(0.0) * fps + 1e-6).floor() as u32);
+        let (working, [w, h]) = (self.working, [frame.width, frame.height]);
+        let inner = &mut *self.inner;
+        let mut neighbours = |reach| Neighbours {
+            gpu: inner.temporal_frames_on_gpu(clip, working, w, h),
+            cpu: if reach == Reach::Files { inner.temporal_frames_linear_at_size(clip, working, w, h) } else { None },
+            source_in: clip.source_in.to_secs_f64(),
+        };
+        let ask = Ask { clip, id, secs: source_secs, fps, frame: &frame, working, live, frames, neighbours: &mut neighbours };
+        match self.compositor.render(ask) {
             Ok(picture) => Some(picture),
             Err(Declined::Preparing) => Some(frame),
             Err(Declined::Failed(why)) => {
