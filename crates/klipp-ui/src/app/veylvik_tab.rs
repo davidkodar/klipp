@@ -349,4 +349,30 @@ mod tests {
         let crate::history::EditCommand::SetComposition { before, .. } = &entry.command else { panic!("{:?}", entry.command) };
         assert_eq!(before.as_deref(), Some(&b"v2"[..]));
     }
+
+    /// On the Veylvik page space, J, K and L never play Klipp's timeline:
+    /// played behind the page, it rendered the hidden viewer at 4K on the
+    /// card the editor plays on, and both stuttered. Off the page, they do.
+    #[test]
+    fn the_veylvik_page_keeps_klipps_transport_keys_to_itself() {
+        let mut seq = Sequence::new_default();
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips = vec![Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0))];
+        seq.tracks = vec![v1];
+        let mut state = crate::state::AppState { sequences: vec![seq], project_path: Some("/projects/a.klipp".into()), active_panel: Some(crate::state::PanelKind::Timeline), ..Default::default() };
+        let kb = crate::keybindings::KeyBindings::default();
+        let pressed = |state: &crate::state::AppState, key: egui::Key| {
+            let ctx = egui::Context::default();
+            let event = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+            let mut out = Vec::new();
+            let _ = ctx.run(egui::RawInput { events: vec![event], ..Default::default() }, |ctx| out = crate::panels::transport::TransportBar::default().handle_keyboard(ctx, state, &kb));
+            out
+        };
+        state.active_workspace = crate::state::Workspace::Veylvik;
+        for key in [egui::Key::Space, egui::Key::J, egui::Key::K, egui::Key::L] {
+            assert!(pressed(&state, key).is_empty(), "{key:?} reached Klipp's transport on the Veylvik page");
+        }
+        state.active_workspace = crate::state::Workspace::Edit;
+        assert!(pressed(&state, egui::Key::Space).iter().any(|c| matches!(c, klipp_core::AppCommand::Play)), "the control: space plays on Edit");
+    }
 }

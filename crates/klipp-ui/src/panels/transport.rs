@@ -505,7 +505,10 @@ impl TransportBar {
         // Skip transport shortcuts when any text field has focus, a
         // modal overlay is open (Quick Look, preferences, dialogs) or no
         // project is (the welcome screen, #2551).
+        // On the Veylvik page space, J, K and L are its editor's: Klipp's
+        // timeline playing behind the page took the card from it.
         if state.project_path.is_none()
+            || state.active_workspace == crate::state::Workspace::Veylvik
             || state.field_keys_held
             || state.editing_timecode
             || ctx.egui_wants_keyboard_input()
