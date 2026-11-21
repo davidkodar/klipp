@@ -884,6 +884,13 @@ impl KlippApp {
                     let _ = self.cmd_tx.send(AppCommand::Pause);
                 }
             } else if self.state.playback != PlaybackState::Playing {
+                // Back from the Veylvik page: where the artist went in the
+                // clip's composition.
+                if from == Workspace::Veylvik {
+                    if let Some(at) = self.veylvik_tab.take_carried() {
+                        self.state.playhead = at;
+                    }
+                }
                 let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
             }
 
