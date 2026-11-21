@@ -75,5 +75,47 @@ fn what_a_frame_of_the_tabs_playback_costs() {
     summary("whole frame (decode + Veylvik)", &mut whole);
     summary("  ClipSource::render returning", &mut call);
     summary("  then the card finishing", &mut wait);
+
+    // The same render with footage that is only a copy of a frame already
+    // on the card: what is left is Veylvik's, the rest is Klipp's footage.
+    struct Resident {
+        buffer: wgpu::Buffer,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        info: klipp_veylvik::SourceInfo,
+    }
+    impl HostMedia for Resident {
+        fn info(&self) -> klipp_veylvik::SourceInfo {
+            self.info.clone()
+        }
+        fn identity(&self, time: Time) -> u64 {
+            (time.seconds().unwrap() * 24000.0 / 1001.0 + 1e-6).floor() as u64 ^ 0xabcdef
+        }
+        fn frame(&self, _: Time, _: Option<[u32; 2]>) -> veylvik_render::Result<klipp_veylvik::HostFrame> {
+            let copy = self.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: self.buffer.size(), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            let mut e = self.device.create_command_encoder(&Default::default());
+            e.copy_buffer_to_buffer(&self.buffer, 0, &copy, 0, self.buffer.size());
+            self.queue.submit([e.finish()]);
+            Ok(klipp_veylvik::HostFrame { buffer: copy, width: 3840, height: 2160, pixels: klipp_veylvik::working_pixels(WorkingColorspace::Rec709Linear) })
+        }
+    }
+    let resident = Resident {
+        buffer: device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 3840 * 2160 * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false }),
+        device: Arc::clone(&device),
+        queue: ctx.queue(),
+        info: media.info(),
+    };
+    let host = klipp_veylvik::KlippHost::new();
+    host.insert(klipp_veylvik::CLIP_MEDIA_KEY, Arc::new(klipp_veylvik::HostSource::new(resident, 512 << 20)));
+    let composition2: Composition = serde_json::from_slice(&std::fs::read(folder.join("composition.veylvik")).unwrap()).unwrap();
+    let source2 = ClipSource::new(Arc::clone(&renderer), composition2, folder.clone(), Some(Arc::new(host) as Arc<dyn klipp_veylvik::Host>)).unwrap();
+    let mut alone = Vec::new();
+    for i in 0..frames {
+        let t = Instant::now();
+        source2.render(Time { ticks: (100 + i) * 1001, rate: 24000 }, [w, h], &out, &pixels).unwrap();
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        alone.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    summary("same, footage already on the card", &mut alone);
     eprintln!("budget at 23.976 fps: {:.1} ms", 1000.0 / fps);
 }
