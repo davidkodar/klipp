@@ -94,6 +94,29 @@ pub trait GpuPixels: Send + Sync {
     fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool;
     /// The frame on the CPU: display-referred linear RGBA.
     fn read(&self) -> Arc<Vec<f32>>;
+    /// The transfer of the scene-referred source whose scene light these
+    /// pixels still are (a clip's Veylvik picture of PQ, HLG or log
+    /// footage): graded as that light and then given the source's display
+    /// step, as its codes would be. `None` (the default): display-referred.
+    fn scene_transfer(&self) -> Option<klipp_color::hdr::HdrTransfer> {
+        None
+    }
+    /// The frame where it lies on the render's device, and its size, for
+    /// a consumer that takes it there rather than from [`Self::read`]:
+    /// expanded as `read` would expand it, it is the same picture. `None`
+    /// (the default) where the frame has no such buffer.
+    fn on_device(&self) -> Option<(OnDevice<'_>, u32, u32)> {
+        None
+    }
+}
+
+/// A frame's pixels on the device (see [`GpuPixels::on_device`]).
+pub enum OnDevice<'a> {
+    /// Linear RGBA f32, as [`GpuPixels::read`] gives them.
+    Linear(&'a wgpu::Buffer),
+    /// sRGB-encoded RGBA8, straight alpha: `read` gives each colour byte
+    /// through `klipp_effects::srgb_u8_to_linear_f32_rgba`.
+    Srgb8(&'a wgpu::Buffer),
 }
 
 /// A clip's pixels on their way into its grade: on the CPU, still on the
@@ -192,6 +215,14 @@ pub trait FrameSource {
 
     fn frame_after(&mut self, _clip: &Clip, _source_secs: f64, _width: u32, _height: u32) -> Option<SourceFrame> {
         None
+    }
+
+    /// Whether this source feeds a live view (the viewer playing or
+    /// parked), which shows a picture still being prepared as its media
+    /// meanwhile and draws it again once it is ready. `false` (the
+    /// default): a render that waits for every picture, as an export does.
+    fn shows_live(&mut self) -> bool {
+        false
     }
 
     /// The file a still image's frames are read from, stamped now, when
@@ -1546,6 +1577,7 @@ impl Renderer {
         src: &mut dyn FrameSource,
         opts: RenderOptions,
     ) -> Vec<f32> {
+        crate::source_wrap::wrapped_source!(self, src);
         self.render_inspected(seq, time, width, height, src, opts, Inspect::default()).0
     }
 
@@ -1565,6 +1597,7 @@ impl Renderer {
         height: u32,
         src: &mut dyn FrameSource,
     ) -> Option<Vec<f32>> {
+        crate::source_wrap::wrapped_source!(self, src);
         if crate::freeze::live_reason(seq, track, time).is_some() || !seq.tracks.get(track).is_some_and(is_visual) {
             return None;
         }
@@ -1588,6 +1621,7 @@ impl Renderer {
         height: u32,
         src: &mut dyn FrameSource,
     ) -> Option<Vec<f32>> {
+        crate::source_wrap::wrapped_source!(self, src);
         if crate::freeze::live_reason(seq, track, time).is_some() || !seq.tracks.get(track).is_some_and(is_visual) {
             return None;
         }
@@ -1657,6 +1691,7 @@ impl Renderer {
         opts: RenderOptions,
         inspect: Inspect,
     ) -> (Vec<f32>, Inspection) {
+        crate::source_wrap::wrapped_source!(self, src);
         // Captions off the lines a title is on, while both are shown (#2567).
         let moved = crate::captions::captions_clear_of_titles(seq, time, width, height);
         let seq = moved.as_ref().unwrap_or(seq);
@@ -1826,6 +1861,7 @@ impl Renderer {
         opts: RenderOptions,
         target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)> {
+        crate::source_wrap::wrapped_source!(self, src);
         // Captions off the lines a title is on, while both are shown (#2567).
         let moved = crate::captions::captions_clear_of_titles(seq, time, width, height);
         let seq = moved.as_ref().unwrap_or(seq);
@@ -1923,6 +1959,7 @@ impl Renderer {
         src: &mut dyn FrameSource,
         opts: RenderOptions,
     ) -> Option<Vec<f32>> {
+        crate::source_wrap::wrapped_source!(self, src);
         // Captions off the lines a title is on, while both are shown (#2567).
         let moved = crate::captions::captions_clear_of_titles(seq, time, width, height);
         let seq = moved.as_ref().unwrap_or(seq);
@@ -2103,6 +2140,21 @@ impl Renderer {
             return Single::ForTheStack;
         }
         let input = match f.pixels {
+            // Scene light still (a clip's Veylvik picture of HDR or log
+            // footage): ends in its source's display pass, as its codes do.
+            SourcePixels::Gpu(g) if g.scene_transfer().is_some() => {
+                let transfer = g.scene_transfer().expect("just seen");
+                if global_lut_here {
+                    return Single::Refused("global LUT after a scene-referred display pass");
+                }
+                scene_end = Some(klipp_effects::gpu::SceneReferredEnd {
+                    display_light: hdr_delivery,
+                    kind: transfer.display_light_kind(),
+                    scale: transfer.scene_scale(),
+                    exposure: transfer.display_exposure(),
+                });
+                GradeInput::Gpu(g)
+            }
             SourcePixels::Gpu(g) => GradeInput::Gpu(g),
             SourcePixels::SceneReferred { codes, transfer, source_to_working }
                 if codes.len() == (width as usize) * (height as usize) =>
@@ -2246,6 +2298,7 @@ impl Renderer {
         src: &mut dyn FrameSource,
         opts: RenderOptions,
     ) -> Option<(Vec<u8>, RenderStats)> {
+        crate::source_wrap::wrapped_source!(self, src);
         let out = DisplayDelivery { texture: None, bytes: true };
         self.render_display_on_gpu(seq, time, width, height, src, opts, out)
             .map(|(bytes, stats)| (bytes.unwrap_or_default(), stats))
@@ -2265,6 +2318,7 @@ impl Renderer {
         opts: RenderOptions,
         out: DisplayDelivery<'_>,
     ) -> Option<(Option<Vec<u8>>, RenderStats)> {
+        crate::source_wrap::wrapped_source!(self, src);
         // Captions off the lines a title is on, while both are shown (#2567).
         let moved = crate::captions::captions_clear_of_titles(seq, time, width, height);
         let seq = moved.as_ref().unwrap_or(seq);
@@ -3066,10 +3120,14 @@ impl Renderer {
                 if let Some(&(size, _)) = self.source_sizes.get(&c.id).filter(|_| !precomp) {
                     klipp_effects::resolve_cover_shapes(&mut fx, size, (width, height));
                 }
+                // Scene light on the GPU (a clip's Veylvik picture of HDR or
+                // log footage) takes the scene-referred layer's way below,
+                // its display step and all.
+                let scene_gpu = matches!(&pixels, SourcePixels::Gpu(g) if g.scene_transfer().is_some());
                 match pixels {
                     // An ungraded layer with effects takes the branch below:
                     // its effects run as a plan (step 11d).
-                    SourcePixels::Gpu(g) if c.grade_is_identity() && !has_active_effects(&fx) && !blending => {
+                    SourcePixels::Gpu(g) if !scene_gpu && c.grade_is_identity() && !has_active_effects(&fx) && !blending => {
                         if g.seed(&mut self.executor, width, height) {
                             self.executor.take_seeded_input_as_output()
                                 && self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, true))
@@ -3080,7 +3138,7 @@ impl Renderer {
                             false
                         }
                     }
-                    SourcePixels::Gpu(g) => {
+                    SourcePixels::Gpu(g) if !scene_gpu => {
                         let t = Instant::now();
                         // The effects as nodes of the grade's plan (step 10b),
                         // on the GPU with it, instead of a pass over the layer.
@@ -3150,20 +3208,30 @@ impl Renderer {
                     // or a transition went to the CPU composite (#1276).
                     // Only an SDR delivery in a Rec.709 project gets here:
                     // the stack declines the others before any layer.
-                    SourcePixels::SceneReferred { codes, transfer, source_to_working } => {
+                    scene @ (SourcePixels::SceneReferred { .. } | SourcePixels::Gpu(_)) => {
                         // Its next frame's codes aren't the chain's to
                         // blend toward: the composite blends it.
                         if blending {
                             return Err("frame blending of a scene-referred source");
                         }
                         let t = Instant::now();
-                        let input = if other_size || codes.len() != (width as usize) * (height as usize) {
-                            // Decoded and fitted on the GPU in scene light,
-                            // as the CPU composite fits it (`to_linear`);
-                            // on the CPU only if the chain can't take it.
-                            GradeInput::Gpu(Arc::new(SceneFitted { codes, transfer, source_to_working, w: fw, h: fh, ow: width, oh: height, fitted: std::sync::OnceLock::new() }))
-                        } else {
-                            GradeInput::Scene { codes, transfer, source_to_working }
+                        let (input, transfer) = match scene {
+                            SourcePixels::SceneReferred { codes, transfer, source_to_working } => {
+                                let input = if other_size || codes.len() != (width as usize) * (height as usize) {
+                                    // Decoded and fitted on the GPU in scene light,
+                                    // as the CPU composite fits it (`to_linear`);
+                                    // on the CPU only if the chain can't take it.
+                                    GradeInput::Gpu(Arc::new(SceneFitted { codes, transfer, source_to_working, w: fw, h: fh, ow: width, oh: height, fitted: std::sync::OnceLock::new() }))
+                                } else {
+                                    GradeInput::Scene { codes, transfer, source_to_working }
+                                };
+                                (input, transfer)
+                            }
+                            SourcePixels::Gpu(g) => {
+                                let transfer = g.scene_transfer().ok_or("a GPU layer said to be scene light, and isn't")?;
+                                (GradeInput::Gpu(g), transfer)
+                            }
+                            SourcePixels::Linear(_) => return Err("a CPU layer taken for scene light"),
                         };
                         effects_done = self.splice_effects(c, &fx, time, fps, transforms, at_move, stats);
                         self.run_display = Some(self.scene_to_display(transfer));
@@ -4793,7 +4861,8 @@ impl Renderer {
                     SourceFrame { pixels: SourcePixels::Gpu(g), width: w, height: h, .. }
                         if tnr.is_none() && !blending && (w, h) == (width, height) =>
                     {
-                        (GradeInput::Gpu(g), None)
+                        let scene = g.scene_transfer();
+                        (GradeInput::Gpu(g), scene)
                     }
                     // Scene-referred codes at the render size go to the
                     // grade as they are.
@@ -8727,6 +8796,10 @@ impl GpuPixels for FittedGpu {
     fn read(&self) -> Arc<Vec<f32>> {
         Arc::clone(self.fitted.get_or_init(|| fit(self.inner.read(), self.w, self.h, self.ow, self.oh)))
     }
+
+    fn scene_transfer(&self) -> Option<klipp_color::hdr::HdrTransfer> {
+        self.inner.scene_transfer()
+    }
 }
 
 /// Scene-referred codes of another size than the frame: decoded and fitted
@@ -8961,7 +9034,10 @@ fn to_linear(f: SourceFrame, width: u32, height: u32) -> (Arc<Vec<f32>>, Option<
             let p = codes.to_scene_linear_rgba(transfer, source_to_working);
             (fit(Arc::new(p), f.width, f.height, width, height), Some(transfer))
         }
-        SourcePixels::Gpu(g) => (fit(g.read(), f.width, f.height, width, height), None),
+        SourcePixels::Gpu(g) => {
+            let scene = g.scene_transfer();
+            (fit(g.read(), f.width, f.height, width, height), scene)
+        }
     }
 }
 

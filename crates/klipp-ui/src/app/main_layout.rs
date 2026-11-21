@@ -183,6 +183,15 @@ impl KlippApp {
                     self.render_toolbar_panel(ui, toolbar_rect, all_cmds);
                     self.render_status_bar_panel(ui, statusbar_rect);
 
+                    // The Veylvik page is Veylvik's editor, the whole window
+                    // between the toolbar and the status bar.
+                    if self.state.active_workspace == crate::state::Workspace::Veylvik {
+                        let area = egui::Rect::from_min_max(egui::pos2(full.min.x, main_top), egui::pos2(full.max.x, main_bottom));
+                        self.render_veylvik_page(ui, area);
+                        return;
+                    }
+                    self.state.veylvik_keys = false;
+
                     if browser_open {
                         self.render_browser_panel(ui, browser_rect, all_cmds);
                     } else {
@@ -866,7 +875,15 @@ impl KlippApp {
             // Colour page opened on a black viewer until the playhead
             // was moved; while parked this is a regrade of the parked
             // frame, and a real seek only when there is none.
-            if self.state.playback != PlaybackState::Playing {
+            // The Veylvik page shows no viewer of Klipp's: its editor plays
+            // on the same card, so Klipp's own playback stops there and no
+            // frame is drawn for a viewer nobody sees.
+            if to == Workspace::Veylvik {
+                self.veylvik_tab.shown();
+                if self.state.playback == PlaybackState::Playing {
+                    let _ = self.cmd_tx.send(AppCommand::Pause);
+                }
+            } else if self.state.playback != PlaybackState::Playing {
                 let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
             }
 
@@ -1733,6 +1750,7 @@ pub(super) fn show_panel(state: &mut crate::state::AppState, layout: &mut crate:
         Some("edit") => state.active_workspace = Workspace::Edit,
         Some("colour" | "color") => state.active_workspace = Workspace::Color,
         Some("composite") => state.active_workspace = Workspace::Composite,
+        Some("veylvik") => state.active_workspace = Workspace::Veylvik,
         Some("export") => state.active_workspace = Workspace::Export,
         _ => {}
     }

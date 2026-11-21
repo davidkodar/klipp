@@ -41,6 +41,7 @@ pub mod lock;
 pub mod recovery;
 pub mod metadata_sheet;
 pub mod brand_kit;
+pub mod compositions;
 pub mod consolidate;
 pub mod collect_verify;
 pub mod collect_report;

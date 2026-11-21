@@ -306,7 +306,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                 // Each file becomes its own subtitle track named after the file stem.
                 if ui.button("\u{2191} Import Files\u{2026}").clicked() {
                     crate::file_dialog::spawn(|| {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa", "ttml", "dfxp", "xml", "itt", "scc", "stl"])
                             .pick_files()
                             .unwrap_or_default()
@@ -319,7 +319,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                 // Export (format selected by file extension)
                 if ui.button("\u{2193} Export\u{2026}").clicked() {
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Export Subtitles")
                             .add_filter("SRT", &["srt"])
                             .add_filter("WebVTT", &["vtt"])
@@ -425,7 +425,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                     }
                     if ui.button("\u{2191} Import Files\u{2026}").clicked() {
                         crate::file_dialog::spawn(|| {
-                            rfd::FileDialog::new()
+                            crate::file_dialog::new()
                                 .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa", "ttml", "dfxp", "xml", "itt", "scc", "stl"])
                                 .pick_files()
                                 .unwrap_or_default()

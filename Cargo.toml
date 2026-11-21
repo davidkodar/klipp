@@ -45,6 +45,7 @@ members = [
     "crates/klipp-audio-search",
     "crates/klipp-graph-format",
     "crates/klipp-graph-lift",
+    "crates/klipp-veylvik",
 ]
 resolver = "2"
 
@@ -159,7 +160,7 @@ glam = { version = "0.27", features = ["serde"] }
 
 # UI
 egui = "=0.34.1"
-eframe = { version = "=0.34.1", features = ["wgpu", "glow"] }
+eframe = { version = "=0.34.1", features = ["wgpu"] }
 egui_extras = { version = "=0.34.1", features = ["svg"] }
 
 # GPU
@@ -232,6 +233,7 @@ ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "
 # Internal crates
 klipp-core    = { path = "crates/klipp-core" }
 klipp-project = { path = "crates/klipp-project" }
+klipp-veylvik = { path = "crates/klipp-veylvik" }
 klipp-timeline = { path = "crates/klipp-timeline" }
 klipp-graph-format = { path = "crates/klipp-graph-format" }
 klipp-graph-lift = { path = "crates/klipp-graph-lift" }

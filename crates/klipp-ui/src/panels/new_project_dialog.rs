@@ -234,7 +234,7 @@ impl NewProjectDialog {
                     if ui.button("Browse...").clicked() {
                         let start = self.location.clone();
                         crate::file_dialog::pick_path(picker, move || {
-                            rfd::FileDialog::new()
+                            crate::file_dialog::new()
                                 .set_title("Choose Project Location")
                                 .set_directory(&start)
                                 .pick_folder()
@@ -307,7 +307,7 @@ impl NewProjectDialog {
                     // A template from another machine (#618).
                     if ui.small_button("Import...").on_hover_text("Add a project template exported on another machine").clicked() {
                         crate::file_dialog::spawn(move || {
-                            rfd::FileDialog::new()
+                            crate::file_dialog::new()
                                 .set_title("Import Project Template")
                                 .add_filter("Project template", &["zip"])
                                 .pick_file()
@@ -386,7 +386,7 @@ impl NewProjectDialog {
                                     let from = path.clone();
                                     let file = format!("{}.zip", path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "template".into()));
                                     crate::file_dialog::spawn(move || {
-                                        rfd::FileDialog::new()
+                                        crate::file_dialog::new()
                                             .set_title("Export Project Template")
                                             .add_filter("Project template", &["zip"])
                                             .set_file_name(&file)

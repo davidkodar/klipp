@@ -133,7 +133,7 @@ pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, ca
         }
         if ui.small_button("Choose\u{2026}").clicked() {
             crate::file_dialog::spawn(|| {
-                rfd::FileDialog::new()
+                crate::file_dialog::new()
                     .set_title("Input LUT")
                     .add_filter("LUT files", &["cube", "3dl", "csp"])
                     .pick_file()
@@ -267,7 +267,7 @@ pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, ca
         }
         if ui.small_button("Choose\u{2026}").clicked() {
             crate::file_dialog::spawn(|| {
-                rfd::FileDialog::new()
+                crate::file_dialog::new()
                     .set_title("Viewing LUT")
                     .add_filter("LUT files", &["cube", "3dl", "csp"])
                     .pick_file()

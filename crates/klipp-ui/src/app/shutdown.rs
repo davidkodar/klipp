@@ -66,6 +66,9 @@ impl KlippApp {
         const BUDGET: std::time::Duration = std::time::Duration::from_millis(2000);
         let t0 = std::time::Instant::now();
 
+        // The Veylvik page's editor finishes its background work and lets
+        // go of the GPU before the process does.
+        self.veylvik_tab.close();
         // Harmless if the engine is already shutting down or gone: a
         // closed channel just errors, and the flag is already set.
         let _ = self.cmd_tx.send(klipp_core::AppCommand::Quit);

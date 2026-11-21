@@ -2490,6 +2490,7 @@ impl ViewerPanel {
 
         // Proxy badge
         self.draw_proxy_badge(ui.painter(), state, theme, &frame);
+        draw_preparing_note(ui, theme, frame.image_rect);
 
         // ── Multicam angle bar (shown below the viewer when multicam is active) ──
         if state.multicam_at_playhead && !state.multicam_angles.is_empty() {
@@ -9535,4 +9536,22 @@ mod chart_tool_tests {
             assert!((0.0..=1.0).contains(&c[0]) && (0.0..=1.0).contains(&c[1]), "{c:?}");
         }
     }
+}
+
+/// While a clip's Veylvik composition is being made ready, the viewer shows
+/// the clip's media; a note at the picture's top left says so until it is.
+fn draw_preparing_note(ui: &egui::Ui, theme: &KlippTheme, image_rect: egui::Rect) {
+    if !klipp_veylvik::preparing() {
+        return;
+    }
+    // The engine draws the frame again once it is ready; this only takes
+    // the note down should nothing else repaint.
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+    let text = "Preparing the Veylvik composition: showing the clip's media";
+    let font = egui::FontId::proportional(12.0);
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, theme.text_primary);
+    let pad = egui::vec2(8.0, 4.0);
+    let rect = egui::Rect::from_min_size(image_rect.left_top() + egui::vec2(8.0, 8.0), galley.size() + pad * 2.0);
+    ui.painter().rect_filled(rect, 4.0, theme.bg_raised.gamma_multiply(0.9));
+    ui.painter().galley(rect.min + pad, galley, theme.text_primary);
 }

@@ -210,7 +210,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, tab: &m
         if ui.button("Add Files\u{2026}").on_hover_text("Keep files here, where they are: nothing is copied.").clicked() {
             let collection = current.clone();
             crate::file_dialog::spawn(move || {
-                rfd::FileDialog::new()
+                crate::file_dialog::new()
                     .set_title("Add to the Shared Library")
                     .pick_files()
                     .filter(|p| !p.is_empty())
@@ -279,7 +279,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, tab: &m
                 } else if ui.small_button("Relink\u{2026}").clicked() {
                     let (collection, old, title) = (current.clone(), item.path.clone(), format!("Locate {}", item.name()));
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title(title)
                             .pick_file()
                             .map(|new| vec![AppCommand::RelinkSharedLibraryItem { collection, old, new }])

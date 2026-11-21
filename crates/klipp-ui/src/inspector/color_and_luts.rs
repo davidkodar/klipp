@@ -167,7 +167,7 @@ pub(crate) fn show_color_and_luts(
                 egui::RichText::new("Bake Grade as .cube...").size(11.0)
             ).clicked() {
                 crate::file_dialog::spawn(move || {
-                    let Some(path) = rfd::FileDialog::new()
+                    let Some(path) = crate::file_dialog::new()
                         .set_title("Save baked grade as .cube")
                         .add_filter("3D LUT (.cube)", &["cube"])
                         .set_file_name(format!("klipp_grade_{size}.cube"))
@@ -455,7 +455,7 @@ pub(crate) fn input_colour_space_combo(
 
 /// The picker behind both Load LUT buttons. Shaped for `file_dialog::spawn`.
 pub(crate) fn pick_global_lut() -> Vec<AppCommand> {
-    rfd::FileDialog::new()
+    crate::file_dialog::new()
         .set_title("Load .cube LUT")
         .add_filter("LUT files", &["cube", "3dl", "csp"])
         .pick_file()

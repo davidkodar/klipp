@@ -326,6 +326,17 @@ pub enum ControlCommand {
     },
     /// A media item's tags: the words that sort the pool (a person, a
     /// place, "b-roll", "hero"). `add` and `remove` are tag words.
+    /// A clip's Veylvik composition: read (its size, rate, length and
+    /// nodes, and its folder), made of the clip's media when it has none
+    /// (`make`), and opened on the Veylvik page (`open`, which makes one
+    /// too).
+    VeylvikComposition {
+        clip_id: String,
+        #[serde(default)]
+        make: bool,
+        #[serde(default)]
+        open: bool,
+    },
     TagMedia {
         media_id: String,
         #[serde(default)]

@@ -1582,6 +1582,12 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "media_ids": args.get("media_ids").cloned().unwrap_or(json!([])),
             "use_proxies": args.get("use_proxies").cloned().unwrap_or(json!(null)),
         }),
+        "klipp_veylvik_composition" => json!({
+            "method": "veylvik_composition",
+            "clip_id": arg_str(args, "clip_id")?,
+            "make": args.get("make").and_then(|v| v.as_bool()).unwrap_or(false),
+            "open": args.get("open").and_then(|v| v.as_bool()).unwrap_or(false),
+        }),
         "klipp_tag_media" => json!({
             "method": "tag_media",
             "media_id": arg_str(args, "media_id")?,
@@ -2904,6 +2910,13 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_make_proxies",
              "Make playback proxies (the timeline's files by default) as a job; use_proxies turns their playback on or off. Details: klipp_guide topic make_proxies.",
              json!({ "media_ids": { "type": "array", "items": { "type": "string" } }, "use_proxies": { "type": "boolean" } }), vec![]),
+        tool("klipp_veylvik_composition",
+             "A clip's Veylvik composition: read, make or open it. Details: klipp_guide topic veylvik_composition.",
+             json!({
+                 "clip_id": { "type": "string" },
+                 "make": { "type": "boolean" },
+                 "open": { "type": "boolean" }
+             }), vec!["clip_id"]),
         tool("klipp_tag_media",
              "Tag a media item, or remove tags. Details: klipp_guide topic tag_media.",
              json!({
@@ -4113,14 +4126,15 @@ mod catalogue_trim_tests {
 
     /// The catalogue is under 56.5 KB (raised from 54 for covers, #3311,
     /// from 55 for klipp_pick_grey and klipp_read_chart, and from 56 for
-    /// klipp_track_mask and klipp_show_matte);
+    /// klipp_track_mask and klipp_show_matte, and to 56.7 for
+    /// klipp_veylvik_composition);
     /// every tool names its guide topic; and each moved sentence is in its tool's
     /// topic, under Arguments, and no longer on the argument.
     #[test]
     fn the_catalogue_is_a_tenth_under_its_budget_and_nothing_moved_is_lost() {
         let tools = tool_definitions_for(false);
         let total = serde_json::to_vec(&tools).unwrap().len();
-        assert!(total < 56_500, "the catalogue is {total} bytes");
+        assert!(total < 56_700, "the catalogue is {total} bytes");
         for t in &tools {
             let name = t["name"].as_str().unwrap();
             if name != "klipp_guide" {

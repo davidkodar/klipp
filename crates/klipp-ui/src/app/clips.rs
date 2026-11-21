@@ -1383,7 +1383,7 @@ impl KlippApp {
                             self.state.timecode_display().position(self.state.playhead).replace([':', ';'], "-")
                         );
                         crate::file_dialog::spawn(move || {
-                            if let Some(path) = rfd::FileDialog::new()
+                            if let Some(path) = crate::file_dialog::new()
                                 .set_title("Save Frame As")
                                 .add_filter("PNG Image", &["png"])
                                 .set_file_name(&default_name)
@@ -1711,6 +1711,7 @@ pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Cl
         speed_keyframes: clip.speed_keyframes.clone(),
         keep_pitch: clip.keep_pitch,
         sound_apart: clip.sound_apart,
+        composition: clip.composition,
         hold: None,
         source_rotation: clip.source_rotation,
         enabled: clip.enabled,

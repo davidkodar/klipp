@@ -70,6 +70,9 @@ answer from here, in their words, and short:
 - Blur, glow, grain, sharpen and vignette.
 - A green or blue screen keyed out, to put someone over another picture.
 - Backgrounds, colour cards, bars and countdowns made in the app.
+- A clip opened in Veylvik, on its own page, for effects, text, 3D and
+  tracking built on the clip, shown in the edit at once.
+  *"Open this shot in Veylvik."*
 
 ## Colour
 

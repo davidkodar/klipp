@@ -2283,6 +2283,9 @@ pub struct PlaybackEngine {
     /// When the tick may next look at the layout, by what the last look
     /// cost ([`layout_check_wait`]).
     layout_check_due: std::time::Instant,
+    /// The render hook's revision when the viewer last drew: see
+    /// [`Self::tick_pictures_ready`].
+    pictures_revision: u64,
     /// What was under the playhead when the layout was last looked at
     /// (see [`under_playhead_fingerprint`]); an edit that changes it is
     /// shown by seeking there again.
@@ -3373,6 +3376,7 @@ impl PlaybackEngine {
             last_composite_path: None,
             layout_fingerprint: 0,
             layout_check_due: std::time::Instant::now(),
+            pictures_revision: klipp_compose::source_wrap::revision(),
             under_playhead_fingerprint: (Timecode::zero(), 0),
             quiet_seek: false,
             sdr_transfer: klipp_core::SdrTransfer::Srgb,
@@ -3701,6 +3705,7 @@ impl PlaybackEngine {
                 }
             }
             self.tick_layout_check();
+            self.tick_pictures_ready();
             // Full-quality refresh of the parked frame when playback ran
             // on the skim substitute (optimised playback). Runs every
             // tick: paused it debounces/polls/paints, any other state it
@@ -10292,6 +10297,11 @@ impl PlaybackEngine {
         if !clip.grade_is_identity() {
             blockers.push("grade graph is not an identity");
         }
+        // Its picture is Veylvik's, made by the renderer: never the
+        // decoder's own frame, which every fast path shows.
+        if clip.composition.is_some() {
+            blockers.push("Veylvik composition on clip");
+        }
         // A tracked subject's matte is found from the clip's media, and a
         // matte sequence is read at the media's ends, by the renderer
         // (#1881); the lean graded present has neither.
@@ -10934,6 +10944,27 @@ impl PlaybackEngine {
         self.layout_check_due = now + layout_check_wait(now.elapsed());
         if changed {
             self.show_edit_at_playhead();
+        }
+    }
+
+    /// A picture the viewer showed as its media while it was prepared (a
+    /// clip's Veylvik composition) is ready: nothing kept of the frames
+    /// drawn meanwhile is used again, and the parked frame is drawn anew.
+    /// Playing, the next frame is.
+    fn tick_pictures_ready(&mut self) {
+        let now = klipp_compose::source_wrap::revision();
+        if now == self.pictures_revision {
+            return;
+        }
+        self.pictures_revision = now;
+        self.frame_cache.clear();
+        self.cached_pregrade_frame = None;
+        self.pregrade_source = None;
+        self.cached_pregrade_at = None;
+        self.retained_primary = None;
+        if self.state != PlaybackState::Playing {
+            self.show_edit_at_playhead();
+            (self.repaint_cb)();
         }
     }
 
@@ -16911,5 +16942,53 @@ mod decode_ms_tests {
         assert_eq!(decode_ms_if_new(&mut seen, 1, 12.5), 0.0, "the same frame shown again: no decode");
         assert_eq!(decode_ms_if_new(&mut seen, 3, 8.0), 8.0);
         assert_eq!(decode_ms_if_new(&mut seen, 1, 9.0), 9.0, "a new decoder, counting again from 0");
+    }
+}
+
+#[cfg(test)]
+mod composition_fast_path_tests {
+    use super::*;
+    use klipp_timeline::Sequence;
+    use std::sync::Mutex;
+
+    /// A clip shown through a Veylvik composition keeps the frame off every
+    /// fast path, playing, paused and on a slider drag: each shows the
+    /// decoder's own frame, and the composition's picture is made by the
+    /// renderer. Neither graded gate takes it either. Control: the same clip
+    /// without one is no reason to leave them.
+    #[test]
+    fn a_composed_clip_takes_the_renderer() {
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 30);
+        let mut clip = klipp_timeline::Clip::media(MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        clip.composition = Some(klipp_timeline::CompositionId::new());
+        let mut seq = Sequence::new_default();
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![clip];
+        seq.tracks = vec![v1];
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(seq));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::clone(&sequence), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        engine.playhead = tc(1.0);
+        engine.current_track_index = 0;
+        let cases = [(PlaybackState::Playing, FastPath::Playing, false), (PlaybackState::Paused, FastPath::PausedPresent, false), (PlaybackState::Paused, FastPath::ParkedDrag, true)];
+        for (state, mode, drag) in cases {
+            engine.state = state;
+            engine.in_node_param_edit = drag;
+            let blockers = engine.fast_path_blockers_for(mode);
+            assert!(blockers.contains(&"Veylvik composition on clip"), "{mode:?}: {blockers:?}");
+            assert!(!PlaybackEngine::only_the_graded_path_handles(&blockers), "{mode:?}: the lean graded present would show the media");
+            assert!(!engine.stack_present_handles(&blockers), "{mode:?}: the stack present would show the media");
+        }
+        engine.in_node_param_edit = false;
+        sequence.write().unwrap().tracks[0].clips[0].composition = None;
+        engine.state = PlaybackState::Playing;
+        let blockers = engine.fast_path_blockers_for(FastPath::Playing);
+        assert!(!blockers.contains(&"Veylvik composition on clip"), "{blockers:?}");
     }
 }

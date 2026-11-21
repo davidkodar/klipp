@@ -78,7 +78,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
             ui.horizontal(|ui| {
                 if ui.button("Load CSV\u{2026}").clicked() {
                     crate::file_dialog::spawn(|| {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Load Credits")
                             .add_filter("Credits list", &["csv", "tsv", "txt"])
                             .pick_file()

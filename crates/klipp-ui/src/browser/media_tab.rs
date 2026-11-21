@@ -439,7 +439,7 @@ fn pool_menu(ui: &mut egui::Ui, view_mode: &mut BrowserViewMode, sort_by: &mut S
     for (label, bins) in [("Import Folder\u{2026}", false), ("Import Folder as Bins\u{2026}", true)] {
         if menu_item(ui, label, "").clicked() {
             crate::file_dialog::spawn(move || {
-                rfd::FileDialog::new()
+                crate::file_dialog::new()
                     .pick_folder()
                     .map(|dir| vec![AppCommand::ImportMediaFolder { directory: dir, bins }])
                     .unwrap_or_default()
@@ -2023,7 +2023,7 @@ fn show_context_menu(
                 .to_string();
             let title = format!("Locate {}", filename);
             crate::file_dialog::spawn(move || {
-                let mut dialog = rfd::FileDialog::new().set_title(title);
+                let mut dialog = crate::file_dialog::new().set_title(title);
                 if !ext.is_empty() {
                     dialog = dialog.add_filter(ext.to_uppercase(), &[ext.as_str()]);
                 }

@@ -149,6 +149,30 @@ impl KlippApp {
         *pool = self.state.media_pool.clone();
         drop(pool);
         self.sync_log_formats_to_decoders();
+        // A file replaced, relinked or proxied under a composed clip: that
+        // media's footage made again, and no other's.
+        klipp_veylvik::set_media_states(self.state.media_pool.all().map(|m| (m.id, media_state(m))).collect());
+    }
+
+    /// Tell every render the project's Veylvik compositions as they are now.
+    pub(super) fn sync_compositions_to_engine(&self) {
+        klipp_veylvik::set_project_compositions(self.state.compositions.clone());
+        // Each one's assets in its folder in the project.
+        let assets = self.state.compositions.keys().map(|id| (*id, self.composition_assets_dir(*id))).collect();
+        klipp_veylvik::set_project_assets(assets);
+    }
+
+    /// The folder the project's compositions and their assets are in now:
+    /// the project's, or until its first save the session's own, which
+    /// that save takes them from.
+    pub(super) fn compositions_home(&self) -> std::path::PathBuf {
+        // Untitled is a placeholder, not a folder.
+        self.state.project_path.clone().filter(|p| !crate::project_paths::is_untitled(Some(p))).unwrap_or_else(unsaved_compositions_home)
+    }
+
+    /// Composition `id`'s folder, its assets beside its file.
+    pub(super) fn composition_assets_dir(&self, id: klipp_timeline::CompositionId) -> std::path::PathBuf {
+        klipp_project::compositions::composition_dir(&self.compositions_home(), id)
     }
 
     /// Tell the decoders each file's camera log format. The decoder is what
@@ -428,5 +452,52 @@ mod engine_send_tests {
         }
         assert!(sent > 100, "the scan found only {sent} sends: has the field been renamed?");
         assert!(astray.is_empty(), "sent to the engine, which does nothing with them — send them through send_commands:\n{}", astray.join("\n"));
+    }
+}
+
+/// Where a project never saved keeps its compositions' assets: the
+/// session's own folder, laid out as a project's.
+fn unsaved_compositions_home() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("klipp-unsaved-compositions-{}", std::process::id()))
+}
+
+/// What `item`'s decoded frames are made from, as one number: its file as
+/// it is on disk, its proxy, and how it is decoded. A sync of the pool that
+/// changes something else (a tag, a rating, a note) leaves it as it was.
+pub(super) fn media_state(item: &klipp_media::MediaItem) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (&item.path, item.file_size_bytes, item.file_modified_at, item.fingerprint, item.offline, item.is_still).hash(&mut h);
+    (&item.proxy_path, item.proxy_ready, item.source_rotation, item.dolby_vision_profile).hash(&mut h);
+    (&item.color_primaries, &item.color_transfer, &item.pixel_format, item.bit_depth).hash(&mut h);
+    format!("{:?} {:?} {:?} {:?}", item.effective_log_format(), item.colour_space, item.fps, item.resolution).hash(&mut h);
+    h.finish()
+}
+
+#[cfg(test)]
+mod media_state_tests {
+    use super::media_state;
+
+    /// The things a pool sync changes most (a tag, a rating, a note, a
+    /// waveform) leave a media's frames, and its state, as they were; its
+    /// file, proxy or decoding do not.
+    #[test]
+    fn a_medias_state_is_what_its_frames_are_made_from() {
+        let item = klipp_media::MediaItem::synthetic_for_test("/media/a.mov".into(), None);
+        let before = media_state(&item);
+        let same = |f: &dyn Fn(&mut klipp_media::MediaItem)| {
+            let mut m = item.clone();
+            f(&mut m);
+            media_state(&m)
+        };
+        assert_eq!(same(&|m| m.tags.push("good".into())), before);
+        assert_eq!(same(&|m| m.rating = 4), before);
+        assert_eq!(same(&|m| m.user_notes = "a note".into()), before);
+        assert_eq!(same(&|m| m.waveform_data = Some(vec![(0.0, 1.0)])), before);
+        assert_ne!(same(&|m| m.path = "/media/b.mov".into()), before);
+        assert_ne!(same(&|m| m.file_modified_at = Some(7)), before);
+        assert_ne!(same(&|m| m.proxy_ready = true), before);
+        assert_ne!(same(&|m| m.log_format = klipp_core::LogFormat::SLog3), before);
+        assert_ne!(same(&|m| m.offline = true), before);
     }
 }

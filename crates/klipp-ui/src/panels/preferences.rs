@@ -744,7 +744,7 @@ impl PreferencesPanel {
             let picker = egui::Id::new("prefs-default-project-dir");
             if ui.button("Browse...").clicked() {
                 crate::file_dialog::pick_path(picker, || {
-                    rfd::FileDialog::new().set_title("Projects Root").pick_folder()
+                    crate::file_dialog::new().set_title("Projects Root").pick_folder()
                 });
             }
             if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
@@ -1874,7 +1874,7 @@ impl PreferencesPanel {
             let picker = egui::Id::new("prefs-default-export-dir");
             if ui.button("Browse\u{2026}").clicked() {
                 crate::file_dialog::pick_path(picker, || {
-                    rfd::FileDialog::new().set_title("Default Export Folder").pick_folder()
+                    crate::file_dialog::new().set_title("Default Export Folder").pick_folder()
                 });
             }
             if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
@@ -2042,7 +2042,7 @@ impl PreferencesPanel {
             let picker = egui::Id::new("prefs-proxy-cache-dir");
             if btn_resp.clicked() {
                 crate::file_dialog::pick_path(picker, || {
-                    rfd::FileDialog::new().set_title("Proxy Cache Folder").pick_folder()
+                    crate::file_dialog::new().set_title("Proxy Cache Folder").pick_folder()
                 });
             }
             if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
@@ -3374,7 +3374,7 @@ impl PreferencesPanel {
             if btn_resp.clicked() {
                 let title = label.to_string();
                 crate::file_dialog::pick_path(picker, move || {
-                    rfd::FileDialog::new().set_title(title).pick_folder()
+                    crate::file_dialog::new().set_title(title).pick_folder()
                 });
             }
             if let Some(crate::file_dialog::Picked::Path(p)) = crate::file_dialog::take_path(picker) {
@@ -3847,7 +3847,7 @@ impl PreferencesPanel {
                     }
                     if ui.selectable_label(false, "Browse...").clicked() {
                         crate::file_dialog::pick_path(picker, || {
-                            rfd::FileDialog::new().set_title("Calibration LUT").add_filter("LUT", &["cube", "3dl"]).pick_file()
+                            crate::file_dialog::new().set_title("Calibration LUT").add_filter("LUT", &["cube", "3dl"]).pick_file()
                         });
                     }
                 });

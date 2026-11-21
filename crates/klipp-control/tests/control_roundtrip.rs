@@ -5907,7 +5907,7 @@ fn a_project_is_collected_dry_run_first_and_verified_after() {
     pool.add(klipp_media::MediaItem::synthetic_for_test(take, None));
     let seqs = [klipp_timeline::Sequence::new_default()];
     klipp_project::save_project_with_color(&source, &seqs, &pool, &Default::default(), None, None, "").unwrap();
-    let options = klipp_project::consolidate::ConsolidateOptions { dest_dir: folder.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    let options = klipp_project::consolidate::ConsolidateOptions { dest_dir: folder.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new(), compositions: Default::default() };
     klipp_project::consolidate::consolidate_project(&source, &pool, &seqs, &Default::default(), options, None).unwrap();
     let checked = h.ok(json!({ "method": "collect_project", "verify": folder }));
     assert_eq!((checked["verified"].as_bool(), checked["failures"].as_array().map(Vec::len)), (Some(true), Some(0)), "{checked}");

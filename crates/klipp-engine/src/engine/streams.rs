@@ -83,6 +83,11 @@ impl klipp_compose::GpuPixels for GpuHeld {
     fn read(&self) -> Arc<Vec<f32>> {
         Arc::clone(self.linear.get_or_init(|| Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&self.srgb()))))
     }
+
+    // The decoder's bytes, which `read` expands through the same table.
+    fn on_device(&self) -> Option<(klipp_compose::OnDevice<'_>, u32, u32)> {
+        Some((klipp_compose::OnDevice::Srgb8(&self.frame.rgba_buffer), self.frame.width, self.frame.height))
+    }
 }
 
 /// A held frame's sRGB bytes on the GPU, as a temporal denoise's

@@ -1,0 +1,35 @@
+[package]
+name = "klipp-veylvik"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+# Veylvik's engine hosted in Klipp: a composition as a clip source on
+# Klipp's GPU device, its footage from Klipp's decoder. Pinned to an exact
+# Veylvik revision so every Klipp build names the Veylvik it was tested with.
+[dependencies]
+veylvik-document = { git = "https://github.com/davidkodar/veylvik", rev = "f150ae5" }
+veylvik-render = { git = "https://github.com/davidkodar/veylvik", rev = "f150ae5" }
+veylvik-editor = { git = "https://github.com/davidkodar/veylvik", rev = "f150ae5" }
+veylvik-io = { git = "https://github.com/davidkodar/veylvik", rev = "f150ae5" }
+wgpu = { workspace = true }
+klipp-core = { workspace = true }
+klipp-media = { workspace = true }
+klipp-render = { workspace = true }
+klipp-color = { workspace = true }
+klipp-nodes = { workspace = true }
+klipp-compose = { workspace = true }
+klipp-timeline = { workspace = true }
+klipp-effects = { workspace = true }
+klipp-analysis = { workspace = true }
+klipp-plugin = { workspace = true }
+bytemuck = { workspace = true }
+dirs = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+klipp-title = { workspace = true }
+uuid = { workspace = true }
+png = "0.18"
+klipp-timeline = { workspace = true, features = ["test-clip"] }

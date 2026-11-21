@@ -182,7 +182,7 @@ pub(super) fn show(
         // Serialized now, written once a place is chosen.
         match serde_json::to_string_pretty(path) {
             Ok(json) => crate::file_dialog::spawn(move || {
-                let Some(file) = rfd::FileDialog::new()
+                let Some(file) = crate::file_dialog::new()
                     .add_filter("Editable path", &["json"])
                     .save_file()
                 else {
@@ -212,7 +212,7 @@ pub(super) fn show(
     let picker = egui::Id::new("vector-path-import").with((clip_id, object.0));
     if ui.button("Import path JSON…").clicked() {
         crate::file_dialog::pick_path(picker, || {
-            rfd::FileDialog::new()
+            crate::file_dialog::new()
                 .add_filter("Editable path", &["json"])
                 .pick_file()
         });

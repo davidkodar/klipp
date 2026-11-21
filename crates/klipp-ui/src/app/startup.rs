@@ -29,6 +29,10 @@ impl KlippApp {
         // these files are written under.
         prune_ai_mask_cache();
 
+        // A clip shown through a Veylvik composition gets its picture in
+        // every render; nothing starts until a project holds one.
+        klipp_veylvik::install();
+
         let (thumb_tx, thumb_rx) = crossbeam_channel::unbounded();
         let (source_frame_tx, source_frame_rx) = crossbeam_channel::unbounded();
         let (filmstrip_tx, filmstrip_rx) = crossbeam_channel::unbounded();
@@ -116,6 +120,7 @@ impl KlippApp {
             prefs.playback.background_performance.to_scheduler_policy();
 
         let mut app = Self {
+            veylvik_tab: super::veylvik_tab::VeylvikTab::new(cc.wgpu_render_state.clone()),
             cmd_tx: klipp_engine::commands::EngineSender::new(cmd_tx),
             event_rx,
             control_inbox: None,

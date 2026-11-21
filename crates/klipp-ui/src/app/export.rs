@@ -1642,7 +1642,7 @@ impl KlippApp {
                             let picker = egui::Id::new("export-output-path");
                             if ui.button("...").clicked() {
                                 crate::file_dialog::pick_path(picker, || {
-                                    rfd::FileDialog::new().set_title("Export to...").save_file()
+                                    crate::file_dialog::new().set_title("Export to...").save_file()
                                 });
                             }
                             if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
@@ -2883,7 +2883,7 @@ impl KlippApp {
             }
             if ui.add_enabled(!self.export_dialog.delivery_busy, egui::Button::new("Check a File\u{2026}")).on_hover_text("A finished file against the spec: read with ffprobe, its loudness measured").clicked() {
                 let picker = egui::Id::new("delivery-check-file");
-                crate::file_dialog::pick_path(picker, || rfd::FileDialog::new().set_title("Check a file against the spec").pick_file());
+                crate::file_dialog::pick_path(picker, || crate::file_dialog::new().set_title("Check a file against the spec").pick_file());
             }
             if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(egui::Id::new("delivery-check-file")) {
                 self.export_dialog.delivery_busy = true;
@@ -4049,6 +4049,17 @@ impl KlippApp {
                 self.pointer.queue(steps);
                 // Said at once, so the request waits from its answer on.
                 self.state.control_shared.pointer_steps.store(self.pointer.pending(), std::sync::atomic::Ordering::SeqCst);
+                true
+            }
+            AppCommand::VeylvikComposition { clip_id, open } => {
+                match self.veylvik_composition_for(*clip_id) {
+                    Ok(_) if *open => {
+                        self.state.selected_clip = Some(*clip_id);
+                        self.state.active_workspace = crate::state::Workspace::Veylvik;
+                    }
+                    Ok(_) => {}
+                    Err(why) => self.state.toast.show(format!("No Veylvik composition for that clip: {why}")),
+                }
                 true
             }
             AppCommand::ShowPanel { workspace, inspector_tab } => {

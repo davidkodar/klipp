@@ -468,6 +468,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SaveCaptionStyle { .. }
         | AppCommand::ClearCaptionStyle { .. }
         | AppCommand::ReplaceClipMedia { .. }
+        // A composition made for a clip is a step of its own.
+        | AppCommand::VeylvikComposition { .. }
         | AppCommand::CreateCompoundClip { .. }
         | AppCommand::CreateMulticamClip
         | AppCommand::CreateSyncedMulticam { .. }

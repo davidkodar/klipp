@@ -301,6 +301,8 @@ impl KlippApp {
         // The engine resolves clips through its own copy of the pool.
         self.sync_media_pool_to_engine();
         self.state.title_assets.clear();
+        self.state.compositions.clear();
+        self.sync_compositions_to_engine();
         self.state.looks.clear();
         // A new project carries no fonts of its own (#3009).
         klipp_title::catalogue::set_project_fonts(Vec::new());
@@ -651,11 +653,30 @@ impl KlippApp {
         let new_home = self.state.project_path.as_deref() != Some(path);
         self.adopt_temp_stills(path);
         self.adopt_made_media(path);
+        // A clip copied with its composition gets one of its own, so the
+        // file never has two clips sharing one.
+        let forks = klipp_project::compositions::fork_shared(&mut self.state.sequences, &mut self.state.compositions);
+        if !forks.is_empty() {
+            self.sync_compositions_to_engine();
+            self.sync_sequence_to_engine();
+        }
+        // The compositions' assets are in the folder they were opened
+        // from, or the session's for a project never saved.
+        let assets_dir = Some(self.compositions_home());
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
         match klipp_project::save_project_full(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), Some(self.state.timeline_track_scale), &self.state.title_assets) {
             Ok(()) => {
                 if let Err(e) = klipp_project::import_report::save(path, self.state.last_import_report.as_ref()) {
                     self.state.toast.show(format!("Project saved, but the import report could not be saved: {e}"));
+                }
+                let from = klipp_project::compositions::AssetsFrom { project_dir: assets_dir.as_deref(), forks: &forks };
+                match klipp_project::compositions::save_compositions(path, &self.state.sequences, &self.state.compositions, from) {
+                    Ok(missing) => {
+                        if let Some(first) = missing.first() {
+                            self.state.toast.show(first.clone());
+                        }
+                    }
+                    Err(e) => self.state.toast.show(format!("The project saved, but not its Veylvik compositions: {e}")),
                 }
                 if let Err(e) = klipp_project::save_looks(path, &self.state.looks) {
                     // Said, not only logged: a Look that isn't saved is
@@ -670,6 +691,12 @@ impl KlippApp {
                     self.lock_seen_path = None;
                 }
                 self.state.project_path = Some(path.to_path_buf());
+                // Their assets are read from the new home from now on, the
+                // Veylvik page's editor's too.
+                if new_home {
+                    self.sync_compositions_to_engine();
+                    self.veylvik_tab.reopen();
+                }
                 // Grade stills kept only in memory (no folder, or a
                 // read-only one) are written with the project's new home.
                 if new_home {
@@ -764,7 +791,7 @@ impl KlippApp {
             }
             None => {
                 let step = await_path(UNSAVED_SAVE_PICKER.into(), self.unsaved_save_waiting, clicked, || {
-                    rfd::FileDialog::new().set_title("Save Project").pick_folder()
+                    crate::file_dialog::new().set_title("Save Project").pick_folder()
                 });
                 self.unsaved_save_waiting = step == Awaited::Waiting;
                 match step {
@@ -944,6 +971,15 @@ impl KlippApp {
                     self.state.retired_media_ids.remove(&item.id);
                 }
                 self.state.title_assets = title_assets;
+                // The clips' Veylvik compositions; one that can't be read
+                // is said, and its clip shows its media.
+                let (compositions, unread) = klipp_project::compositions::load_compositions(path, &self.state.sequences);
+                self.state.compositions = compositions;
+                self.sync_compositions_to_engine();
+                if let Some(first) = unread.first() {
+                    let more = if unread.len() > 1 { format!(" ({} more)", unread.len() - 1) } else { String::new() };
+                    self.state.toast.show(format!("{first}{more}"));
+                }
                 open_laps.lap("retire_media");
                 self.state.looks = klipp_project::load_looks(path);
                 // The fonts the project carries, drawn where this machine

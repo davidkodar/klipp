@@ -100,14 +100,14 @@ impl BrandKitsPage {
                 self.said = None;
             }
             if ui.button("Import\u{2026}").on_hover_text(format!("Add a kit shared as a .{} file", brand_kit::BRAND_EXTENSION)).clicked() {
-                crate::file_dialog::pick_path(picker("import"), || rfd::FileDialog::new().set_title("Import Brand Kit").add_filter("Brand kit", &[brand_kit::BRAND_EXTENSION]).pick_file());
+                crate::file_dialog::pick_path(picker("import"), || crate::file_dialog::new().set_title("Import Brand Kit").add_filter("Brand kit", &[brand_kit::BRAND_EXTENSION]).pick_file());
             }
             let exportable = self.draft.as_ref().and_then(|d| d.from.clone());
             let r = ui.add_enabled(exportable.is_some(), egui::Button::new("Export\u{2026}")).on_disabled_hover_text("Open a saved kit to export it");
             if r.on_hover_text("Write the open kit, its files and their licences, to share").clicked() {
                 if let Some((name, _)) = exportable {
                     let file = format!("{}.{}", klipp_core::safe_name(&name), brand_kit::BRAND_EXTENSION);
-                    crate::file_dialog::pick_path(picker("export"), move || rfd::FileDialog::new().set_title("Export Brand Kit").set_file_name(file).save_file());
+                    crate::file_dialog::pick_path(picker("export"), move || crate::file_dialog::new().set_title("Export Brand Kit").set_file_name(file).save_file());
                 }
             }
         });
@@ -290,7 +290,7 @@ fn edit(ui: &mut egui::Ui, d: &mut Draft, templates: &[String], theme: &KlippThe
         P::section_header(ui, "LOGO", theme);
         P::setting_row_with_subtitle(ui, "Picture", "PNG, JPEG or WebP; the watermark on a sequence", theme, |ui| {
             if ui.button("Choose\u{2026}").clicked() {
-                crate::file_dialog::pick_path(picker("logo"), || rfd::FileDialog::new().set_title("Brand Kit Logo").add_filter("Picture", brand_kit::LOGO_KINDS).pick_file());
+                crate::file_dialog::pick_path(picker("logo"), || crate::file_dialog::new().set_title("Brand Kit Logo").add_filter("Picture", brand_kit::LOGO_KINDS).pick_file());
             }
             if let Some(l) = &d.kit.logo {
                 ui.label(egui::RichText::new(&l.file).size(11.0).color(theme.text_secondary));
@@ -396,7 +396,7 @@ fn bookend(ui: &mut egui::Ui, d: &mut Draft, which: &str, templates: &[String], 
         });
         if ui.button("Clip\u{2026}").on_hover_text("A video file as the bookend").clicked() {
             let title = format!("Brand Kit {label}");
-            crate::file_dialog::pick_path(picker(which), move || rfd::FileDialog::new().set_title(title).add_filter("Video", brand_kit::CLIP_KINDS).pick_file());
+            crate::file_dialog::pick_path(picker(which), move || crate::file_dialog::new().set_title(title).add_filter("Video", brand_kit::CLIP_KINDS).pick_file());
         }
         clip = b.as_ref().and_then(|b| b.file.clone());
     });

@@ -166,7 +166,7 @@ fn plate_picker(ui: &mut egui::Ui, theme: &KlippTheme, addr: &NodePath, params: 
         if ui.button("Browse\u{2026}").on_hover_text("Choose the clean plate: the shot without its subject").clicked() {
             let (addr, with_plate) = (addr.clone(), with_plate.clone());
             crate::file_dialog::spawn_pick(
-                || rfd::FileDialog::new().set_title("Clean plate").add_filter("Images", &["png", "jpg", "jpeg", "tif", "tiff", "exr"]).pick_file(),
+                || crate::file_dialog::new().set_title("Clean plate").add_filter("Images", &["png", "jpg", "jpeg", "tif", "tiff", "exr"]).pick_file(),
                 move |chosen| with_plate(&addr, Some(chosen)).into_iter().collect(),
             );
         }

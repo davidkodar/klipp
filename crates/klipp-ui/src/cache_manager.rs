@@ -106,7 +106,7 @@ fn scan_dirs_combined(paths: &[PathBuf]) -> (u64, u64) {
     (total, count)
 }
 
-/// Returns the four tracked cache categories, sized against the current
+/// Returns the five tracked cache categories, sized against the current
 /// on-disk state. `cache_root` is the base `~/.cache/klipp/` directory; the
 /// optional `proxy_override` lets the user redirect proxy storage via prefs.
 pub fn scan_cache_categories(
@@ -120,12 +120,16 @@ pub fn scan_cache_categories(
     let audio_peaks_path = cache_root.join("audio-peaks");
     let audio_cache_path = cache_root.join("audio-cache");
     let render_path = cache_root.join("render");
+    // The Veylvik page's prepared pictures (Veylvik's playback store,
+    // kept in folders of its own below this one).
+    let veylvik_path = cache_root.join("veylvik-playback");
 
     let (proxy_bytes, proxy_count) = scan_dir_size(&proxy_path);
     let (strip_bytes, strip_count) = scan_dir_size(&filmstrip_path);
     let (audio_bytes, audio_count) =
         scan_dirs_combined(&[audio_peaks_path.clone(), audio_cache_path.clone()]);
     let (render_bytes, render_count) = scan_dir_size(&render_path);
+    let (veylvik_bytes, veylvik_count) = scan_tree_size(&veylvik_path);
 
     vec![
         CacheCategory {
@@ -160,6 +164,14 @@ pub fn scan_cache_categories(
             file_count: render_count,
             // Red
             color: egui::Color32::from_rgb(0xd0, 0x50, 0x50),
+        },
+        CacheCategory {
+            name: "Veylvik playback",
+            path: veylvik_path,
+            size_bytes: veylvik_bytes,
+            file_count: veylvik_count,
+            // Violet
+            color: egui::Color32::from_rgb(0x8a, 0x6b, 0xd8),
         },
     ]
 }
@@ -265,7 +277,7 @@ mod tests {
     fn scan_categories_handles_missing_root() {
         let cats =
             scan_cache_categories(std::path::Path::new("/nonexistent/path/xyz"), None);
-        assert_eq!(cats.len(), 4);
+        assert_eq!(cats.len(), 5);
         for c in &cats {
             assert_eq!(c.size_bytes, 0);
             assert_eq!(c.file_count, 0);
@@ -274,6 +286,24 @@ mod tests {
         assert_eq!(cats[1].name, "Filmstrips");
         assert_eq!(cats[2].name, "Audio peaks");
         assert_eq!(cats[3].name, "Render cache");
+        assert_eq!(cats[4].name, "Veylvik playback");
+    }
+
+    /// The Veylvik page's prepared pictures are where its editor is told
+    /// to keep them, and counted at any depth: the store keeps them in a
+    /// session's folder and a lasting one below it.
+    #[test]
+    fn veylvik_playback_is_counted_where_the_page_keeps_it() {
+        let root = std::env::temp_dir().join(format!("klipp_cache_veylvik_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let deep = root.join("veylvik-playback").join("kept-1").join("ab");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("frame"), [0u8; 100]).unwrap();
+        let cats = scan_cache_categories(&root, None);
+        let v = cats.iter().find(|c| c.name == "Veylvik playback").unwrap();
+        assert_eq!(v.path, root.join("veylvik-playback"));
+        assert_eq!((v.size_bytes, v.file_count), (100, 1));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

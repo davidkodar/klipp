@@ -504,7 +504,7 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             let Some(clip_id) = state.selected_clip else { return; };
             let size = state.bake_lut_size;
             crate::file_dialog::spawn(move || {
-                rfd::FileDialog::new()
+                crate::file_dialog::new()
                     .set_title("Save baked grade as .cube")
                     .add_filter("3D LUT (.cube)", &["cube"])
                     .set_file_name(format!("klipp_grade_{size}.cube"))
@@ -1076,7 +1076,7 @@ pub fn pick_media_files() -> Vec<std::path::PathBuf> {
 
 /// The Import Media picker, opening in `folder`.
 fn media_dialog(folder: &std::path::Path) -> rfd::FileDialog {
-    rfd::FileDialog::new()
+    crate::file_dialog::new()
         .set_title("Import Media")
         .set_directory(folder)
         .add_filter("All media", &klipp_core::media_extensions::all_media_extensions())
@@ -1148,7 +1148,7 @@ pub fn show_layout_keys(entries: &mut [PaletteEntry], kb: &KeyBindings) {
 pub fn dispatch_dialog(kind: DialogKind) -> Vec<AppCommand> {
     let single = match kind {
         DialogKind::OpenProject => return crate::project_paths::pick_project_commands(),
-        DialogKind::SaveProjectAs => rfd::FileDialog::new()
+        DialogKind::SaveProjectAs => crate::file_dialog::new()
             .set_title("Save Project As")
             .add_filter("Klipp Project", &["klipp"])
             .set_file_name("project.klipp")
@@ -1157,12 +1157,12 @@ pub fn dispatch_dialog(kind: DialogKind) -> Vec<AppCommand> {
         DialogKind::ImportMedia => {
             return import_media_commands();
         }
-        DialogKind::ImportSubtitles => rfd::FileDialog::new()
+        DialogKind::ImportSubtitles => crate::file_dialog::new()
             .set_title("Import Subtitles")
             .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa", "ttml", "dfxp", "xml", "itt", "scc", "stl"])
             .pick_file()
             .map(|p| AppCommand::ImportSubtitles { path: p }),
-        DialogKind::ExportSubtitles => rfd::FileDialog::new()
+        DialogKind::ExportSubtitles => crate::file_dialog::new()
             .set_title("Export Subtitles")
             .add_filter("SRT", &["srt"])
             .add_filter("WebVTT", &["vtt"])
@@ -1174,53 +1174,53 @@ pub fn dispatch_dialog(kind: DialogKind) -> Vec<AppCommand> {
             .set_file_name("subtitles.srt")
             .save_file()
             .map(|p| AppCommand::ExportSubtitles { path: p }),
-        DialogKind::ExportFcpxml => rfd::FileDialog::new()
+        DialogKind::ExportFcpxml => crate::file_dialog::new()
             .set_title("Export FCPXML")
             .add_filter("FCPXML", &["fcpxml"])
             .set_file_name("project.fcpxml")
             .save_file()
             .map(|p| AppCommand::ExportFcpxml { path: p }),
-        DialogKind::ExportEdl => rfd::FileDialog::new()
+        DialogKind::ExportEdl => crate::file_dialog::new()
             .set_title("Export EDL")
             .add_filter("EDL", &["edl"])
             .set_file_name("project.edl")
             .save_file()
             .map(|p| AppCommand::ExportEdl { path: p }),
-        DialogKind::ExportOtio => rfd::FileDialog::new()
+        DialogKind::ExportOtio => crate::file_dialog::new()
             .set_title("Export OpenTimelineIO")
             .add_filter("OpenTimelineIO", &["otio"])
             .set_file_name("project.otio")
             .save_file()
             .map(|p| AppCommand::ExportOtio { path: p }),
-        DialogKind::ExportAaf => rfd::FileDialog::new()
+        DialogKind::ExportAaf => crate::file_dialog::new()
             .set_title("Export AAF")
             .add_filter("AAF", &["aaf"])
             .set_file_name("project.aaf")
             .save_file()
             .map(|p| AppCommand::ExportAaf { path: p }),
-        DialogKind::ExportKdenlive => rfd::FileDialog::new()
+        DialogKind::ExportKdenlive => crate::file_dialog::new()
             .set_title("Export Kdenlive Project")
             .add_filter("Kdenlive Project", &["kdenlive"])
             .set_file_name("project.kdenlive")
             .save_file()
             .map(|p| AppCommand::ExportKdenlive { path: p }),
-        DialogKind::OpenFromAnotherEditor => rfd::FileDialog::new()
+        DialogKind::OpenFromAnotherEditor => crate::file_dialog::new()
             .set_title("Open Project from Another Editor")
             .add_filter("Timelines", &["fcpxml", "xml", "otio", "kdenlive", "mlt", "edl", "aaf"])
             .add_filter("Any file", &["*"])
             .pick_file()
             .map(|path| AppCommand::OpenFromAnotherEditor { path, request_id: uuid::Uuid::nil() }),
-        DialogKind::ImportFcpxml => rfd::FileDialog::new()
+        DialogKind::ImportFcpxml => crate::file_dialog::new()
             .set_title("Import FCPXML")
             .add_filter("FCPXML", &["fcpxml"])
             .pick_file()
             .map(|p| AppCommand::ImportFcpxml { path: p }),
-        DialogKind::ImportKdenlive => rfd::FileDialog::new()
+        DialogKind::ImportKdenlive => crate::file_dialog::new()
             .set_title("Import Kdenlive Project")
             .add_filter("Kdenlive Project", &["kdenlive"])
             .pick_file()
             .map(|p| AppCommand::ImportKdenlive { path: p }),
-        DialogKind::ImportOtio => rfd::FileDialog::new()
+        DialogKind::ImportOtio => crate::file_dialog::new()
             .set_title("Import OpenTimelineIO")
             .add_filter("OpenTimelineIO", &["otio"])
             .pick_file()

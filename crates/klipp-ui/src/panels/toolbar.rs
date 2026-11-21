@@ -156,7 +156,7 @@ impl ToolbarPanel {
         // ═══════════════════════════════════════════
         // A segmented control: the labels in one field, the active one
         // lit, sized to its titles so none is ever clipped.
-        let workspaces = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Export, "Export")];
+        let workspaces = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Veylvik, "Veylvik"), (Workspace::Export, "Export")];
         let ws_font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
         let labels: Vec<&str> = workspaces.iter().map(|w| w.1).collect();
         let ws_size = crate::widgets::segmented::segmented_size(ui, &labels, &ws_font, crate::theme::control::REGULAR);
@@ -208,7 +208,7 @@ impl ToolbarPanel {
             if ui.button("Open Project from Another Editor...").on_hover_text(klipp_project::import_report::READS).clicked() {
                 ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
+                    crate::file_dialog::new()
                         .set_title("Open Project from Another Editor")
                         .add_filter("Timelines", &["fcpxml", "xml", "otio", "kdenlive", "mlt", "edl", "aaf"])
                         .add_filter("Any file", &["*"])
@@ -230,7 +230,7 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new("Save As...").shortcut_text(kb.display_for("save_project_as"))).clicked() {
                 ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
+                    crate::file_dialog::new()
                         .set_title("Save As")
                         .add_filter("Klipp Project", &["klipp"])
                         .set_file_name("project.klipp")
@@ -267,7 +267,7 @@ impl ToolbarPanel {
             if ui.button("Import Subtitles...").clicked() {
                 ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
+                    crate::file_dialog::new()
                         .set_title("Import Subtitles")
                         .add_filter("Subtitles", &["srt","vtt"])
                         .pick_file()
@@ -278,7 +278,7 @@ impl ToolbarPanel {
             if ui.button("Import Metadata Sheet...").on_hover_text("A CSV or ALE: scene, shot, take, description, keywords, rating and the rest, matched to clips by file name.").clicked() {
                 ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
+                    crate::file_dialog::new()
                         .set_title("Import Metadata Sheet")
                         .add_filter("Metadata sheet", &["csv", "ale", "txt"])
                         .pick_file()
@@ -293,7 +293,7 @@ impl ToolbarPanel {
                 if ui.button("Kdenlive Project...").clicked() {
                     ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Import Kdenlive Project")
                             .add_filter("Kdenlive Project", &["kdenlive", "mlt"])
                             .pick_file()
@@ -304,7 +304,7 @@ impl ToolbarPanel {
                 if ui.button("EDL (.edl)...").clicked() {
                     ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Import EDL")
                             .add_filter("CMX 3600 EDL", &["edl"])
                             .pick_file()
@@ -315,7 +315,7 @@ impl ToolbarPanel {
                 if ui.button("OpenTimelineIO (.otio)...").clicked() {
                     ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Import OpenTimelineIO")
                             .add_filter("OpenTimelineIO", &["otio"])
                             .pick_file()
@@ -326,7 +326,7 @@ impl ToolbarPanel {
                 if ui.button("Final Cut Pro XML (.fcpxml)...").clicked() {
                     ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Import FCPXML Project")
                             .add_filter("Final Cut Pro XML", &["fcpxml", "xml"])
                             .pick_file()
@@ -340,7 +340,7 @@ impl ToolbarPanel {
             if ui.button("Export Subtitles...").clicked() {
                 ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
+                    crate::file_dialog::new()
                         .set_title("Export Subtitles")
                         .add_filter("SRT", &["srt"])
                         .add_filter("WebVTT", &["vtt"])
@@ -358,7 +358,7 @@ impl ToolbarPanel {
             if ui.button("YouTube Chapters\u{2026}").clicked() {
                 ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
+                    crate::file_dialog::new()
                         .set_title("Export YouTube Chapters")
                         .add_filter("Text file", &["txt"])
                         .set_file_name("chapters.txt")
@@ -370,7 +370,7 @@ impl ToolbarPanel {
             if ui.button("Generate Render Script\u{2026}").clicked() {
                 ui.close_kind(egui::UiKind::Menu);
                 crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
+                    crate::file_dialog::new()
                         .set_title("Save Render Script")
                         .add_filter("Shell script", &["sh"])
                         .set_file_name("render.sh")
@@ -384,7 +384,7 @@ impl ToolbarPanel {
                 if ui.button("FCPXML...").clicked() {
                     ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Export FCPXML")
                             .add_filter("FCPXML", &["fcpxml"])
                             .set_file_name("export.fcpxml")
@@ -396,7 +396,7 @@ impl ToolbarPanel {
                 if ui.button("Kdenlive Project...").clicked() {
                     ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Export as Kdenlive Project")
                             .add_filter("Kdenlive project", &["kdenlive"])
                             .set_file_name("project.kdenlive")
@@ -408,7 +408,7 @@ impl ToolbarPanel {
                 if ui.button("EDL...").clicked() {
                     ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Export EDL")
                             .add_filter("EDL", &["edl"])
                             .set_file_name("export.edl")
@@ -422,7 +422,7 @@ impl ToolbarPanel {
                 if ui.button("OpenTimelineIO...").clicked() {
                     ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Export OpenTimelineIO")
                             .add_filter("OpenTimelineIO", &["otio"])
                             .set_file_name("export.otio")
@@ -445,7 +445,7 @@ impl ToolbarPanel {
                 if aaf.clicked() {
                     ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Export AAF")
                             .add_filter("AAF", &["aaf"])
                             .set_file_name("export.aaf")
@@ -459,7 +459,7 @@ impl ToolbarPanel {
                 if ui.button("CSV...").clicked() {
                     ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Export Metadata as CSV")
                             .add_filter("CSV", &["csv"])
                             .set_file_name("metadata.csv")
@@ -471,7 +471,7 @@ impl ToolbarPanel {
                 if ui.button("ALE (Avid Log Exchange)...").clicked() {
                     ui.close_kind(egui::UiKind::Menu);
                     crate::file_dialog::spawn(move || {
-                        rfd::FileDialog::new()
+                        crate::file_dialog::new()
                             .set_title("Export Metadata as ALE")
                             .add_filter("ALE", &["ale"])
                             .set_file_name("metadata.ale")
@@ -1242,7 +1242,7 @@ impl ToolbarPanel {
             // the third one plainly wrong — clicking "Audio Mixing" put
             // you in Export — and the other two disagree with the tabs
             // for no reason a user can see.
-            for (ws, label) in &[(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Export, "Export")] {
+            for (ws, label) in &[(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Veylvik, "Veylvik"), (Workspace::Export, "Export")] {
                 if menu_toggle(ui, label, "", state.active_workspace == *ws).clicked() { state.active_workspace = *ws; ui.close_kind(egui::UiKind::Menu); }
             }
             ui.separator();
@@ -1824,7 +1824,7 @@ pub(crate) mod narrow_bar_tests {
                 });
             })
         };
-        let pages = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Export, "Export")];
+        let pages = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Veylvik, "Veylvik"), (Workspace::Export, "Export")];
         let tabs = |out: &egui::FullOutput| -> Vec<(String, egui::Pos2, egui::Color32)> {
             out.shapes.iter().filter_map(|s| match &s.shape {
                 egui::Shape::Text(t) if pages.iter().any(|(_, l)| *l == t.galley.text()) && t.pos.y < 40.0 => {

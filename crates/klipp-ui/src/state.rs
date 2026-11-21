@@ -877,6 +877,14 @@ impl AppState {
     }
 }
 
+/// What the Veylvik tab's editor did to its composition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompositionChange {
+    Edit,
+    Undo,
+    Redo,
+}
+
 /// Workspace mode — determines panel arrangement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Workspace {
@@ -885,6 +893,8 @@ pub enum Workspace {
     Color,
     /// Layering a clip's pictures on its node graph (#2758).
     Composite,
+    /// A clip's Veylvik composition, in Veylvik's own editor.
+    Veylvik,
     Export,
 }
 
@@ -900,7 +910,7 @@ impl Workspace {
     /// and [`browser_borrow_for`] puts back what was there on the way
     /// out.
     pub fn borrows_the_browser(self) -> bool {
-        matches!(self, Workspace::Color | Workspace::Composite | Workspace::Export)
+        matches!(self, Workspace::Color | Workspace::Composite | Workspace::Veylvik | Workspace::Export)
     }
 }
 
@@ -1668,6 +1678,10 @@ pub struct AppState {
     /// read from here at render time, and Inspector edits write
     /// back to here.
     pub title_assets: std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
+    /// The Veylvik compositions the clips are shown through, by id, as
+    /// their files' bytes: read on open, written on save, carried by
+    /// Collect (see `klipp_project::compositions`).
+    pub compositions: klipp_project::compositions::Compositions,
     pub project_path: Option<PathBuf>,
     pub created_at: Option<String>,
     /// Free-form project notes — shot list, delivery specs, anything
@@ -1705,6 +1719,10 @@ pub struct AppState {
     /// raises, settled into `unsaved` by comparing digests (#2626). Not
     /// the unsaved mark itself, which only `unsaved` is.
     pub dirty: bool,
+    /// The Veylvik page shows and its editor has the keyboard: Klipp's
+    /// own keys are those of the app alone (save, quit) until a press
+    /// elsewhere takes it back.
+    pub veylvik_keys: bool,
     /// The project differs from what was last loaded or saved, as of the
     /// last time `dirty` was settled (#2626).
     pub unsaved: bool,
@@ -4932,7 +4950,7 @@ impl AppState {
     /// Whether the viewers sit side by side in the current workspace.
     pub fn viewers_side_by_side(&self) -> bool {
         match self.active_workspace {
-            Workspace::Edit => self.dual_viewers,
+            Workspace::Edit | Workspace::Veylvik => self.dual_viewers,
             Workspace::Color | Workspace::Composite => self.color_dual_viewers,
             Workspace::Export => self.export_dual_viewers,
         }
@@ -4941,7 +4959,7 @@ impl AppState {
     /// Flip the viewer layout of the current workspace.
     pub fn toggle_viewer_layout(&mut self) {
         let flag = match self.active_workspace {
-            Workspace::Edit => &mut self.dual_viewers,
+            Workspace::Edit | Workspace::Veylvik => &mut self.dual_viewers,
             Workspace::Color | Workspace::Composite => &mut self.color_dual_viewers,
             Workspace::Export => &mut self.export_dual_viewers,
         };
@@ -5051,9 +5069,11 @@ impl Default for AppState {
             whoosh_media_ids: std::collections::HashMap::new(),
             hyperzoom_preset_registry: crate::hyperzoom_presets::HyperzoomPresetRegistry::new(),
             title_assets: std::collections::HashMap::new(),
+            compositions: Default::default(),
             project_path: None,
             created_at: None,
             dirty: false,
+            veylvik_keys: false,
             unsaved: false,
             saved_digest: None,
             recorded_tracks: Default::default(),
@@ -6232,6 +6252,56 @@ impl AppState {
     /// project's or the active sequence's, whichever top step moved last.
     pub fn next_undo(&self) -> Option<crate::history::Scope> {
         later(self.active_history().undo_stamp(), self.project_history.undo_stamp())
+    }
+
+    /// The step an undo would take next, from whichever history holds it.
+    pub fn next_undo_command(&self) -> Option<&EditCommand> {
+        let history = match self.next_undo()? {
+            crate::history::Scope::Project => &self.project_history,
+            crate::history::Scope::Sequence => self.active_history(),
+        };
+        history.undo_entries().last().map(|e| &e.command)
+    }
+
+    /// The step a redo would put back next.
+    pub fn next_redo_command(&self) -> Option<&EditCommand> {
+        let history = match self.next_redo()? {
+            crate::history::Scope::Project => &self.project_history,
+            crate::history::Scope::Sequence => self.active_history(),
+        };
+        history.redo_entries().last().map(|e| &e.command)
+    }
+
+    /// A change the Veylvik tab's editor made to composition `id`, which
+    /// is `now`. An edit is a step of Klipp's, named for the editor's. Its
+    /// own undo or redo moves over the step Klipp holds for that edit, so
+    /// the one list of steps stays one; when Klipp holds none to move over
+    /// (an edit of Klipp's came after), it is a step of its own.
+    pub fn take_composition_change(&mut self, id: klipp_timeline::CompositionId, kind: CompositionChange, label: &str, now: std::sync::Arc<[u8]>) {
+        let before = self.compositions.get(&id).cloned();
+        if before.as_deref() == Some(&now[..]) {
+            return;
+        }
+        self.compositions.insert(id, now.clone());
+        self.dirty = true;
+        let is = |c: Option<&EditCommand>, from: &Option<std::sync::Arc<[u8]>>, to: &Option<std::sync::Arc<[u8]>>| {
+            matches!(c, Some(EditCommand::SetComposition { id: i, before: b, after: a, .. }) if *i == id && b == from && a == to)
+        };
+        let now = Some(now);
+        let label = match kind {
+            CompositionChange::Edit => format!("Veylvik: {label}"),
+            CompositionChange::Undo if is(self.next_undo_command(), &now, &before) => {
+                self.take_undo();
+                return;
+            }
+            CompositionChange::Redo if is(self.next_redo_command(), &before, &now) => {
+                self.take_redo();
+                return;
+            }
+            CompositionChange::Undo => format!("Veylvik: Undo {label}"),
+            CompositionChange::Redo => format!("Veylvik: Redo {label}"),
+        };
+        self.push_history(EditCommand::SetComposition { id, before, after: now, label });
     }
 
     /// Which history redo puts the next step back from: the step taken

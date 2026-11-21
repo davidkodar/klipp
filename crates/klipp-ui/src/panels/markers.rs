@@ -116,21 +116,21 @@ impl MarkersPanel {
                                 if ui.button("Export Review Copy\u{2026}").on_hover_text("Render the sequence with its timecode and review round burned in, and a comment file beside it").clicked() {
                                     let name = format!("{}-review.mp4", state.sequence().name.replace(['/', '\\'], "-"));
                                     crate::file_dialog::spawn(move || {
-                                        rfd::FileDialog::new().set_title("Export Review Copy").add_filter("MP4 video", &["mp4"]).set_file_name(&name).save_file()
+                                        crate::file_dialog::new().set_title("Export Review Copy").add_filter("MP4 video", &["mp4"]).set_file_name(&name).save_file()
                                             .map(|path| vec![AppCommand::ExportReviewCopy { path }]).unwrap_or_default()
                                     });
                                     ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Import Review Comments\u{2026}").on_hover_text("Add a reviewer's comments, with their timecodes, as review markers").clicked() {
                                     crate::file_dialog::spawn(move || {
-                                        rfd::FileDialog::new().set_title("Import Review Comments").add_filter("Comments", &["csv", "tsv", "txt"]).pick_file()
+                                        crate::file_dialog::new().set_title("Import Review Comments").add_filter("Comments", &["csv", "tsv", "txt"]).pick_file()
                                             .map(|path| vec![AppCommand::ImportReviewComments { path }]).unwrap_or_default()
                                     });
                                     ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Export Review List\u{2026}").on_hover_text("Write the review comments and where each stands, for the next round").clicked() {
                                     crate::file_dialog::spawn(move || {
-                                        rfd::FileDialog::new().set_title("Export Review List").add_filter("CSV", &["csv"]).set_file_name("review-list.csv").save_file()
+                                        crate::file_dialog::new().set_title("Export Review List").add_filter("CSV", &["csv"]).set_file_name("review-list.csv").save_file()
                                             .map(|path| vec![AppCommand::ExportReviewList { path }]).unwrap_or_default()
                                     });
                                     ui.close_kind(egui::UiKind::Menu);
@@ -144,7 +144,7 @@ impl MarkersPanel {
                                 .clicked()
                             {
                                 crate::file_dialog::spawn(move || {
-                                    rfd::FileDialog::new()
+                                    crate::file_dialog::new()
                                         .set_title("Export YouTube Chapters")
                                         .add_filter("Text file", &["txt"])
                                         .set_file_name("chapters.txt")

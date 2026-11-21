@@ -204,6 +204,7 @@ fn show_bin_media_video(
         speed_keyframes: Vec::new(),
         keep_pitch: false,
         sound_apart: false,
+        composition: None,
         hold: None,
         source_rotation: 0,
         enabled: true,
@@ -2951,7 +2952,7 @@ fn show_hyperzoom_section(
                                 .clicked()
                             {
                                 crate::file_dialog::pick_path(picker, || {
-                                    rfd::FileDialog::new()
+                                    crate::file_dialog::new()
                                         .set_title("Pick custom whoosh sample")
                                         .add_filter("Audio", klipp_core::media_extensions::AUDIO_EXTENSIONS)
                                         .pick_file()

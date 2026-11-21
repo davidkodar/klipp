@@ -300,7 +300,7 @@ fn main() -> Result<()> {
                      klipp_nodes=debug,klipp_compose=debug,\
                      klipp_ml=debug,klipp_ml_candle=debug,klipp_ml_ort=debug,\
                      klipp_render=debug,klipp_export=debug,klipp_analysis=debug,\
-                     klipp_control=debug,klipp_document=debug,\
+                     klipp_control=debug,klipp_document=debug,klipp_veylvik=debug,veylvik_editor=info,veylvik_preview=info,veylvik_render=info,\
                      wgpu=warn,naga=warn",
                 )
             }),
@@ -614,7 +614,7 @@ fn main() -> Result<()> {
                     label: Some("egui wgpu device"),
                     // Timestamps where the adapter has them, to time each
                     // track's GPU work (#3207); never asked of one without.
-                    required_features: klipp_effects::gpu_context::timing_features(adapter),
+                    required_features: klipp_effects::gpu_context::device_features(adapter),
                     required_limits: klipp_effects::gpu_context::device_limits(adapter),
                     memory_hints: klipp_effects::gpu_context::memory_hints(),
                     ..Default::default()

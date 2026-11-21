@@ -570,6 +570,7 @@ impl KlippApp {
                 speed_keyframes: clip.speed_keyframes.clone(),
                 keep_pitch: clip.keep_pitch,
                 sound_apart: clip.sound_apart,
+                composition: clip.composition,
                 hold: None,
                 source_rotation: clip.source_rotation,
                 enabled: clip.enabled,

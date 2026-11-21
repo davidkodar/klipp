@@ -257,6 +257,25 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::VeylvikComposition { clip_id, make, open } => {
+            let id = klipp_core::ClipId(parse_uuid(&clip_id, "clip_id")?);
+            let named = |ctx: &ControlContext| -> Result<(Option<klipp_timeline::CompositionId>, bool), String> {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let (t, c) = seq.find_clip(id).ok_or_else(|| format!("no clip {} in the open sequence", id.0))?;
+                let clip = &seq.tracks[t].clips[c];
+                Ok((clip.composition, clip.media_id().is_some()))
+            };
+            let (had, has_media) = named(ctx)?;
+            if (make || open) && !has_media {
+                return Err("the clip has no media to compose with: a video or still clip has".into());
+            }
+            if open || (make && had.is_none()) {
+                send_envelope(ctx, vec![AppCommand::VeylvikComposition { clip_id: id, open }], false)?;
+            }
+            let (now, _) = named(ctx)?;
+            Ok(veylvik_composition_reply(id, now, had.is_none() && now.is_some(), open))
+        }
+
         ControlCommand::TagMedia { media_id, add, remove } => {
             let id = klipp_core::MediaId(parse_uuid(&media_id, "media_id")?);
             let tags = {
@@ -801,3 +820,80 @@ fn take_differs(c: &klipp_timeline::Clip, slot: &klipp_timeline::Clip) -> Vec<&'
     }
     out
 }
+
+/// What `klipp_veylvik_composition` answers for clip `clip`: its
+/// composition `id`'s size, rate, length, nodes and folder, as the project
+/// holds it now, or that it has none.
+fn veylvik_composition_reply(clip: klipp_core::ClipId, id: Option<klipp_timeline::CompositionId>, made: bool, opened: bool) -> serde_json::Value {
+    let Some(id) = id else {
+        return json!({
+            "clip_id": clip.0.to_string(),
+            "composition": null,
+            "text": "The clip has no Veylvik composition; make: true gives it one made of its media, and open: true shows it on the Veylvik page.",
+        });
+    };
+    let bytes = klipp_veylvik::project_compositions().get(&id).cloned();
+    let parsed = bytes.as_deref().map(serde_json::from_slice::<klipp_veylvik::Composition>);
+    let mut reply = json!({
+        "clip_id": clip.0.to_string(),
+        "composition_id": id.to_string(),
+        "made": made,
+        "opened": opened,
+        "folder": klipp_veylvik::project_assets(id).map(|p| p.display().to_string()),
+    });
+    match parsed {
+        Some(Ok(c)) => {
+            // A composition's rate is frames a second, as a fraction.
+            let fps = (c.frame_rate.seconds().unwrap_or(0.0) * 1000.0).round() / 1000.0;
+            let nodes: Vec<serde_json::Value> = c.nodes.values().map(|n| {
+                // The node's kind, as its file names it.
+                let kind = serde_json::to_value(&n.operation).ok().and_then(|v| v.as_object().and_then(|o| o.keys().next().cloned()).or_else(|| v.as_str().map(str::to_owned))).unwrap_or_default();
+                json!({ "id": n.id.to_string(), "label": n.label, "kind": kind, "output": n.id == c.output })
+            }).collect();
+            reply["width"] = json!(c.width);
+            reply["height"] = json!(c.height);
+            reply["fps"] = json!(fps);
+            reply["frames"] = json!(c.frame_count);
+            reply["text"] = json!(format!(
+                "{} the clip's Veylvik composition: {}×{} at {fps} fps, {} frames, {} node(s){}.",
+                if made { "Made" } else { "Read" }, c.width, c.height, c.frame_count, nodes.len(),
+                if opened { ", open on the Veylvik page" } else { "" }
+            ));
+            reply["nodes"] = json!(nodes);
+        }
+        Some(Err(e)) => reply["text"] = json!(format!("The clip names composition {id}, which can't be read: {e}; it shows its media.")),
+        None => reply["text"] = json!(format!("The clip names composition {id}, which the project doesn't hold; it shows its media.")),
+    }
+    reply
+}
+
+#[cfg(test)]
+mod veylvik_composition_tests {
+    use super::veylvik_composition_reply;
+
+    /// A clip without a composition is told how to make one; with one,
+    /// its size, rate, length and nodes are read from what the project
+    /// holds, the output node named.
+    #[test]
+    fn a_clips_composition_is_read_as_the_project_holds_it() {
+        let clip = klipp_core::ClipId::new();
+        let none = veylvik_composition_reply(clip, None, false, false);
+        assert!(none["composition"].is_null());
+        assert!(none["text"].as_str().unwrap().contains("make: true"));
+
+        let id = klipp_timeline::CompositionId::new();
+        let c = klipp_veylvik::Composition::from_host_footage(klipp_veylvik::CLIP_MEDIA_KEY, "Clip", None, [1920, 1080], klipp_veylvik::Time { ticks: 25, rate: 1 }, 50).unwrap();
+        klipp_veylvik::set_project_compositions([(id, std::sync::Arc::<[u8]>::from(serde_json::to_vec(&c).unwrap()))].into());
+        let read = veylvik_composition_reply(clip, Some(id), true, false);
+        klipp_veylvik::set_project_compositions(Default::default());
+        assert_eq!((read["width"].as_u64(), read["height"].as_u64(), read["frames"].as_u64()), (Some(1920), Some(1080), Some(50)));
+        assert_eq!(read["fps"].as_f64(), Some(25.0));
+        assert_eq!(read["made"], true);
+        let nodes = read["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), c.nodes.len());
+        assert_eq!(nodes.iter().filter(|n| n["output"] == true).count(), 1);
+        assert!(nodes.iter().all(|n| !n["kind"].as_str().unwrap().is_empty()), "{nodes:?}");
+        assert!(read["text"].as_str().unwrap().starts_with("Made the clip's Veylvik composition: 1920×1080"), "{}", read["text"]);
+    }
+}
+

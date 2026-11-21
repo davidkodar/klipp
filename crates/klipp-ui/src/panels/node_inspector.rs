@@ -3287,7 +3287,7 @@ impl NodeInspectorPanel {
             ui.add_space(8.0);
             if ui.button("Choose image…").clicked() {
                 crate::file_dialog::spawn_pick(
-                    || rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]).pick_file(),
+                    || crate::file_dialog::new().add_filter("Image", &["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]).pick_file(),
                     move |path| vec![AppCommand::SetExternalMattePath { clip_id, node_id, path: Some(path) }],
                 );
             }
@@ -3399,7 +3399,7 @@ impl NodeInspectorPanel {
             ui.add_space(8.0);
             if ui.button("Choose plate…").clicked() {
                 crate::file_dialog::spawn_pick(
-                    || rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]).pick_file(),
+                    || crate::file_dialog::new().add_filter("Image", &["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]).pick_file(),
                     move |path| vec![AppCommand::SetNodeDifferenceKeyPlate { clip_id, node_id, plate_path: Some(path) }],
                 );
             }
@@ -4098,7 +4098,7 @@ pub(crate) fn cdl_buttons(ui: &mut egui::Ui, params: &NodeParams, node_id: NodeI
             .clicked()
         {
             crate::file_dialog::spawn(move || {
-                let Some(path) = rfd::FileDialog::new().add_filter("ASC CDL", &["cdl", "cc", "ccc"]).pick_file() else {
+                let Some(path) = crate::file_dialog::new().add_filter("ASC CDL", &["cdl", "cc", "ccc"]).pick_file() else {
                     return Vec::new();
                 };
                 let read = std::fs::read_to_string(&path)
@@ -4136,7 +4136,7 @@ pub(crate) fn cdl_buttons(ui: &mut egui::Ui, params: &NodeParams, node_id: NodeI
                 params.saturation.unwrap_or(1.0),
             );
             crate::file_dialog::spawn(move || {
-                if let Some(path) = rfd::FileDialog::new().add_filter("ASC CDL", &["cdl"]).set_file_name("grade.cdl").save_file() {
+                if let Some(path) = crate::file_dialog::new().add_filter("ASC CDL", &["cdl"]).set_file_name("grade.cdl").save_file() {
                     let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "klipp".into());
                     match std::fs::write(&path, cdl.to_xml(&id)) {
                         Ok(()) => tracing::info!("Exported CDL to {}", path.display()),
@@ -4167,7 +4167,7 @@ pub(crate) fn lut_picker(ui: &mut egui::Ui, params: &NodeParams, node_id: NodeId
     ui.horizontal(|ui| {
         if ui.button("Browse\u{2026}").on_hover_text("Load a .cube, .3dl or .csp file into this node").clicked() {
             crate::file_dialog::spawn_pick(
-                || rfd::FileDialog::new().set_title("LUT for this node").add_filter("LUT files", &["cube", "3dl", "csp"]).pick_file(),
+                || crate::file_dialog::new().set_title("LUT for this node").add_filter("LUT files", &["cube", "3dl", "csp"]).pick_file(),
                 move |path| vec![AppCommand::SetNodeLut { clip_id, node_id, path: Some(path) }],
             );
         }

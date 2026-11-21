@@ -120,6 +120,7 @@ fn run_consolidate(
             mode: Default::default(),
             looks: Vec::new(),
             fonts: Vec::new(),
+            compositions: Default::default(),
         },
         None,
     )
@@ -447,7 +448,7 @@ fn used_only_copies_what_the_timeline_uses() {
     seq.tracks.push(v);
     let seqs = vec![seq];
     let dest = tmp_path("used_dest");
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::UsedOnly, looks: Vec::new(), fonts: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::UsedOnly, looks: Vec::new(), fonts: Vec::new(), compositions: Default::default() };
 
     let summary = summarise(&pool, &seqs, &ColorSettings::default(), &options, None);
     assert_eq!((summary.files, summary.bytes), (1, 10), "{summary:?}");
@@ -509,7 +510,7 @@ fn trimmed_cuts_the_file_and_moves_the_clip() {
     seq.tracks.push(v);
     let seqs = vec![seq];
     let dest = tmp_path("trim_dest");
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::Trimmed { handle_secs: 1.0 }, looks: Vec::new(), fonts: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::Trimmed { handle_secs: 1.0 }, looks: Vec::new(), fonts: Vec::new(), compositions: Default::default() };
     let summary = summarise(&pool, &seqs, &ColorSettings::default(), &options, None);
     assert_eq!((summary.files, summary.trimmed), (1, 1), "{summary:?}");
 
@@ -572,7 +573,7 @@ fn collect_brings_the_files_grades_read_and_the_looks() {
     seq.tracks[0].clips.push(clip);
     save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
 
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: vec![look], fonts: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: vec![look], fonts: Vec::new(), compositions: Default::default() };
     consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &ColorSettings::default(), options, None).unwrap();
 
     let read = |g: &NodeGraph| -> Vec<PathBuf> { g.nodes.iter().flat_map(|n| [n.params.lut_path.clone(), n.params.matte_image_path.clone()]).flatten().collect() };
@@ -621,7 +622,7 @@ fn collect_walks_compound_graphs_and_brings_the_stills() {
     let still = klipp_project::GradeStillData { name: "Hero".into(), filename: "hero.png".into(), rgba: vec![255; 2 * 2 * 4], width: 2, height: 2, source: None, grade: Some(still_grade), grade_labels: Vec::new() };
     klipp_project::save_grade_stills(&source_dir, &[still]).unwrap();
 
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new(), compositions: Default::default() };
     consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &ColorSettings::default(), options, None).unwrap();
 
     let (seqs, ..) = load_project(&dest).unwrap();
@@ -651,7 +652,7 @@ fn collect_keeps_a_missing_global_luts_path() {
     let color = ColorSettings { global_lut_path: Some(missing.clone()), ..Default::default() };
     let seq = Sequence::new_default();
     save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &color, None, None, "").unwrap();
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new(), compositions: Default::default() };
     let result = consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &color, options, None).unwrap();
     assert!(result.warnings.iter().any(|w| w.contains("look.cube")), "the missing LUT is warned about: {:?}", result.warnings);
     let (_seqs, _pool, loaded_color, ..) = load_project(&dest).unwrap();
@@ -778,7 +779,7 @@ fn a_moved_collected_folder_keeps_its_grade_files() {
     clip.set_grade(clip_graph);
     seq.tracks[0].clips.push(clip);
     save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: vec![look], fonts: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: vec![look], fonts: Vec::new(), compositions: Default::default() };
     consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &ColorSettings::default(), options, None).unwrap();
 
     std::fs::remove_dir_all(&outside).unwrap();
@@ -826,7 +827,7 @@ fn collect_brings_every_file_a_title_draws_and_every_lut() {
     seq.tracks[0].clips.push(clip);
     let colour = ColorSettings { viewing_lut: Some(view.clone()), ..Default::default() };
     save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &colour, None, None, "").unwrap();
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new(), compositions: Default::default() };
     let result = consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &colour, options, None).unwrap();
     let manifest = result.verification.expect("checked");
     assert!(manifest.verified(), "{:?}", manifest.failures());
@@ -872,7 +873,7 @@ fn a_collected_folder_moved_away_from_its_originals_opens_whole() {
     seq.tracks[0].clips.push(title);
     let colour = ColorSettings { viewing_lut: Some(view.clone()), ..Default::default() };
     save_project_with_color(&source_dir, std::slice::from_ref(&seq), &pool, &colour, None, None, "").unwrap();
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new(), compositions: Default::default() };
     let result = consolidate_project(&source_dir, &pool, std::slice::from_ref(&seq), &colour, options, None).unwrap();
     assert!(result.verification.as_ref().is_ok_and(|m| m.verified()), "{:?}", result.verification.map(|m| m.failures()));
 
@@ -931,7 +932,7 @@ fn a_hostile_project_carries_no_private_file() {
 
     // Collected from the pool as written, not as opened: Collect checks
     // for itself.
-    let options = ConsolidateOptions { dest_dir: PathBuf::new(), include_proxies: true, include_skims: true, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: PathBuf::new(), include_proxies: true, include_skims: true, mode: Default::default(), looks: Vec::new(), fonts: Vec::new(), compositions: Default::default() };
     let summary = klipp_project::consolidate::summarise(&pool, &[Sequence::new_default()], &ColorSettings::default(), &options, Some(&project));
     assert_eq!(summary.copies, vec![clip.display().to_string()], "the dry run names what it copies");
     assert_eq!(summary.warnings.len(), 2, "and what it will not carry: {:?}", summary.warnings);
@@ -973,7 +974,7 @@ fn a_project_in_a_hidden_folder_collects_its_own_media() {
     assert!(opened.get(&own_id).is_some_and(|m| !m.offline), "its own media opens online");
     assert!(opened.get(&outside_id).is_some_and(|m| m.offline), "the file outside it is offline");
 
-    let options = ConsolidateOptions { dest_dir: PathBuf::new(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: PathBuf::new(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new(), compositions: Default::default() };
     let summary = klipp_project::consolidate::summarise(&opened, &[Sequence::new_default()], &ColorSettings::default(), &options, Some(&project));
     assert!(summary.copies.iter().any(|p| p.ends_with("clip.mov")), "the dry run copies its own media: {summary:?}");
     assert!(!summary.copies.iter().any(|p| p.ends_with("hostname")), "{summary:?}");
@@ -1011,7 +1012,7 @@ fn a_collected_proxy_counts_after_opening() {
         &pool,
         &[seq],
         &ColorSettings::default(),
-        ConsolidateOptions { dest_dir: dest.clone(), include_proxies: true, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() },
+        ConsolidateOptions { dest_dir: dest.clone(), include_proxies: true, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new(), compositions: Default::default() },
         None,
     )
     .unwrap();
@@ -1058,7 +1059,7 @@ fn a_proxy_not_carried_is_not_named_by_the_copy() {
             &pool,
             &[Sequence::new_default()],
             &ColorSettings::default(),
-            ConsolidateOptions { dest_dir: dest.clone(), include_proxies, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() },
+            ConsolidateOptions { dest_dir: dest.clone(), include_proxies, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new(), compositions: Default::default() },
             None,
         )
         .unwrap();
