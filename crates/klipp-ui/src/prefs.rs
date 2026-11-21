@@ -50,6 +50,12 @@ pub struct Preferences {
     pub external_tools: ExternalToolsPrefs,
     #[serde(default)]
     pub ai: AiPrefs,
+    /// The settings of Veylvik's editor on the Veylvik page, as Veylvik
+    /// writes them: Klipp's own, never Veylvik Studio's. Kept whole, so a
+    /// setting this Klipp's Veylvik doesn't know (one from a newer Veylvik)
+    /// survives a save; empty, Veylvik's defaults.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub veylvik: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for Preferences {
@@ -75,6 +81,7 @@ impl Default for Preferences {
             advanced: Default::default(),
             external_tools: Default::default(),
             ai: Default::default(),
+            veylvik: Default::default(),
         }
     }
 }
@@ -1286,6 +1293,27 @@ impl Preferences {
     /// thread of its own ([`PrefsWriter`]). Written by the window's thread,
     /// the file's open waited half a second for the disk while an opened
     /// project's caches were being written. A failed write is logged there.
+    /// Veylvik's settings as `T` reads them: each one kept, each missing
+    /// one at `T`'s default. A kept value `T` can't read leaves all at
+    /// their defaults rather than failing the page.
+    pub fn veylvik_settings<T: Serialize + serde::de::DeserializeOwned + Default>(&self) -> T {
+        let Ok(serde_json::Value::Object(mut merged)) = serde_json::to_value(T::default()) else { return T::default() };
+        merged.extend(self.veylvik.iter().map(|(k, v)| (k.clone(), v.clone())));
+        serde_json::from_value(serde_json::Value::Object(merged)).unwrap_or_else(|e| {
+            tracing::warn!("Veylvik's settings in Klipp's preferences can't be read, its defaults used: {e}");
+            T::default()
+        })
+    }
+
+    /// Keep `values` as Veylvik's settings; a setting kept before that
+    /// `values` doesn't name stays as it was. Whether anything changed.
+    pub fn set_veylvik_settings<T: Serialize>(&mut self, values: &T) -> bool {
+        let Ok(serde_json::Value::Object(new)) = serde_json::to_value(values) else { return false };
+        let before = self.veylvik.clone();
+        self.veylvik.extend(new);
+        self.veylvik != before
+    }
+
     pub fn save(&self) -> Result<(), String> {
         let Some(path) = Self::config_path() else {
             return Err("Could not determine config directory".into());
@@ -3825,5 +3853,65 @@ mod revision_tests {
         let mut current = serde_json::to_value(Preferences::default()).unwrap();
         current["audio_hardware"]["output_buffer"] = 512.into();
         assert_eq!(Preferences::from_json_str(&current.to_string()).audio_hardware.output_buffer, Some(512));
+    }
+}
+
+/// Veylvik's settings in Klipp's preferences live through a save and a
+/// start again, through a Klipp with a newer or older Veylvik, and through
+/// a damaged value.
+#[cfg(test)]
+mod veylvik_settings_tests {
+    use super::*;
+
+    /// A stand-in for Veylvik's settings: every field defaulted, as its own are.
+    #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+    #[serde(default)]
+    struct Settings {
+        restart_playback: bool,
+        loop_playback: bool,
+        layouts: Vec<String>,
+    }
+
+    /// Klipp's preferences written as `save` writes them, and read back.
+    fn restarted(prefs: &Preferences) -> Preferences {
+        serde_json::from_str(&serde_json::to_string_pretty(prefs).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn veylvik_settings_are_kept_through_a_restart() {
+        let mut prefs = Preferences::default();
+        assert_eq!(prefs.veylvik_settings::<Settings>(), Settings::default(), "none kept yet: Veylvik's defaults");
+        assert!(!serde_json::to_string(&prefs).unwrap().contains("\"veylvik\""), "nothing written for none");
+
+        let mine = Settings { restart_playback: true, loop_playback: true, layouts: vec!["Grading".into()] };
+        assert!(prefs.set_veylvik_settings(&mine));
+        assert!(!prefs.set_veylvik_settings(&mine), "the same again changes nothing");
+        assert_eq!(restarted(&prefs).veylvik_settings::<Settings>(), mine, "as set, after a start again");
+        let off = Settings { restart_playback: false, ..mine };
+        prefs.set_veylvik_settings(&off);
+        assert_eq!(restarted(&prefs).veylvik_settings::<Settings>(), off, "turned off stays off");
+    }
+
+    /// A newer Veylvik's setting is kept by a Klipp that doesn't know it;
+    /// an older Veylvik's file reads with the new settings at their
+    /// defaults; a value that can't be read gives the defaults.
+    #[test]
+    fn veylvik_settings_survive_an_update_either_way() {
+        let mut prefs = Preferences::default();
+        prefs.veylvik.insert("a_newer_setting".into(), serde_json::json!(42));
+        prefs.set_veylvik_settings(&Settings { loop_playback: true, ..Default::default() });
+        let back = restarted(&prefs);
+        assert_eq!(back.veylvik.get("a_newer_setting"), Some(&serde_json::json!(42)), "a newer Veylvik's setting kept");
+        assert!(back.veylvik_settings::<Settings>().loop_playback);
+
+        // Written by a Klipp whose Veylvik had only this one setting.
+        let mut file = serde_json::to_value(Preferences::default()).unwrap();
+        file["veylvik"] = serde_json::json!({ "loop_playback": true });
+        let older: Preferences = serde_json::from_value(file).unwrap();
+        assert_eq!(older.veylvik_settings::<Settings>(), Settings { loop_playback: true, ..Default::default() }, "settings it didn't have at their defaults");
+
+        let mut damaged = Preferences::default();
+        damaged.veylvik.insert("loop_playback".into(), serde_json::json!("yes"));
+        assert_eq!(damaged.veylvik_settings::<Settings>(), Settings::default(), "a value it can't read: the defaults, no failure");
     }
 }
