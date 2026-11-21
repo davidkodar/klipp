@@ -389,12 +389,17 @@ impl Compositor {
         let Some(Slot::Ready(live)) = state.live.get_mut(&key) else { unreachable!("ready, just seen") };
         let index = frame_index(secs, live.fps);
         let ([w, h], _, _) = live.source.format().map_err(|e| e.to_string())?;
-        let out = match live.spare.take().and_then(|s| Arc::try_unwrap(s).ok()).filter(|c| (c.width, c.height) == (w, h)) {
+        let mut out = match live.spare.take().and_then(|s| Arc::try_unwrap(s).ok()).filter(|c| (c.width, c.height) == (w, h)) {
             Some(mut reused) => {
                 reused.linear = OnceLock::new();
                 reused
             }
             None => Composed::new(&self.device, &self.queue, w, h),
+        };
+        out.scene = match &frame.pixels {
+            SourcePixels::SceneReferred { transfer, .. } => Some(*transfer),
+            SourcePixels::Gpu(g) => g.scene_transfer(),
+            SourcePixels::Linear(_) => None,
         };
         // The frame's own start, exactly: a time rounded on the way (to
         // microseconds, say) can fall a hair before it, and Veylvik then
@@ -733,6 +738,9 @@ struct Composed {
     buffer: wgpu::Buffer,
     width: u32,
     height: u32,
+    /// The scene-referred source whose scene light the composition was
+    /// given: the picture is that light still, and owes its display step.
+    scene: Option<klipp_color::hdr::HdrTransfer>,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     linear: OnceLock<Arc<Vec<f32>>>,
@@ -746,11 +754,15 @@ impl Composed {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        Self { buffer, width, height, device: Arc::clone(device), queue: Arc::clone(queue), linear: OnceLock::new() }
+        Self { buffer, width, height, scene: None, device: Arc::clone(device), queue: Arc::clone(queue), linear: OnceLock::new() }
     }
 }
 
 impl GpuPixels for Composed {
+    fn scene_transfer(&self) -> Option<klipp_color::hdr::HdrTransfer> {
+        self.scene
+    }
+
     fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
         if (self.width, self.height) == (width, height) {
             exec.prime_chain_from_gpu_linear_buffer(&self.buffer, width, height)
