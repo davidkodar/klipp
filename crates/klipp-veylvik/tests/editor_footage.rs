@@ -55,5 +55,13 @@ fn the_tabs_footage_is_the_clips_frame_at_the_time_asked() {
         let [r, _, b] = read(frame);
         assert!(if red { r > 0.8 && b < 0.1 } else { b > 0.8 && r < 0.1 }, "frame {frame}: {:?}", read(frame));
     }
+    // Its frames' names last: the same file decoded the same way names a
+    // frame the same in another instance (another session), and another
+    // state or working space names it otherwise.
+    use klipp_veylvik::HostMedia;
+    let name = |state: u64, working| EditorFootage::new(&item, working, state, Arc::clone(&device), ctx.queue()).identity(Time { ticks: 5, rate: 24 });
+    assert_eq!(name(1, WorkingColorspace::Rec709Linear), name(1, WorkingColorspace::Rec709Linear));
+    assert_ne!(name(1, WorkingColorspace::Rec709Linear), name(2, WorkingColorspace::Rec709Linear));
+    assert_ne!(name(1, WorkingColorspace::Rec709Linear), name(1, WorkingColorspace::AcesCG));
     let _ = std::fs::remove_dir_all(&dir);
 }

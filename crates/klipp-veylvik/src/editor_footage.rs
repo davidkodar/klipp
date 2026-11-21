@@ -59,7 +59,9 @@ impl EditorFootage {
         let (tx, rx) = std::sync::mpsc::channel::<Ask>();
         let spawned = std::thread::Builder::new().name("klipp-veylvik-tab-decode".into()).spawn(move || {
             let fresh = || ExportFrameSource::shared(Arc::clone(&media), fps, working);
-            let mut source = fresh();
+            // Made when the first frame is asked for: footage never asked
+            // of (a clip opened and left) compiles no converter for nothing.
+            let mut source: Option<ExportFrameSource<'static>> = None;
             let mut last = f64::NEG_INFINITY;
             let duration_secs = f64::from(frames) / fps;
             let upload = |pixels: &[f32]| wgpu::util::DeviceExt::create_buffer_init(
@@ -110,11 +112,11 @@ impl EditorFootage {
                     _ => {
                         // An export's decoder reads on, never back: a scrub
                         // back, or a jump far ahead, starts one at the frame.
-                        if secs < last - 0.5 * frame_secs || secs > last + JUMP_SECS {
-                            source = fresh();
+                        if source.is_none() || secs < last - 0.5 * frame_secs || secs > last + JUMP_SECS {
+                            source = Some(fresh());
                         }
                         last = secs;
-                        decode(&mut source, secs)
+                        decode(source.as_mut().expect("just made"), secs)
                     }
                 };
                 let _ = answer.send(made);
@@ -124,9 +126,9 @@ impl EditorFootage {
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
                         let next = secs + frame_secs;
-                        if next < duration_secs {
+                        if let (true, Some(source)) = (next < duration_secs, source.as_mut()) {
                             last = next;
-                            ahead = Some((next, decode(&mut source, next)));
+                            ahead = Some((next, decode(source, next)));
                         }
                     }
                 }
@@ -172,7 +174,12 @@ pub struct TabHost {
 impl TabHost {
     /// The open clip's media from now on; none while no clip is open.
     pub fn set(&self, footage: Option<EditorFootage>) {
-        let source = footage.map(|f| Arc::new(veylvik_render::HostSource::new(f, 512 << 20)) as Arc<dyn veylvik_render::FrameSource>);
+        // Lasting: a frame's name is made of the file as it is on disk, how
+        // it is decoded and the working space, nothing of this session's,
+        // and is no other file's. Veylvik's editor then keeps the pictures
+        // it prepares, on disk too, and plays them on time; unnamed, it
+        // kept none, and preparing to play made nothing.
+        let source = footage.map(|f| Arc::new(veylvik_render::HostSource::new(f, 512 << 20).lasting()) as Arc<dyn veylvik_render::FrameSource>);
         *self.footage.lock().unwrap_or_else(|e| e.into_inner()) = source;
     }
 }
