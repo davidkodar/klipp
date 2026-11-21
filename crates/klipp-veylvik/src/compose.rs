@@ -261,7 +261,15 @@ pub fn preparing() -> bool {
 impl Compositor {
     /// Veylvik's renderer on `device`.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, adapter: wgpu::AdapterInfo) -> Result<Self, String> {
-        let renderer = Renderer::from_device((*device).clone(), (*queue).clone(), adapter).map_err(|e| e.to_string())?;
+        let mut renderer = Renderer::from_device((*device).clone(), (*queue).clone(), adapter).map_err(|e| e.to_string())?;
+        // Veylvik's own limits, as its editor sets them: half the card's
+        // memory at most for its buffers, a quarter of that for finished
+        // pictures and for drawn shapes. The Veylvik tab draws with this
+        // renderer too, so a composition has as much room as in Veylvik.
+        match veylvik_io::runtime::RenderLimits::from_env_with_default(None) {
+            Ok(limits) => limits.apply(&mut renderer),
+            Err(e) => tracing::warn!("Veylvik's render limits not set, its defaults kept: {e}"),
+        }
         // Compiled programs kept between runs, in Klipp's cache folder (its
         // clear-cache clears them): a new build of Klipp doesn't compile
         // every kernel again. A device that can't keep them works as before.
@@ -297,6 +305,12 @@ impl Compositor {
                 }
             })
             .clone()
+    }
+
+    /// The renderer, for the Veylvik tab's editor to draw with: one budget
+    /// and one set of caches for every composition in the process.
+    pub fn renderer(&self) -> Arc<Renderer> {
+        Arc::clone(&self.renderer)
     }
 
     /// Pictures asked of Veylvik so far, rendered or failed.
