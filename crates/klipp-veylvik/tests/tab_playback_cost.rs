@@ -119,3 +119,50 @@ fn what_a_frame_of_the_tabs_playback_costs() {
     summary("same, footage already on the card", &mut alone);
     eprintln!("budget at 23.976 fps: {:.1} ms", 1000.0 / fps);
 }
+
+/// What a scrub costs the tab's footage, by kind: a frame after the one
+/// before (playing on), one a frame back, a second back, and a jump far
+/// ahead; the last three start the decoder again. Run by hand:
+/// KLIPP_SCRUB_FOOTAGE=<a 4K clip> cargo test -p klipp-veylvik --release
+/// --test tab_playback_cost -- --ignored --nocapture scrub
+#[test]
+#[ignore = "a measurement, run by hand"]
+fn what_a_scrub_of_the_tabs_footage_costs() {
+    let Some(footage) = std::env::var_os("KLIPP_SCRUB_FOOTAGE").map(std::path::PathBuf::from) else { return eprintln!("set KLIPP_SCRUB_FOOTAGE") };
+    let ctx = klipp_effects::gpu_context::GpuContext::shared().expect("a GPU");
+    let device = ctx.device();
+    let mut item = klipp_media::MediaItem::synthetic_for_test(footage, None);
+    item.resolution = klipp_core::Resolution { width: 3840, height: 2160 };
+    item.fps = klipp_core::Fps::new(24000, 1001);
+    item.duration = klipp_core::RationalTime::from_secs_f64(13.0, 24000);
+    let media = EditorFootage::new(&item, WorkingColorspace::Rec709Linear, 9, Arc::clone(&device), ctx.queue());
+    let at = |frame: i64| Time { ticks: frame * 1001, rate: 24000 };
+    let ask = |frame: i64| {
+        let t = Instant::now();
+        drop(media.frame(at(frame), None).unwrap());
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        t.elapsed().as_secs_f64() * 1000.0
+    };
+    eprintln!("first frame (decoder made): {:.1} ms", ask(0));
+    let (mut on, mut one_back, mut second_back, mut jump, mut at_key) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for round in 0..8i64 {
+        let base = 60 + round * 24;
+        for f in base..base + 6 {
+            on.push(ask(f));
+        }
+        one_back.push(ask(base + 4));
+        for f in base + 5..base + 8 {
+            ask(f);
+        }
+        second_back.push(ask(base + 7 - 24));
+        jump.push(ask(base + 7 - 24 + 72));
+        // A keyframe of the try footage (every 24 frames from 8): the
+        // decoder's own start, nothing read before it.
+        at_key.push(ask(8 + 24 * (round + 1)));
+    }
+    summary("playing on", &mut on);
+    summary("a frame back", &mut one_back);
+    summary("a second back", &mut second_back);
+    summary("a jump 3 s ahead", &mut jump);
+    summary("back to a keyframe", &mut at_key);
+}
