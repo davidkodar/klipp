@@ -892,7 +892,7 @@ pub fn consolidate_project(
         }
     }
     // The clips' Veylvik compositions, as held now, saved or not.
-    match crate::compositions::save_compositions(&options.dest_dir, &new_seqs, &options.compositions) {
+    match crate::compositions::save_compositions(&options.dest_dir, &new_seqs, &options.compositions, crate::compositions::AssetsFrom { project_dir: Some(source_project_dir), forks: &[] }) {
         Ok(missing) => plan.warnings.extend(missing),
         Err(e) => {
             let _ = std::fs::remove_dir_all(&options.dest_dir);

@@ -3970,6 +3970,7 @@ dependencies = [
  "klipp-plugin",
  "klipp-timeline",
  "klipp-title",
+ "png 0.18.1",
  "serde_json",
  "tracing",
  "uuid",

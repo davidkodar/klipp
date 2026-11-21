@@ -1,0 +1,81 @@
+//! A composition reads the files it names from its own folder in the
+//! project, beside its file, as standalone Veylvik reads them; one whose
+//! project moved (a save somewhere else) reads them there.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
+use klipp_compose::{FrameSource, RenderOptions, Renderer, SourceFrame, SourcePixels};
+use klipp_core::{MediaId, RationalTime};
+use klipp_timeline::{Clip, CompositionId, Sequence, Track, TrackKind};
+use klipp_veylvik::{Composition, Compositions, Time};
+use veylvik_document::{nodes, Operation};
+
+const W: u32 = 16;
+const H: u32 = 16;
+
+struct Black;
+impl FrameSource for Black {
+    fn frame(&mut self, _: &Clip, _: f64, w: u32, h: u32) -> Option<SourceFrame> {
+        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(vec![0.0; (w * h * 4) as usize])), width: w, height: h, pts: None })
+    }
+    fn media_fps(&mut self, _: &Clip) -> Option<f64> {
+        Some(24.0)
+    }
+}
+
+/// A flat sRGB PNG of `rgb` at `path`.
+fn png(path: &Path, rgb: [u8; 3]) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut e = png::Encoder::new(std::fs::File::create(path).unwrap(), W, H);
+    e.set_color(png::ColorType::Rgb);
+    e.set_depth(png::BitDepth::Eight);
+    let data: Vec<u8> = (0..W * H).flat_map(|_| rgb).collect();
+    e.write_header().unwrap().write_image_data(&data).unwrap();
+}
+
+#[test]
+fn a_composition_reads_its_assets_from_its_folder_in_the_project() {
+    if klipp_effects::gpu_context::GpuContext::shared().is_none() {
+        assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required, but there is no GPU");
+        eprintln!("UNVERIFIED: no GPU");
+        return;
+    }
+    let _ = klipp_veylvik::install();
+    let id = CompositionId(uuid::Uuid::from_u128(1));
+    // A picture of the file beside it, and nothing else.
+    let mut c = veylvik_document::blank(W, H, Time { ticks: 24, rate: 1 }).unwrap();
+    c.frame_count = 24;
+    c.nodes.get_mut(&c.output).unwrap().operation = Operation::Image(nodes::Image { asset: "logo.png".into() });
+    let _: &Composition = &c;
+    let root = std::env::temp_dir().join(format!("klipp_veylvik_assets_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (first, moved) = (root.join("first/media/veylvik/one"), root.join("moved/media/veylvik/one"));
+    png(&first.join("logo.png"), [255, 0, 0]);
+    png(&moved.join("logo.png"), [0, 0, 255]);
+
+    let at = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut clip = Clip::media(MediaId(uuid::Uuid::from_u128(9)), at(0.0), at(1.0), at(0.0), at(1.0));
+    clip.composition = Some(id);
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut track = Track::new("V", TrackKind::Video);
+    track.clips = vec![clip];
+    seq.tracks = vec![track];
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    let middle = ((H / 2 * W + W / 2) * 4) as usize;
+
+    klipp_veylvik::set_project_assets(HashMap::from([(id, first.clone())]));
+    klipp_veylvik::set_project_compositions([(id, Arc::<[u8]>::from(serde_json::to_vec(&c).unwrap()))].into());
+    let red = r.render(&seq, at(0.5), W, H, &mut Black, RenderOptions::default());
+    assert!(red[middle] > 0.9 && red[middle + 2] < 0.05, "the folder's red logo: {:?}", &red[middle..middle + 4]);
+
+    // Saved somewhere else: the folder there, read there.
+    klipp_veylvik::set_project_assets(HashMap::from([(id, moved.clone())]));
+    let blue = r.render(&seq, at(0.5), W, H, &mut Black, RenderOptions::default());
+    assert!(blue[middle + 2] > 0.9 && blue[middle] < 0.05, "the moved folder's blue logo: {:?}", &blue[middle..middle + 4]);
+
+    klipp_veylvik::set_project_compositions(Compositions::new());
+    let _ = std::fs::remove_dir_all(&root);
+}

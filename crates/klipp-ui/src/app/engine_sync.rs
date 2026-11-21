@@ -157,6 +157,12 @@ impl KlippApp {
     /// Tell every render the project's Veylvik compositions as they are now.
     pub(super) fn sync_compositions_to_engine(&self) {
         klipp_veylvik::set_project_compositions(self.state.compositions.clone());
+        // Each one's assets in its folder in the project, once it has one.
+        let assets = match &self.state.project_path {
+            Some(dir) => self.state.compositions.keys().map(|id| (*id, klipp_project::compositions::composition_dir(dir, *id))).collect(),
+            None => Default::default(),
+        };
+        klipp_veylvik::set_project_assets(assets);
     }
 
     /// Tell the decoders each file's camera log format. The decoder is what

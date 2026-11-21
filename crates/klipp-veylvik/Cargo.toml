@@ -28,3 +28,4 @@ tracing = { workspace = true }
 [dev-dependencies]
 klipp-title = { workspace = true }
 uuid = { workspace = true }
+png = "0.18"

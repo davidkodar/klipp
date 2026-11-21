@@ -6,6 +6,12 @@
 //! writes those its clips name, an open reads them back. Klipp does not
 //! read inside one here: that is Veylvik's, when the clip is rendered or
 //! opened in the tab.
+//!
+//! The composition's folder is also its assets folder: the images, fonts
+//! and models it names by paths relative to it, as standalone Veylvik
+//! reads them beside its file. They stay on disk, in the folder of the
+//! project they were opened from; a save somewhere else, an autosave,
+//! Collect and a copied clip's own composition take them along.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -35,25 +41,88 @@ pub fn composition_file(project_dir: &Path, id: CompositionId) -> PathBuf {
     composition_dir(project_dir, id).join(FILE_NAME)
 }
 
+/// Folders deep that a composition's assets are taken along.
+const ASSET_DEPTH: usize = 8;
+
+/// Where each composition's assets are read from on a save: the folder of
+/// the project they are in now, and the composition each copied clip's
+/// own was forked from.
+#[derive(Clone, Copy, Default)]
+pub struct AssetsFrom<'a> {
+    /// The project the compositions were opened from or last saved to:
+    /// none for one never saved, whose compositions have no assets yet.
+    pub project_dir: Option<&'a Path>,
+    /// (from, to): a copied clip's composition `to`, made of `from`.
+    pub forks: &'a [(CompositionId, CompositionId)],
+}
+
 /// Write into `project_dir` every composition the sequences name, each
-/// one whose file already holds the same bytes left as it is. One named
-/// but not held (a clip pasted from another project) is left out and
-/// said.
-pub fn save_compositions(project_dir: &Path, sequences: &[Sequence], compositions: &Compositions) -> Result<Vec<String>, std::io::Error> {
+/// one whose file already holds the same bytes left as it is, with its
+/// assets from where `from` says they are. One named but not held (a clip
+/// pasted from another project) is left out and said.
+pub fn save_compositions(project_dir: &Path, sequences: &[Sequence], compositions: &Compositions, from: AssetsFrom<'_>) -> Result<Vec<String>, std::io::Error> {
     let mut missing = Vec::new();
     for id in klipp_timeline::compositions_used(sequences) {
         let Some(bytes) = compositions.get(&id) else {
             missing.push(format!("A clip's Veylvik composition ({id}) is not in this project; the clip shows its media"));
             continue;
         };
+        let here = composition_dir(project_dir, id);
+        if let Some(src) = from.project_dir {
+            // A copied clip's composition has the assets of the one it was
+            // made of; any other, its own.
+            let of = from.forks.iter().find(|(_, to)| *to == id).map_or(id, |(f, _)| *f);
+            let there = composition_dir(src, of);
+            if there != here && there.is_dir() {
+                missing.extend(copy_assets(&there, &here, ASSET_DEPTH)?);
+            }
+        }
         let file = composition_file(project_dir, id);
         if std::fs::read(&file).is_ok_and(|on_disk| on_disk == bytes.as_ref()) {
             continue;
         }
-        std::fs::create_dir_all(composition_dir(project_dir, id))?;
+        std::fs::create_dir_all(&here)?;
         crate::path_util::atomic_write(&file, bytes)?;
     }
     Ok(missing)
+}
+
+/// Every file in `from` but the composition's own into `to`, as plain
+/// files and folders: one already there with the same length and time is
+/// left as it is. A link is not followed or copied, and is said: what it
+/// points at is not the project's.
+fn copy_assets(from: &Path, to: &Path, depth: usize) -> Result<Vec<String>, std::io::Error> {
+    let mut said = Vec::new();
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if depth == ASSET_DEPTH && name == FILE_NAME {
+            continue;
+        }
+        let (src, dst) = (entry.path(), to.join(&name));
+        let meta = std::fs::symlink_metadata(&src)?;
+        if meta.is_dir() {
+            if depth == 0 {
+                said.push(format!("A Veylvik composition's assets go {ASSET_DEPTH} folders deep at most; {} was left out", src.display()));
+                continue;
+            }
+            std::fs::create_dir_all(&dst)?;
+            said.extend(copy_assets(&src, &dst, depth - 1)?);
+        } else if meta.is_file() {
+            let same = std::fs::symlink_metadata(&dst).is_ok_and(|d| d.is_file() && d.len() == meta.len() && d.modified().ok() == meta.modified().ok());
+            if !same {
+                std::fs::create_dir_all(to)?;
+                std::fs::copy(&src, &dst)?;
+                // Its time as the original's, so the next save sees it the same.
+                if let Ok(t) = meta.modified() {
+                    let _ = std::fs::File::options().write(true).open(&dst).and_then(|f| f.set_modified(t));
+                }
+            }
+        } else {
+            said.push(format!("A Veylvik composition's asset {} is a link, not a file, and was left out", src.display()));
+        }
+    }
+    Ok(said)
 }
 
 /// Read from `project_dir` every composition the sequences name. One
@@ -96,14 +165,15 @@ fn read_one(file: &Path) -> Result<Arc<[u8]>, String> {
 /// Give each clip sharing a composition with another one of its own, a
 /// copy of the one it shared, and say how many were given. A save does
 /// this first, so no two clips in a file name one composition.
-pub fn fork_shared(sequences: &mut [Sequence], compositions: &mut Compositions) -> usize {
+/// Its forks, (from, to), for the save to take each one's assets along.
+pub fn fork_shared(sequences: &mut [Sequence], compositions: &mut Compositions) -> Vec<(CompositionId, CompositionId)> {
     let forks = klipp_timeline::fork_shared_compositions(sequences);
     for (from, to) in &forks {
         if let Some(bytes) = compositions.get(from).cloned() {
             compositions.insert(*to, bytes);
         }
     }
-    forks.len()
+    forks
 }
 
 #[cfg(test)]
@@ -145,7 +215,7 @@ mod tests {
         let (a, unused) = (CompositionId::new(), CompositionId::new());
         let seqs = vec![sequence_with(&[Some(a), None])];
         let held: Compositions = [(a, bytes("{\"a\":1}\n")), (unused, bytes("{}"))].into();
-        assert!(save_compositions(&dir, &seqs, &held).unwrap().is_empty());
+        assert!(save_compositions(&dir, &seqs, &held, AssetsFrom::default()).unwrap().is_empty());
         assert_eq!(std::fs::read(dir.join("media/veylvik").join(a.to_string()).join("composition.veylvik")).unwrap(), b"{\"a\":1}\n");
         assert!(!composition_dir(&dir, unused).exists());
         let (back, warnings) = load_compositions(&dir, &seqs);
@@ -162,14 +232,14 @@ mod tests {
         let a = CompositionId::new();
         let seqs = vec![sequence_with(&[Some(a)])];
         let held: Compositions = [(a, bytes("same"))].into();
-        save_compositions(&dir, &seqs, &held).unwrap();
+        save_compositions(&dir, &seqs, &held, AssetsFrom::default()).unwrap();
         let file = composition_file(&dir, a);
         let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
         std::fs::File::options().write(true).open(&file).unwrap().set_modified(old).unwrap();
-        save_compositions(&dir, &seqs, &held).unwrap();
+        save_compositions(&dir, &seqs, &held, AssetsFrom::default()).unwrap();
         assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), old);
         let changed: Compositions = [(a, bytes("changed"))].into();
-        save_compositions(&dir, &seqs, &changed).unwrap();
+        save_compositions(&dir, &seqs, &changed, AssetsFrom::default()).unwrap();
         assert_eq!(std::fs::read(&file).unwrap(), b"changed");
     }
 
@@ -203,13 +273,13 @@ mod tests {
         let a = CompositionId::new();
         let mut seqs = vec![sequence_with(&[Some(a), Some(a), None]), sequence_with(&[Some(a)])];
         let mut held: Compositions = [(a, bytes("comp"))].into();
-        assert_eq!(fork_shared(&mut seqs, &mut held), 2);
+        assert_eq!(fork_shared(&mut seqs, &mut held).len(), 2);
         let ids: Vec<_> = seqs.iter().flat_map(|s| s.tracks.last().unwrap().clips.iter()).filter_map(|c| c.composition).collect();
         assert_eq!(ids.len(), 3);
         assert_eq!(ids[0], a);
         assert_eq!(ids.iter().collect::<std::collections::HashSet<_>>().len(), 3);
         assert!(ids.iter().all(|id| held[id].as_ref() == b"comp"));
-        assert_eq!(fork_shared(&mut seqs, &mut held), 0);
+        assert!(fork_shared(&mut seqs, &mut held).is_empty());
     }
 
     /// A clip naming a composition the project does not hold saves with
@@ -218,7 +288,7 @@ mod tests {
     fn a_composition_not_held_is_said_on_save() {
         let dir = scratch("not_held");
         let a = CompositionId::new();
-        let warnings = save_compositions(&dir, &[sequence_with(&[Some(a)])], &Compositions::new()).unwrap();
+        let warnings = save_compositions(&dir, &[sequence_with(&[Some(a)])], &Compositions::new(), AssetsFrom::default()).unwrap();
         assert_eq!(warnings.len(), 1);
         assert!(!composition_dir(&dir, a).exists());
     }
@@ -255,5 +325,43 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(back, held);
         let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    fn asset(dir: &Path, id: CompositionId, rel: &str, text: &str) {
+        let file = composition_dir(dir, id).join(rel);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+
+    /// A save to another folder takes each composition's assets along, its
+    /// subfolders too; a copied clip's composition gets the assets of the
+    /// one it was made of; a link in the folder is left out and said.
+    #[test]
+    fn a_compositions_assets_go_where_it_is_saved() {
+        let (old, new) = (scratch("assets_old"), scratch("assets_new"));
+        let a = CompositionId::new();
+        let mut seqs = vec![sequence_with(&[Some(a), Some(a)])];
+        let mut held: Compositions = [(a, bytes("comp"))].into();
+        save_compositions(&old, &seqs, &held, AssetsFrom::default()).unwrap();
+        asset(&old, a, "logo.png", "png");
+        asset(&old, a, "fonts/title.ttf", "ttf");
+        let outside = old.join("secret.txt");
+        std::fs::write(&outside, "not the composition's").unwrap();
+        std::os::unix::fs::symlink(&outside, composition_dir(&old, a).join("link.png")).unwrap();
+        let forks = fork_shared(&mut seqs, &mut held);
+        assert_eq!(forks.len(), 1);
+        let copy = forks[0].1;
+        let said = save_compositions(&new, &seqs, &held, AssetsFrom { project_dir: Some(&old), forks: &forks }).unwrap();
+        for id in [a, copy] {
+            assert_eq!(std::fs::read_to_string(composition_dir(&new, id).join("logo.png")).unwrap(), "png", "{id}");
+            assert_eq!(std::fs::read_to_string(composition_dir(&new, id).join("fonts/title.ttf")).unwrap(), "ttf", "{id}");
+            assert_eq!(std::fs::read(composition_file(&new, id)).unwrap(), b"comp");
+            assert!(std::fs::symlink_metadata(composition_dir(&new, id).join("link.png")).is_err(), "no link copied");
+        }
+        assert_eq!(said.iter().filter(|w| w.contains("is a link")).count(), 2, "{said:?}");
+        // Saved in place: nothing copied onto itself, the asset as it was.
+        let t = std::fs::metadata(composition_dir(&old, a).join("logo.png")).unwrap().modified().unwrap();
+        save_compositions(&old, &seqs[..], &held, AssetsFrom { project_dir: Some(&old), forks: &[] }).unwrap();
+        assert_eq!(std::fs::metadata(composition_dir(&old, a).join("logo.png")).unwrap().modified().unwrap(), t);
     }
 }

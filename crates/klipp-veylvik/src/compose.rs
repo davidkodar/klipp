@@ -184,6 +184,9 @@ struct State {
     /// What each media's frames are made from, as one number per media
     /// ([`set_media_states`]): one that changes is that media's alone.
     media_states: HashMap<MediaId, u64>,
+    /// Each composition's assets folder, where the project keeps it: the
+    /// files it names relative to it are read there.
+    assets: HashMap<CompositionId, std::path::PathBuf>,
     told: HashSet<CompositionId>,
 }
 
@@ -284,6 +287,7 @@ impl Compositor {
                             c.set_compositions(held);
                         }
                         c.set_media_states(MEDIA_STATES.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default());
+                        c.set_assets(ASSETS.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default());
                         Some(Arc::new(c))
                     }
                     Err(why) => {
@@ -360,6 +364,22 @@ impl Compositor {
         self.prepared.notify_all();
     }
 
+    /// Each composition's assets folder now: in the project's folder, or
+    /// none for a project never saved. A composition whose folder moved (a
+    /// save somewhere else) is made again, reading its assets there.
+    pub fn set_assets(&self, assets: HashMap<CompositionId, std::path::PathBuf>) {
+        let mut state = self.state();
+        if state.assets == assets {
+            return;
+        }
+        let moved: HashSet<CompositionId> = state.live.keys().map(|k| k.composition).filter(|id| state.assets.get(id) != assets.get(id)).collect();
+        state.live.retain(|k, _| !moved.contains(&k.composition));
+        state.order.retain(|k| !moved.contains(&k.composition));
+        state.assets = assets;
+        drop(state);
+        self.prepared.notify_all();
+    }
+
     /// `inner` with every clip that names a composition shown through it,
     /// in `working`.
     pub fn source<'a>(self: &Arc<Self>, inner: &'a mut dyn FrameSource, working: WorkingColorspace) -> CompositionSource<'a> {
@@ -403,13 +423,14 @@ impl Compositor {
                 Some(Slot::Preparing) => {}
                 None => {
                     let composition = Self::composition(&mut state, id)?;
+                    let assets = state.assets.get(&id).cloned();
                     state.live.insert(key, Slot::Preparing);
                     state.order.push(key);
                     while state.order.len() > LIVE_MAX {
                         let old = state.order.remove(0);
                         state.live.remove(&old);
                     }
-                    if let Err(why) = self.prepare(composition, key, fps, frames) {
+                    if let Err(why) = self.prepare(composition, key, fps, frames, assets) {
                         state.live.insert(key, Slot::Failed(why.clone()));
                         return Err(Declined::Failed(why));
                     }
@@ -467,13 +488,13 @@ impl Compositor {
 
     /// Make `composition` ready for `key` on a thread of its own, its slot
     /// [`Slot::Preparing`] until then.
-    fn prepare(self: &Arc<Self>, composition: Composition, key: LiveKey, fps: f64, frames: Option<u32>) -> Result<(), String> {
+    fn prepare(self: &Arc<Self>, composition: Composition, key: LiveKey, fps: f64, frames: Option<u32>, assets: Option<std::path::PathBuf>) -> Result<(), String> {
         let compositor = Arc::clone(self);
         std::thread::Builder::new().name("klipp-veylvik-prepare".into()).spawn(move || {
             let started = Instant::now();
             // Made here, on this thread: a composition that films a scene
             // makes Veylvik's 3D renderer, its pipelines compiled then.
-            let made = compositor.live(composition, key, fps, frames).and_then(|live| {
+            let made = compositor.live(composition, key, fps, frames, assets).and_then(|live| {
                 // Its kernels compiled now, so its first frame doesn't wait
                 // on a driver compiling one; kept on disk for the next run.
                 live.source.compile().map_err(|e| e.to_string())?;
@@ -497,7 +518,7 @@ impl Compositor {
         .map_err(|e| format!("no thread to prepare it on ({e})"))
     }
 
-    fn live(self: &Arc<Self>, composition: Composition, key: LiveKey, fps: f64, frames: Option<u32>) -> Result<Live, String> {
+    fn live(self: &Arc<Self>, composition: Composition, key: LiveKey, fps: f64, frames: Option<u32>, assets: Option<std::path::PathBuf>) -> Result<Live, String> {
         let current: Current = Arc::default();
         let held = Arc::clone(&current);
         // Weak: the compositor holds this through its clip sources.
@@ -531,9 +552,9 @@ impl Compositor {
         let footage = ClipFootage::new(info, fps, [w, h], working_pixels(key.working), salt(&key), fetch);
         let host = Arc::new(KlippHost::new());
         host.insert(CLIP_MEDIA_KEY, Arc::new(HostSource::new(footage, FOOTAGE_BUDGET)));
-        // A composition made for a clip reads nothing but its media: no
-        // folder of its own to find assets in yet.
-        let assets = std::env::temp_dir().join("klipp-veylvik-assets");
+        // Its assets in its folder in the project; a project never saved
+        // has none yet, and an empty folder of the session's own stands in.
+        let assets = assets.unwrap_or_else(no_assets);
         let source = ClipSource::new(Arc::clone(&self.renderer), composition, assets, Some(host as Arc<dyn crate::Host>)).map_err(|e| e.to_string())?;
         Ok(Live { source, current, fps, reach: Reach::Frame, spare: None })
     }
@@ -658,6 +679,30 @@ pub fn set_project_compositions(compositions: Compositions) {
         compositor.set_compositions(compositions.clone());
     }
     *project = (!compositions.is_empty()).then_some(compositions);
+}
+
+/// Each composition's assets folder in the open project: see
+/// [`Compositor::set_assets`]. Held for a compositor not started yet.
+pub fn set_project_assets(assets: HashMap<CompositionId, std::path::PathBuf>) {
+    let mut held = ASSETS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(Some(compositor)) = SHARED.get() {
+        compositor.set_assets(assets.clone());
+    }
+    *held = Some(assets);
+}
+
+static ASSETS: Mutex<Option<HashMap<CompositionId, std::path::PathBuf>>> = Mutex::new(None);
+
+/// The assets folder of a composition whose project has none yet: empty,
+/// the session's own, so nothing is found that another put there.
+fn no_assets() -> std::path::PathBuf {
+    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("klipp-veylvik-no-assets-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    })
+    .clone()
 }
 
 /// What each media's frames are made from now, one number per media: see

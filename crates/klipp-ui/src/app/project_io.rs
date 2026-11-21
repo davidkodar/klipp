@@ -655,17 +655,21 @@ impl KlippApp {
         self.adopt_made_media(path);
         // A clip copied with its composition gets one of its own, so the
         // file never has two clips sharing one.
-        if klipp_project::compositions::fork_shared(&mut self.state.sequences, &mut self.state.compositions) > 0 {
+        let forks = klipp_project::compositions::fork_shared(&mut self.state.sequences, &mut self.state.compositions);
+        if !forks.is_empty() {
             self.sync_compositions_to_engine();
             self.sync_sequence_to_engine();
         }
+        // The compositions' assets are in the folder they were opened from.
+        let assets_dir = self.state.project_path.clone();
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
         match klipp_project::save_project_full(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), Some(self.state.timeline_track_scale), &self.state.title_assets) {
             Ok(()) => {
                 if let Err(e) = klipp_project::import_report::save(path, self.state.last_import_report.as_ref()) {
                     self.state.toast.show(format!("Project saved, but the import report could not be saved: {e}"));
                 }
-                match klipp_project::compositions::save_compositions(path, &self.state.sequences, &self.state.compositions) {
+                let from = klipp_project::compositions::AssetsFrom { project_dir: assets_dir.as_deref(), forks: &forks };
+                match klipp_project::compositions::save_compositions(path, &self.state.sequences, &self.state.compositions, from) {
                     Ok(missing) => {
                         if let Some(first) = missing.first() {
                             self.state.toast.show(first.clone());
@@ -686,6 +690,10 @@ impl KlippApp {
                     self.lock_seen_path = None;
                 }
                 self.state.project_path = Some(path.to_path_buf());
+                // Their assets are read from the new home from now on.
+                if new_home {
+                    self.sync_compositions_to_engine();
+                }
                 // Grade stills kept only in memory (no folder, or a
                 // read-only one) are written with the project's new home.
                 if new_home {
