@@ -27,6 +27,7 @@ enum PrefsTab {
     Advanced,
     Keyboard,
     BrandKits,
+    Veylvik,
     About,
 }
 
@@ -67,6 +68,12 @@ pub struct PreferencesPanel {
     freesound_code: String,
     /// Preferences → Brand Kits (#2722).
     brand_kits: super::brand_kits_page::BrandKitsPage,
+    /// Preferences → Veylvik: Veylvik's own sections of its settings, for
+    /// its editor on the Veylvik page.
+    veylvik: klipp_veylvik::veylvik_editor::preferences::Panel,
+    /// The Veylvik section's "Keyboard shortcuts…" was pressed: the
+    /// editor's own shortcut window opens on the Veylvik page.
+    pub(crate) want_veylvik_shortcuts: bool,
 }
 
 /// The Accounts page's sign-in, as its worker leaves it (#1894).
@@ -151,6 +158,8 @@ impl Default for PreferencesPanel {
             accounts: Default::default(),
             freesound_code: String::new(),
             brand_kits: Default::default(),
+            veylvik: klipp_veylvik::veylvik_editor::preferences::Panel::new(),
+            want_veylvik_shortcuts: false,
         }
     }
 }
@@ -327,6 +336,7 @@ impl PreferencesPanel {
                             ("MEDIA & AUDIO", &[(PrefsTab::FileBrowser, "File Browser"), (PrefsTab::Audio, "Audio"), (PrefsTab::AudioHardware, "Audio HW"), (PrefsTab::Proxy, "Proxy"), (PrefsTab::ExternalTools, "External Tools"), (PrefsTab::Accounts, "Accounts")]),
                             ("COLOUR & EXPORT", &[(PrefsTab::Color, "Colour"), (PrefsTab::Export, "Export")]),
                             ("AI", &[(PrefsTab::Ai, "AI")]),
+                            ("VEYLVIK", &[(PrefsTab::Veylvik, "Veylvik")]),
                             ("INTERFACE", &[(PrefsTab::Title, "Titles"), (PrefsTab::BrandKits, "Brand Kits"), (PrefsTab::Keyboard, "Keyboard"), (PrefsTab::Advanced, "Advanced")]),
                             ("ABOUT", &[(PrefsTab::About, "About Klipp")]),
                         ];
@@ -393,6 +403,7 @@ impl PreferencesPanel {
                             PrefsTab::Advanced => self.show_advanced(ui, prefs, prefs_dirty, theme),
                             PrefsTab::Keyboard => self.show_keyboard(ui, key_bindings, theme),
                             PrefsTab::BrandKits => self.brand_kits.show(ui, theme),
+                            PrefsTab::Veylvik => self.show_veylvik(ui, prefs, prefs_dirty, theme),
                             PrefsTab::About => self.show_about(ui, theme),
                         }
                     });
@@ -464,6 +475,23 @@ impl PreferencesPanel {
     }
 
     /// Searchable keywords for each preferences tab.
+    /// Preferences → Veylvik: the settings of Veylvik's editor on the
+    /// Veylvik page, drawn by Veylvik itself, so every setting Studio has
+    /// is here too, except those Klipp's own pages hold (appearance,
+    /// audio, recovery, new compositions, start-up). Klipp's own, apart
+    /// from Veylvik Studio's.
+    fn show_veylvik(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, prefs_dirty: &mut bool, theme: &KlippTheme) {
+        ui.label(egui::RichText::new("For Veylvik's editor on the Veylvik page. Kept by Klipp, apart from Veylvik Studio's own settings. Appearance, audio and saving follow Klipp's pages.").color(theme.text_secondary));
+        ui.add_space(8.0);
+        let mut values: klipp_veylvik::veylvik_editor::preferences::Values = prefs.veylvik_settings();
+        if self.veylvik.ui(ui, &mut values) && prefs.set_veylvik_settings(&values) {
+            *prefs_dirty = true;
+        }
+        if self.veylvik.take_want_shortcuts() {
+            self.want_veylvik_shortcuts = true;
+        }
+    }
+
     /// Turn to the page named: `cache` or `keyboard`. Another name leaves
     /// the page as it was.
     pub fn open_page(&mut self, page: &str) {
@@ -504,6 +532,7 @@ impl PreferencesPanel {
             PrefsTab::Keyboard => &["keyboard", "shortcuts", "keybindings", "hotkeys", "remap"],
             PrefsTab::Advanced => &["advanced", "toast", "notification", "performance", "debug", "logging", "reset", "clear"],
             PrefsTab::BrandKits => &["brand kit", "brand kits", "brand", "logo", "watermark", "colours", "colors", "font pairing", "pairing", "intro", "outro", "klippbrand"],
+            PrefsTab::Veylvik => &["veylvik", "composition", "compositing", "3d", "nodes", "node graph", "playback", "start from the beginning", "restart", "loop", "keyframe", "auto key", "thumbnails", "safe area", "layouts", "shortcuts"],
             PrefsTab::About => &["about", "version", "license", "gpu", "cpu", "memory", "hardware", "technology"],
         }
     }
@@ -5017,11 +5046,11 @@ mod connect_assistant_tests {
 mod layout_tests {
     use super::*;
 
-    const TABS: [PrefsTab; 22] = [
+    const TABS: [PrefsTab; 23] = [
         PrefsTab::General, PrefsTab::Ai, PrefsTab::System, PrefsTab::Appearance, PrefsTab::Playback, PrefsTab::Editing,
         PrefsTab::FileBrowser, PrefsTab::Audio, PrefsTab::AudioHardware, PrefsTab::Export, PrefsTab::MediaCache, PrefsTab::Color,
         PrefsTab::Title, PrefsTab::Timeline, PrefsTab::Viewer, PrefsTab::Proxy, PrefsTab::ExternalTools, PrefsTab::Accounts, PrefsTab::Advanced,
-        PrefsTab::Keyboard, PrefsTab::BrandKits, PrefsTab::About,
+        PrefsTab::Keyboard, PrefsTab::BrandKits, PrefsTab::Veylvik, PrefsTab::About,
     ];
 
     /// Every row and section label the dialog drew before its restyle,
@@ -5374,6 +5403,37 @@ mod layout_tests {
         assert_eq!(panel.active_tab, PrefsTab::Timeline);
     }
 
+    /// Preferences → Veylvik draws Veylvik's own sections of its settings
+    /// and none that Klipp's pages hold. A setting changed there is Klipp's
+    /// copy, marked to be saved, and is read back after a start again; it
+    /// starts at Veylvik's default whatever Veylvik Studio has set.
+    #[test]
+    fn the_veylvik_page_holds_veylviks_settings_and_keeps_them() {
+        type Values = klipp_veylvik::veylvik_editor::preferences::Values;
+        let ctx = egui::Context::default();
+        let mut panel = PreferencesPanel { active_tab: PrefsTab::Veylvik, ..Default::default() };
+        let mut prefs = Preferences::default();
+        let mut dirty = false;
+        draw(&ctx, &mut panel, &mut prefs, &mut dirty, Vec::new());
+        let d = draw(&ctx, &mut panel, &mut prefs, &mut dirty, Vec::new());
+        let has = |l: &str| d.texts.iter().any(|(s, _)| s == l);
+        for shown in ["Playback", "Editing", "Start playback from the beginning"] {
+            assert!(has(shown), "Veylvik's {shown} is on the page");
+        }
+        for klipps in ["Recovery copies", "New projects", "Audio"] {
+            assert!(!d.texts.iter().any(|(s, p)| s == klipps && p.x > 280.0), "{klipps} is Klipp's, not on the page");
+        }
+        assert!(!prefs.veylvik_settings::<Values>().restart_playback, "Veylvik's default: from the playhead");
+
+        let row = d.texts.iter().find(|(s, _)| s == "Start playback from the beginning").unwrap().1;
+        click(&ctx, &mut panel, &mut prefs, &mut dirty, row);
+        assert!(prefs.veylvik_settings::<Values>().restart_playback, "the click turned it on");
+        assert!(dirty, "and the preferences are saved");
+        let restarted: Preferences = serde_json::from_str(&serde_json::to_string_pretty(&prefs).unwrap()).unwrap();
+        assert!(restarted.veylvik_settings::<Values>().restart_playback, "on after a start again");
+        assert!(restarted.veylvik_settings::<Values>().check().is_ok(), "settings the editor takes");
+    }
+
     /// #2933, #2944: General's "Show welcome at startup" and the Welcome
     /// window's "Show at startup" are one setting, each way: the switch
     /// sets what the window's box shows, and the box, applied as the app
@@ -5488,7 +5548,10 @@ mod layout_tests {
             // The content's rules (right of the list): each one under a
             // header, whose name is in the primary colour; a row's
             // label is in the secondary.
-            for (y, _, _) in d.rules.iter().filter(|(_, x0, _)| *x0 > 280.0) {
+            // Veylvik's page is drawn by Veylvik, in its own sections and
+            // separators, so it has every setting Veylvik Studio has.
+            let klipps_own = t != PrefsTab::Veylvik;
+            for (y, _, _) in d.rules.iter().filter(|(_, x0, _)| klipps_own && *x0 > 280.0) {
                 assert!(d.primary.iter().any(|h| (y - h) > 4.0 && (y - h) < 20.0), "{t:?}: a rule at {y} is not under a section header: {:?}", d.rules);
             }
             all.extend(d.texts.into_iter().map(|(s, _)| s));

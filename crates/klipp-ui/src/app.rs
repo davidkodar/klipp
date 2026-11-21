@@ -820,6 +820,13 @@ impl eframe::App for KlippApp {
     /// SIGSEGVs. Drop everything that owns GPU resources HERE while
     /// the device is still healthy.
     fn on_exit(&mut self) {
+        // A setting changed in the last second, not saved yet (saves wait a
+        // second between them): saved now, so quitting never loses it.
+        if self.prefs_dirty {
+            if let Err(e) = self.prefs.save() {
+                tracing::warn!("preferences not saved at quit: {e}");
+            }
+        }
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::ON_EXIT);
         // Use eprintln! alongside tracing — when SIGSEGV strikes
         // before tracing-subscriber flushes the file buffer, the

@@ -32,6 +32,11 @@ pub(crate) struct VeylvikTab {
     /// Where the artist took the editor's playhead, as Klipp's playhead:
     /// Klipp's goes there when the page is left.
     carried: Option<klipp_core::Timecode>,
+    /// Klipp's Veylvik settings as last given to the editor: given again
+    /// when Klipp's differ (Preferences → Veylvik changed them).
+    applied: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The editor's shortcut window opens on the next frame it is drawn.
+    shortcuts: bool,
 }
 
 /// The clip open in the editor.
@@ -44,7 +49,7 @@ struct Open {
 
 impl VeylvikTab {
     pub(crate) fn new(render_state: Option<eframe::egui_wgpu::RenderState>) -> Self {
-        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true, place: true, going_to: None, carried: None }
+        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true, place: true, going_to: None, carried: None, applied: None, shortcuts: false }
     }
 
     /// Whether the editor has the keyboard: the page shows and it was
@@ -58,6 +63,11 @@ impl VeylvikTab {
         self.just_shown = true;
         self.place = true;
         self.carried = None;
+    }
+
+    /// Open the editor's own shortcut window when the page next shows.
+    pub(crate) fn open_shortcuts(&mut self) {
+        self.shortcuts = true;
     }
 
     /// Where Klipp's playhead goes as the page is left: the frame of the
@@ -126,7 +136,11 @@ impl super::KlippApp {
                     self.veylvik_tab.going_to = None;
                 }
             }
+            self.veylvik_settings_in(ui.ctx());
             if let Some(editor) = self.veylvik_tab.editor.as_mut() {
+                if std::mem::take(&mut self.veylvik_tab.shortcuts) {
+                    editor.open_shortcuts();
+                }
                 // The keys are the editor's when the page opens: space plays
                 // its composition, not Klipp's timeline.
                 if std::mem::take(&mut self.veylvik_tab.just_shown) {
@@ -138,6 +152,7 @@ impl super::KlippApp {
                 self.veylvik_relink();
             }
             self.veylvik_follow(clip);
+            self.veylvik_settings_out();
             self.veylvik_take_edits();
         });
         self.state.veylvik_keys = self.veylvik_tab.has_keyboard();
@@ -172,6 +187,32 @@ impl super::KlippApp {
         let revision = self.veylvik_tab.editor.as_ref().map_or(0, |e| e.revision());
         self.veylvik_tab.open = Some(Open { clip, composition: id, revision });
         Ok(())
+    }
+
+    /// Klipp's Veylvik settings into the editor, when they aren't what it
+    /// was last given: at its start, and after Preferences → Veylvik. It
+    /// never reads Veylvik Studio's own.
+    fn veylvik_settings_in(&mut self, ctx: &egui::Context) {
+        let Some(editor) = self.veylvik_tab.editor.as_mut() else { return };
+        if self.veylvik_tab.applied.as_ref() == Some(&self.prefs.veylvik) {
+            return;
+        }
+        let values: editor::preferences::Values = self.prefs.veylvik_settings();
+        if let Err(why) = editor.set_preferences(ctx, values) {
+            tracing::warn!("Veylvik's editor refused Klipp's Veylvik settings, its own kept: {why}");
+        }
+        self.veylvik_tab.applied = Some(self.prefs.veylvik.clone());
+    }
+
+    /// What the artist changed in the editor itself (a layout saved, a
+    /// viewer aid, a shortcut), into Klipp's preferences and saved.
+    fn veylvik_settings_out(&mut self) {
+        let Some(values) = self.veylvik_tab.editor.as_mut().and_then(|e| e.take_preferences_change()) else { return };
+        if self.prefs.set_veylvik_settings(&values) {
+            self.prefs_dirty = true;
+        }
+        // The editor has these already: not given back.
+        self.veylvik_tab.applied = Some(self.prefs.veylvik.clone());
     }
 
     /// `clip`'s place in its composition: its used part as the editor's
@@ -229,6 +270,9 @@ impl super::KlippApp {
                 // Klipp's clear-cache clears them with the rest.
                 e.set_playback_folder(dirs::cache_dir().map(|d| d.join("klipp").join("veylvik-playback")));
                 self.veylvik_tab.editor = Some(e);
+                // A new editor starts at Veylvik's defaults: Klipp's settings
+                // go in before it is first drawn.
+                self.veylvik_tab.applied = None;
                 Ok(())
             }
             Err(e) => {
