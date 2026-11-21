@@ -178,9 +178,12 @@ struct State {
     live: HashMap<LiveKey, Slot>,
     /// Live keys, oldest first.
     order: Vec<LiveKey>,
-    /// Bumped when the media changes under the same clip: a frame Veylvik
-    /// kept of it is not the same frame any more.
+    /// Bumped when every media's frames may have changed (a decode setting
+    /// of all of them): a frame Veylvik kept is not the same frame any more.
     generation: u64,
+    /// What each media's frames are made from, as one number per media
+    /// ([`set_media_states`]): one that changes is that media's alone.
+    media_states: HashMap<MediaId, u64>,
     told: HashSet<CompositionId>,
 }
 
@@ -191,6 +194,8 @@ struct LiveKey {
     working: WorkingColorspace,
     footage: [u32; 2],
     generation: u64,
+    /// The media's state when its clip source was made.
+    media_state: u64,
 }
 
 /// A composition for one clip's media: being made ready, ready, or what
@@ -265,6 +270,7 @@ impl Compositor {
                         if let Some(held) = PROJECT.lock().unwrap_or_else(|e| e.into_inner()).clone() {
                             c.set_compositions(held);
                         }
+                        c.set_media_states(MEDIA_STATES.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default());
                         Some(Arc::new(c))
                     }
                     Err(why) => {
@@ -324,6 +330,23 @@ impl Compositor {
         self.prepared.notify_all();
     }
 
+    /// What each media's frames are made from now, as one number per media
+    /// (its file, proxy, decoding): a media whose number changed has its
+    /// footage made again, and only that media. Asked on every sync of the
+    /// media pool, most of which change nothing.
+    pub fn set_media_states(&self, states: HashMap<MediaId, u64>) {
+        let mut state = self.state();
+        if state.media_states == states {
+            return;
+        }
+        let stale = |k: &LiveKey| k.media.is_some_and(|m| states.get(&m).copied().unwrap_or(0) != k.media_state);
+        state.live.retain(|k, _| !stale(k));
+        state.order.retain(|k| !stale(k));
+        state.media_states = states;
+        drop(state);
+        self.prepared.notify_all();
+    }
+
     /// `inner` with every clip that names a composition shown through it,
     /// in `working`.
     pub fn source<'a>(self: &Arc<Self>, inner: &'a mut dyn FrameSource, working: WorkingColorspace) -> CompositionSource<'a> {
@@ -358,7 +381,9 @@ impl Compositor {
         let key = loop {
             // Asked again each time round: the media may have changed while
             // this waited.
-            let key = LiveKey { composition: id, media: clip.media_id(), working, footage: [frame.width, frame.height], generation: state.generation };
+            let media = clip.media_id();
+            let media_state = media.and_then(|m| state.media_states.get(&m).copied()).unwrap_or(0);
+            let key = LiveKey { composition: id, media, working, footage: [frame.width, frame.height], generation: state.generation, media_state };
             match state.live.get(&key) {
                 Some(Slot::Ready(_)) => break key,
                 Some(Slot::Failed(why)) => return Err(Declined::Failed(why.clone())),
@@ -620,8 +645,21 @@ pub fn set_project_compositions(compositions: Compositions) {
     *project = (!compositions.is_empty()).then_some(compositions);
 }
 
-/// The media under the clips changed: Veylvik's footage frames of it are
-/// not used again.
+/// What each media's frames are made from now, one number per media: see
+/// [`Compositor::set_media_states`]. Held for a compositor not started yet.
+pub fn set_media_states(states: HashMap<MediaId, u64>) {
+    let mut held = MEDIA_STATES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(Some(compositor)) = SHARED.get() {
+        compositor.set_media_states(states.clone());
+    }
+    *held = Some(states);
+}
+
+/// The media states as the app last said, for the compositor when it starts.
+static MEDIA_STATES: Mutex<Option<HashMap<MediaId, u64>>> = Mutex::new(None);
+
+/// Every media's frames may have changed (a decode setting of all of
+/// them): Veylvik's footage frames are not used again.
 pub fn media_changed() {
     if let Some(Some(compositor)) = SHARED.get() {
         compositor.media_changed();
@@ -677,7 +715,7 @@ fn salt(key: &LiveKey) -> u64 {
     });
     let media = key.media.map(|m| m.0.as_u64_pair()).unwrap_or((0, 0));
     let working = key.working as u64;
-    [media.0, media.1, working, u64::from(key.footage[0]) << 32 | u64::from(key.footage[1]), key.generation, key.composition.0.as_u64_pair().0]
+    [media.0, media.1, working, u64::from(key.footage[0]) << 32 | u64::from(key.footage[1]), key.generation, key.media_state, key.composition.0.as_u64_pair().0]
         .into_iter()
         .fold(session, |acc, part| crate::mix(acc ^ part))
 }
