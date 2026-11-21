@@ -500,6 +500,7 @@ impl PreferencesPanel {
             "keyboard" => self.active_tab = PrefsTab::Keyboard,
             "colour" => self.active_tab = PrefsTab::Color,
             "brand_kits" => self.active_tab = PrefsTab::BrandKits,
+            "veylvik" => self.active_tab = PrefsTab::Veylvik,
             _ => return,
         }
         self.search_query.clear();
@@ -5579,8 +5580,10 @@ mod open_page_tests {
         assert_eq!(panel.active_tab, PrefsTab::Keyboard);
         panel.open_page("colour");
         assert_eq!(panel.active_tab, PrefsTab::Color, "the calibration LUT's page (#466)");
+        panel.open_page("veylvik");
+        assert_eq!(panel.active_tab, PrefsTab::Veylvik, "Edit → Veylvik Settings…");
         panel.open_page("nonsense");
-        assert_eq!(panel.active_tab, PrefsTab::Color);
+        assert_eq!(panel.active_tab, PrefsTab::Veylvik);
     }
 }
 

@@ -613,6 +613,9 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new("Deselect All").shortcut_text(kb.display_for("deselect_all"))).clicked() { { state.selected_clip = None; state.selected_clips.clear(); }; ui.close_kind(egui::UiKind::Menu); }
             ui.separator();
             if ui.add(egui::Button::new("Preferences...").shortcut_text(kb.display_for("preferences"))).clicked() { cmds.push(AppCommand::ShowPreferences); ui.close_kind(egui::UiKind::Menu); }
+            // The Veylvik page's own settings, as Resolve's Fusion page has
+            // its Fusion Settings: Preferences on its Veylvik tab.
+            if ui.button("Veylvik Settings...").on_hover_text("Settings for Veylvik's editor on the Veylvik page").clicked() { cmds.push(AppCommand::OpenPreferences { page: Some("veylvik".into()) }); ui.close_kind(egui::UiKind::Menu); }
         });
     }
 
