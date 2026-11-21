@@ -1454,8 +1454,9 @@ pub(super) fn key_scope(state: &crate::state::AppState, text_editing: bool) -> K
     match state.active_panel {
         _ if state.dialog_open() => KeyScope::Nothing,
         _ if state.project_path.is_none() => KeyScope::AppOnly,
-        // Veylvik's editor has the keys; Ctrl+S still saves the project.
-        _ if state.veylvik_keys && state.active_workspace == crate::state::Workspace::Veylvik => KeyScope::Guest,
+        // The Veylvik page: its editor's keys (space plays the editor, not
+        // Klipp's hidden timeline); Ctrl+S still saves the project.
+        _ if state.active_workspace == crate::state::Workspace::Veylvik => KeyScope::Guest,
         // A field left by Enter keeps the single keys (#2943): typing
         // goes on in the inspector until a click elsewhere or Escape.
         _ if text_editing || state.field_keys_held => KeyScope::CtrlOnly,
@@ -1660,8 +1661,10 @@ mod key_scope_tests {
     fn the_veylvik_editor_keeps_its_keys_but_save() {
         let mut state = AppState { project_path: Some("/projects/a.klipp".into()), active_workspace: crate::state::Workspace::Veylvik, veylvik_keys: true, ..Default::default() };
         assert_eq!(key_scope(&state, false), KeyScope::Guest);
+        // Whoever was last pressed on: space must never play Klipp's
+        // timeline behind the page.
         state.veylvik_keys = false;
-        assert_eq!(key_scope(&state, false), KeyScope::All);
+        assert_eq!(key_scope(&state, false), KeyScope::Guest, "the page's keys are never Klipp's transport");
         state.veylvik_keys = true;
         state.active_workspace = crate::state::Workspace::Edit;
         assert_eq!(key_scope(&state, false), KeyScope::All, "a flag left from the page is not the editor's");

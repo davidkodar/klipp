@@ -875,7 +875,15 @@ impl KlippApp {
             // Colour page opened on a black viewer until the playhead
             // was moved; while parked this is a regrade of the parked
             // frame, and a real seek only when there is none.
-            if self.state.playback != PlaybackState::Playing {
+            // The Veylvik page shows no viewer of Klipp's: its editor plays
+            // on the same card, so Klipp's own playback stops there and no
+            // frame is drawn for a viewer nobody sees.
+            if to == Workspace::Veylvik {
+                self.veylvik_tab.shown();
+                if self.state.playback == PlaybackState::Playing {
+                    let _ = self.cmd_tx.send(AppCommand::Pause);
+                }
+            } else if self.state.playback != PlaybackState::Playing {
                 let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
             }
 

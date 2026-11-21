@@ -21,6 +21,8 @@ pub(crate) struct VeylvikTab {
     open: Option<Open>,
     /// Why the editor could not start, said on the page.
     failed: Option<String>,
+    /// The page has just come into view: the keyboard goes to the editor.
+    just_shown: bool,
 }
 
 /// The clip open in the editor.
@@ -33,13 +35,18 @@ struct Open {
 
 impl VeylvikTab {
     pub(crate) fn new(render_state: Option<eframe::egui_wgpu::RenderState>) -> Self {
-        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None }
+        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true }
     }
 
     /// Whether the editor has the keyboard: the page shows and it was
     /// the last thing pressed on.
     pub(crate) fn has_keyboard(&self) -> bool {
         self.editor.as_ref().is_some_and(|e| e.has_keyboard())
+    }
+
+    /// The page has come into view.
+    pub(crate) fn shown(&mut self) {
+        self.just_shown = true;
     }
 
     /// Open the clip again on the next frame: its composition's folder
@@ -93,6 +100,11 @@ impl super::KlippApp {
                 return say(ui, &why);
             }
             if let Some(editor) = self.veylvik_tab.editor.as_mut() {
+                // The keys are the editor's when the page opens: space plays
+                // its composition, not Klipp's timeline.
+                if std::mem::take(&mut self.veylvik_tab.just_shown) {
+                    editor.set_keyboard(true);
+                }
                 editor.ui(ui);
             }
             self.veylvik_take_edits();
