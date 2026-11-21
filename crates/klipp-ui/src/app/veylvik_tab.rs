@@ -200,8 +200,8 @@ impl super::KlippApp {
         let seq = self.state.sequence();
         let (t, c) = seq.find_clip(clip)?;
         let item = self.state.media_pool.get(&seq.tracks[t].clips[c].media_id()?)?;
-        let device = klipp_effects::gpu_context::GpuContext::shared()?.device();
-        Some(EditorFootage::new(item, klipp_engine::video_decoder::working_colorspace(), super::engine_sync::media_state(item), device))
+        let ctx = klipp_effects::gpu_context::GpuContext::shared()?;
+        Some(EditorFootage::new(item, klipp_engine::video_decoder::working_colorspace(), super::engine_sync::media_state(item), ctx.device(), ctx.queue()))
     }
 
     /// The editor's changes into the project, each as a step of Klipp's

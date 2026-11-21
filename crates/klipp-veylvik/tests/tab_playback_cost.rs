@@ -40,7 +40,7 @@ fn what_a_frame_of_the_tabs_playback_costs() {
     item.resolution = klipp_core::Resolution { width: 3840, height: 2160 };
     item.fps = klipp_core::Fps::new(24000, 1001);
     item.duration = klipp_core::RationalTime::from_secs_f64(13.0, 24000);
-    let media = EditorFootage::new(&item, WorkingColorspace::Rec709Linear, 7, Arc::clone(&device));
+    let media = EditorFootage::new(&item, WorkingColorspace::Rec709Linear, 7, Arc::clone(&device), ctx.queue());
     let mut decode = Vec::new();
     for i in 0..frames {
         let t = Instant::now();
@@ -54,21 +54,26 @@ fn what_a_frame_of_the_tabs_playback_costs() {
 
     // The whole frame as the tab plays it: Veylvik asking Klipp's footage.
     let host = Arc::new(TabHost::default());
-    host.set(Some(EditorFootage::new(&item, WorkingColorspace::Rec709Linear, 8, Arc::clone(&device))));
+    host.set(Some(EditorFootage::new(&item, WorkingColorspace::Rec709Linear, 8, Arc::clone(&device), ctx.queue())));
     let source = ClipSource::new(Arc::clone(&renderer), composition, folder.clone(), Some(host as Arc<dyn klipp_veylvik::Host>)).unwrap();
     let t = Instant::now();
     source.compile().unwrap();
     eprintln!("compile: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
     let out = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: u64::from(w) * u64::from(h) * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
     let pixels = klipp_veylvik::working_pixels(WorkingColorspace::Rec709Linear);
-    let mut whole = Vec::new();
+    let (mut whole, mut call, mut wait) = (Vec::new(), Vec::new(), Vec::new());
     for i in 0..frames {
         let t = Instant::now();
         source.render(Time { ticks: (100 + i) * 1001, rate: 24000 }, [w, h], &out, &pixels).unwrap();
+        let called = t.elapsed();
         // Waited for on the card: what the frame really took.
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
         whole.push(t.elapsed().as_secs_f64() * 1000.0);
+        call.push(called.as_secs_f64() * 1000.0);
+        wait.push((t.elapsed() - called).as_secs_f64() * 1000.0);
     }
     summary("whole frame (decode + Veylvik)", &mut whole);
+    summary("  ClipSource::render returning", &mut call);
+    summary("  then the card finishing", &mut wait);
     eprintln!("budget at 23.976 fps: {:.1} ms", 1000.0 / fps);
 }

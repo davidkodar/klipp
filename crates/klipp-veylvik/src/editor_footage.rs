@@ -20,8 +20,11 @@ use crate::{fault, identity, mix, working_pixels, Time};
 /// rather than reading on to it.
 const JUMP_SECS: f64 = 2.0;
 
+/// A footage frame on the card and its size, or why there is none.
+type Decoded = std::result::Result<(wgpu::Buffer, u32, u32), String>;
+
 /// A frame asked of the decoder's thread, and where to answer.
-type Ask = (f64, std::sync::mpsc::Sender<std::result::Result<(wgpu::Buffer, u32, u32), String>>);
+type Ask = (f64, std::sync::mpsc::Sender<Decoded>);
 
 /// The media of the clip open in the tab.
 pub struct EditorFootage {
@@ -39,7 +42,7 @@ pub struct EditorFootage {
 impl EditorFootage {
     /// `item` decoded into `working`; `state` names what its frames are
     /// made from (the media's state, as the pool sync gives it).
-    pub fn new(item: &klipp_media::MediaItem, working: WorkingColorspace, state: u64, device: Arc<wgpu::Device>) -> Self {
+    pub fn new(item: &klipp_media::MediaItem, working: WorkingColorspace, state: u64, device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
         let fps = item.fps.as_f64();
         let fps = if fps > 0.0 { fps } else { 25.0 };
         let rate = crate::compose::rate_of(fps);
@@ -58,32 +61,75 @@ impl EditorFootage {
             let fresh = || ExportFrameSource::shared(Arc::clone(&media), fps, working);
             let mut source = fresh();
             let mut last = f64::NEG_INFINITY;
+            let duration_secs = f64::from(frames) / fps;
             let upload = |pixels: &[f32]| wgpu::util::DeviceExt::create_buffer_init(
                 device.as_ref(),
                 &wgpu::util::BufferInitDescriptor { label: Some("veylvik tab footage"), contents: bytemuck::cast_slice(pixels), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC },
             );
+            // The decoder's converter may reuse its buffer for the next
+            // frame: each frame is copied to one of its own before it is
+            // handed over, so reading ahead can't change one Veylvik reads.
+            let own = |buffer: &wgpu::Buffer| {
+                let copy = device.create_buffer(&wgpu::BufferDescriptor { label: Some("veylvik tab footage"), size: buffer.size(), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("veylvik tab footage") });
+                encoder.copy_buffer_to_buffer(buffer, 0, &copy, 0, buffer.size());
+                queue.submit([encoder.finish()]);
+                copy
+            };
+            let decode = |source: &mut ExportFrameSource<'static>, secs: f64| -> Decoded {
+                let frame = source.frame(&clip, secs, size[0], size[1]).ok_or_else(|| format!("Klipp has no frame of the clip at {secs:.3} s"))?;
+                let (fw, fh) = (frame.width, frame.height);
+                let buffer = match frame.pixels {
+                    // Decoded on the card and converted there.
+                    SourcePixels::Gpu(g) => match g.on_device() {
+                        Some((OnDevice::Linear(buffer), bw, bh)) if (bw, bh) == (fw, fh) => own(buffer),
+                        _ => upload(&g.read()),
+                    },
+                    SourcePixels::SceneReferred { codes, transfer, source_to_working } => upload(&codes.to_scene_linear_rgba(transfer, source_to_working)),
+                    SourcePixels::Linear(pixels) => upload(&pixels),
+                };
+                Ok((buffer, fw, fh))
+            };
+            let frame_secs = 1.0 / fps;
+            // The frame after the one last asked for, read while Veylvik
+            // renders that one: playing on, it is ready when asked.
+            let mut ahead: Option<(f64, Decoded)> = None;
+            // A request that came while reading ahead, taken next.
+            let mut pending: Option<Ask> = None;
             // Until the footage is let go (another clip opened, the tab closed).
-            while let Ok((secs, answer)) = rx.recv() {
-                // An export's decoder reads on, never back: a scrub back,
-                // or a jump far ahead, starts one at the frame asked for.
-                if secs < last - 0.5 / fps || secs > last + JUMP_SECS {
-                    source = fresh();
-                }
-                last = secs;
-                let made = source.frame(&clip, secs, size[0], size[1]).ok_or_else(|| format!("Klipp has no frame of the clip at {secs:.3} s")).map(|frame| {
-                    let (fw, fh) = (frame.width, frame.height);
-                    let buffer = match frame.pixels {
-                        // Decoded on the card and converted there: handed over as it is.
-                        SourcePixels::Gpu(g) => match g.on_device() {
-                            Some((OnDevice::Linear(buffer), bw, bh)) if (bw, bh) == (fw, fh) => buffer.clone(),
-                            _ => upload(&g.read()),
-                        },
-                        SourcePixels::SceneReferred { codes, transfer, source_to_working } => upload(&codes.to_scene_linear_rgba(transfer, source_to_working)),
-                        SourcePixels::Linear(pixels) => upload(&pixels),
-                    };
-                    (buffer, fw, fh)
-                });
+            loop {
+                let (secs, answer) = match pending.take() {
+                    Some(ask) => ask,
+                    None => match rx.recv() {
+                        Ok(ask) => ask,
+                        Err(_) => break,
+                    },
+                };
+                let made = match ahead.take() {
+                    Some((at, made)) if (at - secs).abs() < 0.5 * frame_secs => made,
+                    _ => {
+                        // An export's decoder reads on, never back: a scrub
+                        // back, or a jump far ahead, starts one at the frame.
+                        if secs < last - 0.5 * frame_secs || secs > last + JUMP_SECS {
+                            source = fresh();
+                        }
+                        last = secs;
+                        decode(&mut source, secs)
+                    }
+                };
                 let _ = answer.send(made);
+                // Read on only while nobody is waiting, and inside the media.
+                match rx.try_recv() {
+                    Ok(ask) => pending = Some(ask),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        let next = secs + frame_secs;
+                        if next < duration_secs {
+                            last = next;
+                            ahead = Some((next, decode(&mut source, next)));
+                        }
+                    }
+                }
             }
         });
         if let Err(e) = spawned {

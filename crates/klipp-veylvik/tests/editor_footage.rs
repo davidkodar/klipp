@@ -33,7 +33,7 @@ fn the_tabs_footage_is_the_clips_frame_at_the_time_asked() {
     let mut item = klipp_media::MediaItem::synthetic_for_test(file.clone(), None);
     item.resolution = klipp_core::Resolution { width: 32, height: 18 };
     item.duration = klipp_core::RationalTime { value: 48, rate: 24 };
-    host.set(Some(EditorFootage::new(&item, WorkingColorspace::Rec709Linear, 1, Arc::clone(&device))));
+    host.set(Some(EditorFootage::new(&item, WorkingColorspace::Rec709Linear, 1, Arc::clone(&device), ctx.queue())));
     let c = Composition::from_host_footage(klipp_veylvik::CLIP_MEDIA_KEY, "Clip", None, [32, 18], Time { ticks: 24, rate: 1 }, 48).unwrap();
     let source = ClipSource::new(Arc::clone(&renderer), c, dir.clone(), Some(host as Arc<dyn klipp_veylvik::Host>)).unwrap();
     let out = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 32 * 18 * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
