@@ -1,44 +1,95 @@
 //! A clip's media for the Veylvik tab: any frame of it, decoded by Klipp
-//! from its file when the editor asks (scrubbing, playing, tracking), as
-//! linear light in the working space, scene light for log and HDR footage:
-//! the same picture a composition is given in Klipp's renders. It goes up
-//! to the shared GPU device and Veylvik takes it from there.
+//! when the editor asks (scrubbing, playing, tracking) the way an export
+//! decodes it: on the card's own decoder, converted to linear light in
+//! the working space there and handed over on the card (scene light for
+//! log and HDR footage), the same picture a composition is given in
+//! Klipp's renders. The decoder is kept from frame to frame, so playing
+//! on reads the next frame without a seek.
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use klipp_core::{LogFormat, WorkingColorspace};
-use klipp_media::frame_reader::SeekableFrameReader;
+use klipp_compose::{FrameSource as _, OnDevice, SourcePixels};
+use klipp_core::{MediaId, RationalTime, WorkingColorspace};
+use klipp_render::ExportFrameSource;
+use klipp_timeline::Clip;
 use veylvik_render::{HostFrame, HostMedia, Result, SourceInfo};
 
 use crate::{fault, identity, mix, working_pixels, Time};
 
+/// How far ahead a frame is asked before a decoder is started there,
+/// rather than reading on to it.
+const JUMP_SECS: f64 = 2.0;
+
+/// A frame asked of the decoder's thread, and where to answer.
+type Ask = (f64, std::sync::mpsc::Sender<std::result::Result<(wgpu::Buffer, u32, u32), String>>);
+
 /// The media of the clip open in the tab.
 pub struct EditorFootage {
-    path: PathBuf,
-    log_format: Option<LogFormat>,
     working: WorkingColorspace,
     fps: f64,
     info: SourceInfo,
     /// The frames' names: the file and how it is decoded, never another
     /// file's, so one kept is the same picture again.
     salt: u64,
-    device: Arc<wgpu::Device>,
-    reader: Mutex<Option<SeekableFrameReader<Vec<f32>>>>,
+    /// The decoder's own thread: its decoder and converters stay on the
+    /// thread that made them, and Veylvik's render workers ask it.
+    asks: Mutex<std::sync::mpsc::Sender<Ask>>,
 }
 
 impl EditorFootage {
-    /// `path` at `fps`, `size` pixels and `frames` long, decoded as Klipp
-    /// decodes it (`log_format`, into `working`); `state` names what its
-    /// frames are made from (the media's state, as the pool sync gives it).
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(path: PathBuf, log_format: Option<LogFormat>, working: WorkingColorspace, fps: f64, size: [u32; 2], frames: Option<u32>, state: u64, device: Arc<wgpu::Device>) -> Self {
+    /// `item` decoded into `working`; `state` names what its frames are
+    /// made from (the media's state, as the pool sync gives it).
+    pub fn new(item: &klipp_media::MediaItem, working: WorkingColorspace, state: u64, device: Arc<wgpu::Device>) -> Self {
+        let fps = item.fps.as_f64();
         let fps = if fps > 0.0 { fps } else { 25.0 };
         let rate = crate::compose::rate_of(fps);
-        let duration = frames.map(|n| Time { ticks: i64::from(n) * i64::from(rate.rate), rate: rate.ticks as u32 });
-        let info = SourceInfo { width: size[0], height: size[1], duration, frame_rate: Some(rate), frames, description: "the clip's media, decoded by Klipp".into() };
+        let frames = (item.duration.to_secs_f64() * fps).floor() as u32;
+        let duration = Time { ticks: i64::from(frames) * i64::from(rate.rate), rate: rate.ticks as u32 };
+        let size = [item.resolution.width.max(1), item.resolution.height.max(1)];
+        let info = SourceInfo { width: size[0], height: size[1], duration: Some(duration), frame_rate: Some(rate), frames: Some(frames), description: "the clip's media, decoded by Klipp".into() };
         let salt = mix(state ^ mix(working as u64 ^ 0x7ab));
-        Self { path, log_format, working, fps, info, salt, device, reader: Mutex::new(None) }
+        let id: MediaId = item.id;
+        let length = RationalTime::from_secs_f64(item.duration.to_secs_f64(), 24000);
+        let zero = RationalTime::from_secs_f64(0.0, 24000);
+        let clip = Clip::media(id, zero, length, zero, length);
+        let media: Arc<std::collections::HashMap<MediaId, klipp_render::MediaFile>> = Arc::new([(id, klipp_render::MediaFile::of(item))].into_iter().collect());
+        let (tx, rx) = std::sync::mpsc::channel::<Ask>();
+        let spawned = std::thread::Builder::new().name("klipp-veylvik-tab-decode".into()).spawn(move || {
+            let fresh = || ExportFrameSource::shared(Arc::clone(&media), fps, working);
+            let mut source = fresh();
+            let mut last = f64::NEG_INFINITY;
+            let upload = |pixels: &[f32]| wgpu::util::DeviceExt::create_buffer_init(
+                device.as_ref(),
+                &wgpu::util::BufferInitDescriptor { label: Some("veylvik tab footage"), contents: bytemuck::cast_slice(pixels), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC },
+            );
+            // Until the footage is let go (another clip opened, the tab closed).
+            while let Ok((secs, answer)) = rx.recv() {
+                // An export's decoder reads on, never back: a scrub back,
+                // or a jump far ahead, starts one at the frame asked for.
+                if secs < last - 0.5 / fps || secs > last + JUMP_SECS {
+                    source = fresh();
+                }
+                last = secs;
+                let made = source.frame(&clip, secs, size[0], size[1]).ok_or_else(|| format!("Klipp has no frame of the clip at {secs:.3} s")).map(|frame| {
+                    let (fw, fh) = (frame.width, frame.height);
+                    let buffer = match frame.pixels {
+                        // Decoded on the card and converted there: handed over as it is.
+                        SourcePixels::Gpu(g) => match g.on_device() {
+                            Some((OnDevice::Linear(buffer), bw, bh)) if (bw, bh) == (fw, fh) => buffer.clone(),
+                            _ => upload(&g.read()),
+                        },
+                        SourcePixels::SceneReferred { codes, transfer, source_to_working } => upload(&codes.to_scene_linear_rgba(transfer, source_to_working)),
+                        SourcePixels::Linear(pixels) => upload(&pixels),
+                    };
+                    (buffer, fw, fh)
+                });
+                let _ = answer.send(made);
+            }
+        });
+        if let Err(e) = spawned {
+            tracing::warn!("the Veylvik tab's decoder thread could not start: {e}");
+        }
+        Self { working, fps, info, salt, asks: Mutex::new(tx) }
     }
 
     fn index(&self, time: Time) -> i64 {
@@ -56,22 +107,12 @@ impl HostMedia for EditorFootage {
     }
 
     fn frame(&self, time: Time, _target: Option<[u32; 2]>) -> Result<HostFrame> {
-        // A quarter into the frame: inside it whichever way the reader rounds.
+        // A quarter into the frame: inside it whichever way the decoder rounds.
         let secs = (self.index(time).max(0) as f64 + 0.25) / self.fps;
-        let mut reader = self.reader.lock().map_err(|_| fault("the clip's reader is unavailable"))?;
-        if reader.is_none() {
-            *reader = SeekableFrameReader::open_linear(&self.path, self.log_format, self.working);
-        }
-        let read = reader.as_mut().ok_or_else(|| fault(format!("Klipp could not open {}", self.path.display())))?;
-        let (pixels, w, h) = read.decode_at(secs).ok_or_else(|| fault(format!("Klipp has no frame of the clip at {secs:.3} s")))?;
-        if pixels.len() != w as usize * h as usize * 4 {
-            return Err(fault(format!("a frame of {} values for {w}×{h}", pixels.len())));
-        }
-        let buffer = wgpu::util::DeviceExt::create_buffer_init(
-            self.device.as_ref(),
-            &wgpu::util::BufferInitDescriptor { label: Some("veylvik tab footage"), contents: bytemuck::cast_slice(&pixels), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC },
-        );
-        Ok(HostFrame { buffer, width: w, height: h, pixels: working_pixels(self.working) })
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.asks.lock().map_err(|_| fault("the clip's decoder is unavailable"))?.send((secs, tx)).map_err(|_| fault("the clip's decoder has stopped"))?;
+        let (buffer, width, height) = rx.recv().map_err(|_| fault("the clip's decoder has stopped"))?.map_err(fault)?;
+        Ok(HostFrame { buffer, width, height, pixels: working_pixels(self.working) })
     }
 }
 

@@ -15,6 +15,7 @@ veylvik-io = { git = "https://github.com/davidkodar/veylvik", rev = "2d0f5d4" }
 wgpu = { workspace = true }
 klipp-core = { workspace = true }
 klipp-media = { workspace = true }
+klipp-render = { workspace = true }
 klipp-color = { workspace = true }
 klipp-nodes = { workspace = true }
 klipp-compose = { workspace = true }

@@ -3970,6 +3970,7 @@ dependencies = [
  "klipp-media",
  "klipp-nodes",
  "klipp-plugin",
+ "klipp-render",
  "klipp-timeline",
  "klipp-title",
  "png 0.18.1",

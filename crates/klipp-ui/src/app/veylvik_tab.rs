@@ -201,10 +201,7 @@ impl super::KlippApp {
         let (t, c) = seq.find_clip(clip)?;
         let item = self.state.media_pool.get(&seq.tracks[t].clips[c].media_id()?)?;
         let device = klipp_effects::gpu_context::GpuContext::shared()?.device();
-        let fps = item.fps.as_f64();
-        let frames = (item.duration.to_secs_f64() * fps).floor() as u32;
-        let log = klipp_engine::video_decoder::log_format_for_path(&item.path);
-        Some(EditorFootage::new(item.path.clone(), log, klipp_engine::video_decoder::working_colorspace(), fps, [item.resolution.width, item.resolution.height], Some(frames), super::engine_sync::media_state(item), device))
+        Some(EditorFootage::new(item, klipp_engine::video_decoder::working_colorspace(), super::engine_sync::media_state(item), device))
     }
 
     /// The editor's changes into the project, each as a step of Klipp's
