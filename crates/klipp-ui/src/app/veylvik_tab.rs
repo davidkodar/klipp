@@ -107,6 +107,9 @@ impl super::KlippApp {
                 }
                 editor.ui(ui);
             }
+            if self.veylvik_tab.editor.as_mut().is_some_and(|e| e.take_relink_request()) {
+                self.veylvik_relink();
+            }
             self.veylvik_take_edits();
         });
         self.state.veylvik_keys = self.veylvik_tab.has_keyboard();
@@ -132,9 +135,22 @@ impl super::KlippApp {
         if let Err(why) = made {
             return Err(format!("Veylvik could not open this clip's composition: {why}"));
         }
+        let name = clip_name(&self.state, clip);
+        if let Some(editor) = self.veylvik_tab.editor.as_mut() {
+            // Its title, and the start of the files it renders: the clip's
+            // name, not "Untitled" (a hosted composition has no file).
+            editor.set_name(name);
+        }
         let revision = self.veylvik_tab.editor.as_ref().map_or(0, |e| e.revision());
         self.veylvik_tab.open = Some(Open { clip, composition: id, revision });
         Ok(())
+    }
+
+    /// The editor's "unavailable" button: media is Klipp's to relink.
+    fn veylvik_relink(&mut self) {
+        let clip = self.veylvik_tab.open.as_ref().map(|o| o.clip);
+        let missing = self.veylvik_tab.editor.as_ref().map(|e| e.unavailable_media()).unwrap_or_default();
+        relink(&mut self.state, clip, &missing);
     }
 
     fn veylvik_make_editor(&mut self, ctx: &egui::Context, composition: klipp_veylvik::Composition, assets: std::path::PathBuf) -> Result<(), String> {
@@ -261,6 +277,38 @@ impl super::KlippApp {
     }
 }
 
+/// `clip` as the timeline names it: its own name, else its media's file
+/// name.
+fn clip_name(state: &crate::state::AppState, clip: ClipId) -> Option<String> {
+    let seq = state.sequence();
+    let (t, c) = seq.find_clip(clip)?;
+    let it = &seq.tracks[t].clips[c];
+    let file = it.media_id().and_then(|m| state.media_pool.get(&m)).map(|m| m.filename.clone()).unwrap_or_default();
+    Some(it.label(&file).to_owned()).filter(|n| !n.trim().is_empty())
+}
+
+/// The editor's "unavailable" pressed for `clip`, `missing` what it can't
+/// have: the clip's media offline, Klipp's Relink dialog; else what can't
+/// be had is the composition's own (a file in its folder), said by name.
+fn relink(state: &mut crate::state::AppState, clip: Option<ClipId>, missing: &std::collections::BTreeMap<String, String>) {
+    let offline = clip.and_then(|clip| {
+        let seq = state.sequence();
+        let (t, c) = seq.find_clip(clip)?;
+        state.media_pool.get(&seq.tracks[t].clips[c].media_id()?).map(|m| m.offline)
+    });
+    if offline == Some(true) {
+        state.show_relink_dialog = true;
+        return;
+    }
+    let said: Vec<String> = missing.iter().take(3).map(|(name, why)| format!("{name}: {why}")).collect();
+    let more = missing.len().saturating_sub(said.len());
+    state.toast.show(match (said.is_empty(), more) {
+        (true, _) => "The clip's media is online: nothing for Klipp to relink".to_owned(),
+        (false, 0) => format!("Not found in the composition's folder: {}", said.join("; ")),
+        (false, n) => format!("Not found in the composition's folder: {} and {n} more", said.join("; ")),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +399,37 @@ mod tests {
         let entry = s.take_undo().expect("a step");
         let crate::history::EditCommand::SetComposition { before, .. } = &entry.command else { panic!("{:?}", entry.command) };
         assert_eq!(before.as_deref(), Some(&b"v2"[..]));
+    }
+
+    /// The editor is told the clip's name as the timeline gives it, and its
+    /// "unavailable" opens Klipp's Relink for the clip's offline media, or
+    /// names the composition's own missing files.
+    #[test]
+    fn the_editor_has_the_clips_name_and_klipps_relink() {
+        let path = std::path::PathBuf::from("/footage/Handheld.mp4");
+        let mut item = klipp_media::MediaItem::synthetic_for_test(path, None);
+        item.filename = "Handheld.mp4".into();
+        let clip = Clip::media(item.id, t(0.0), t(4.0), t(0.0), t(4.0));
+        let id = clip.id;
+        let mut seq = Sequence::new_default();
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips = vec![clip];
+        seq.tracks = vec![v1];
+        let mut s = crate::state::AppState { sequences: vec![seq], ..Default::default() };
+        s.media_pool.add(item.clone());
+        assert_eq!(clip_name(&s, id).as_deref(), Some("Handheld.mp4"), "its media's file name");
+        s.sequences[0].tracks[0].clips[0].name = Some("Opening shot".into());
+        assert_eq!(clip_name(&s, id).as_deref(), Some("Opening shot"), "its own name first");
+
+        let none = std::collections::BTreeMap::new();
+        relink(&mut s, Some(id), &none);
+        assert!(!s.show_relink_dialog, "online media: nothing to relink");
+        let missing = std::collections::BTreeMap::from([("grain.png".to_owned(), "not found".to_owned())]);
+        relink(&mut s, Some(id), &missing);
+        assert!(!s.show_relink_dialog, "the composition's own file is not Klipp's media");
+        s.media_pool.get_mut(&item.id).unwrap().offline = true;
+        relink(&mut s, Some(id), &missing);
+        assert!(s.show_relink_dialog, "offline media: Klipp's Relink");
     }
 
     /// On the Veylvik page space, J, K and L never play Klipp's timeline:
