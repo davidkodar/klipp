@@ -13,6 +13,9 @@ use klipp_core::{ColorTransfer, MediaId, RationalTime, WorkingColorspace};
 use klipp_timeline::{Clip, CompositionId, Sequence, Track, TrackKind};
 use klipp_veylvik::{Composition, Compositions, Compositor, Time};
 
+/// The compositor's compositions are the process's: one test at a time.
+static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const W: u32 = 96;
 const H: u32 = 54;
 const FPS: u32 = 24;
@@ -72,6 +75,7 @@ fn a_scene_referred_clip_keeps_its_display_step_through_a_composition() {
         eprintln!("UNVERIFIED: no GPU");
         return;
     };
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let pass = CompositionId(uuid::Uuid::from_u128(1));
     let c = Composition::from_host_footage(klipp_veylvik::CLIP_MEDIA_KEY, "Clip", None, [W, H], Time { ticks: i64::from(FPS), rate: 1 }, 48).unwrap();
     compositor.set_compositions([(pass, Arc::<[u8]>::from(serde_json::to_vec(&c).unwrap()))].into());
@@ -130,6 +134,7 @@ fn the_gpu_routes_keep_a_scene_referred_clips_display_step_through_a_composition
         eprintln!("UNVERIFIED: no GPU");
         return;
     };
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let pass = CompositionId(uuid::Uuid::from_u128(1));
     let c = Composition::from_host_footage(klipp_veylvik::CLIP_MEDIA_KEY, "Clip", None, [W, H], Time { ticks: i64::from(FPS), rate: 1 }, 48).unwrap();
     let w709 = WorkingColorspace::Rec709Linear;

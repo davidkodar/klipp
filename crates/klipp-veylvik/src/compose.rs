@@ -1100,6 +1100,16 @@ mod tests {
         (t.ticks, t.rate)
     }
 
+    /// The footage bridge's shader parses and validates without a GPU: an
+    /// error in it would otherwise show only on a machine with one, as a
+    /// pipeline left out.
+    #[test]
+    fn the_bridge_shader_compiles() {
+        if let Err(e) = klipp_effects::shader_check::validate(include_str!("shaders/srgb8_to_linear.wgsl")) {
+            panic!("srgb8_to_linear: {e}");
+        }
+    }
+
     #[test]
     fn rates_are_exact() {
         assert_eq!(parts(rate_of(25.0)), (25, 1));

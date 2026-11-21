@@ -12,6 +12,9 @@ use klipp_timeline::{Clip, CompositionId, Sequence, Track, TrackKind};
 use klipp_veylvik::{Composition, Compositions, Time};
 use veylvik_document::{nodes, Operation};
 
+/// The project's compositions and folders are the process's: one test at a time.
+static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const W: u32 = 16;
 const H: u32 = 16;
 
@@ -42,6 +45,7 @@ fn a_composition_reads_its_assets_from_its_folder_in_the_project() {
         eprintln!("UNVERIFIED: no GPU");
         return;
     }
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let _ = klipp_veylvik::install();
     let id = CompositionId(uuid::Uuid::from_u128(1));
     // A picture of the file beside it, and nothing else.
@@ -90,6 +94,7 @@ fn a_composition_reads_nothing_outside_its_folder() {
         eprintln!("UNVERIFIED: no GPU");
         return;
     }
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let _ = klipp_veylvik::install();
     let root = std::env::temp_dir().join(format!("klipp_veylvik_outside_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
