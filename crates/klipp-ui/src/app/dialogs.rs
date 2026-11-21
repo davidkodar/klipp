@@ -1598,6 +1598,13 @@ impl KlippApp {
                 self.state.snap,
             );
             cmds.extend(pref_cmds);
+            // Veylvik's "Keyboard shortcuts…": its editor's own window, on
+            // the Veylvik page.
+            if std::mem::take(&mut self.preferences_panel.want_veylvik_shortcuts) {
+                self.state.show_preferences = false;
+                self.state.active_workspace = crate::state::Workspace::Veylvik;
+                self.veylvik_tab.open_shortcuts();
+            }
             // Sync skim_audio pref → state (checkbox may have changed)
             if self.state.audio_skimming_enabled != self.prefs.playback.skim_audio {
                 self.state.audio_skimming_enabled = self.prefs.playback.skim_audio;

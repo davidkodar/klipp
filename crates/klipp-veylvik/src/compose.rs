@@ -837,13 +837,13 @@ fn salt(key: &LiveKey) -> u64 {
         .fold(session, |acc, part| crate::mix(acc ^ part))
 }
 
-fn frame_index(secs: f64, fps: f64) -> i64 {
+pub(crate) fn frame_index(secs: f64, fps: f64) -> i64 {
     (secs * fps + 1e-6).floor() as i64
 }
 
 /// The start of frame `index` at `fps`, exact: the frame Veylvik's
 /// footage reads at it is `index` again.
-fn frame_time(index: i64, fps: f64) -> Time {
+pub(crate) fn frame_time(index: i64, fps: f64) -> Time {
     let rate = rate_of(fps);
     Time { ticks: index * i64::from(rate.rate), rate: rate.ticks as u32 }
 }

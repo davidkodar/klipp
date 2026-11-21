@@ -200,6 +200,8 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::ShowRelinkDialog), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Preferences…"), shortcut: Cow::Borrowed("Ctrl+,"),
         action: PaletteAction::Cmd(AppCommand::ShowPreferences), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Veylvik Settings…"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Cmd(AppCommand::OpenPreferences { page: Some("veylvik".into()) }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Quit"), shortcut: Cow::Borrowed("Ctrl+Q"),
         action: PaletteAction::Cmd(AppCommand::Quit), enabled: true });
 

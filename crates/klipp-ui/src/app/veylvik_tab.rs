@@ -23,6 +23,20 @@ pub(crate) struct VeylvikTab {
     failed: Option<String>,
     /// The page has just come into view: the keyboard goes to the editor.
     just_shown: bool,
+    /// The page has just come into view, or opened another clip: the
+    /// editor goes to the frame under Klipp's playhead.
+    place: bool,
+    /// The composition time the editor is to go to, until it can (not
+    /// mid-gesture).
+    going_to: Option<klipp_veylvik::Time>,
+    /// Where the artist took the editor's playhead, as Klipp's playhead:
+    /// Klipp's goes there when the page is left.
+    carried: Option<klipp_core::Timecode>,
+    /// Klipp's Veylvik settings as last given to the editor: given again
+    /// when Klipp's differ (Preferences → Veylvik changed them).
+    applied: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The editor's shortcut window opens on the next frame it is drawn.
+    shortcuts: bool,
 }
 
 /// The clip open in the editor.
@@ -35,7 +49,7 @@ struct Open {
 
 impl VeylvikTab {
     pub(crate) fn new(render_state: Option<eframe::egui_wgpu::RenderState>) -> Self {
-        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true }
+        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true, place: true, going_to: None, carried: None, applied: None, shortcuts: false }
     }
 
     /// Whether the editor has the keyboard: the page shows and it was
@@ -47,6 +61,19 @@ impl VeylvikTab {
     /// The page has come into view.
     pub(crate) fn shown(&mut self) {
         self.just_shown = true;
+        self.place = true;
+        self.carried = None;
+    }
+
+    /// Open the editor's own shortcut window when the page next shows.
+    pub(crate) fn open_shortcuts(&mut self) {
+        self.shortcuts = true;
+    }
+
+    /// Where Klipp's playhead goes as the page is left: the frame of the
+    /// clip the artist took the editor's to, if they did.
+    pub(crate) fn take_carried(&mut self) -> Option<klipp_core::Timecode> {
+        self.carried.take()
     }
 
     /// Open the clip again on the next frame: its composition's folder
@@ -96,10 +123,24 @@ impl super::KlippApp {
                 Target::Clip(id) => id,
                 Target::Nothing(why) => return say(ui, why),
             };
+            let had = self.veylvik_tab.open.as_ref().map(|o| o.clip);
             if let Err(why) = self.veylvik_open(ui.ctx(), clip) {
                 return say(ui, &why);
             }
+            if had != Some(clip) || std::mem::take(&mut self.veylvik_tab.place) {
+                self.veylvik_place(clip);
+            }
+            if let (Some(time), Some(editor)) = (self.veylvik_tab.going_to, self.veylvik_tab.editor.as_mut()) {
+                // Not while an inspector drag is under way: next frame.
+                if editor.set_time(time) {
+                    self.veylvik_tab.going_to = None;
+                }
+            }
+            self.veylvik_settings_in(ui.ctx());
             if let Some(editor) = self.veylvik_tab.editor.as_mut() {
+                if std::mem::take(&mut self.veylvik_tab.shortcuts) {
+                    editor.open_shortcuts();
+                }
                 // The keys are the editor's when the page opens: space plays
                 // its composition, not Klipp's timeline.
                 if std::mem::take(&mut self.veylvik_tab.just_shown) {
@@ -109,6 +150,14 @@ impl super::KlippApp {
             }
             if self.veylvik_tab.editor.as_mut().is_some_and(|e| e.take_relink_request()) {
                 self.veylvik_relink();
+            }
+            self.veylvik_follow(clip);
+            self.veylvik_settings_out();
+            // The editor's own Preferences… (its File menu, Ctrl+,): Klipp's,
+            // on its Veylvik tab.
+            if self.veylvik_tab.editor.as_mut().is_some_and(|e| e.take_preferences_request()) {
+                self.preferences_panel.open_page("veylvik");
+                self.state.show_preferences = true;
             }
             self.veylvik_take_edits();
         });
@@ -146,6 +195,53 @@ impl super::KlippApp {
         Ok(())
     }
 
+    /// Klipp's Veylvik settings into the editor, when they aren't what it
+    /// was last given: at its start, and after Preferences → Veylvik. It
+    /// never reads Veylvik Studio's own.
+    fn veylvik_settings_in(&mut self, ctx: &egui::Context) {
+        let Some(editor) = self.veylvik_tab.editor.as_mut() else { return };
+        if self.veylvik_tab.applied.as_ref() == Some(&self.prefs.veylvik) {
+            return;
+        }
+        let values: editor::preferences::Values = self.prefs.veylvik_settings();
+        if let Err(why) = editor.set_preferences(ctx, values) {
+            tracing::warn!("Veylvik's editor refused Klipp's Veylvik settings, its own kept: {why}");
+        }
+        self.veylvik_tab.applied = Some(self.prefs.veylvik.clone());
+    }
+
+    /// What the artist changed in the editor itself (a layout saved, a
+    /// viewer aid, a shortcut), into Klipp's preferences and saved.
+    fn veylvik_settings_out(&mut self) {
+        let Some(values) = self.veylvik_tab.editor.as_mut().and_then(|e| e.take_preferences_change()) else { return };
+        if self.prefs.set_veylvik_settings(&values) {
+            self.prefs_dirty = true;
+        }
+        // The editor has these already: not given back.
+        self.veylvik_tab.applied = Some(self.prefs.veylvik.clone());
+    }
+
+    /// `clip`'s place in its composition: its used part as the editor's
+    /// range, the rest dimmed as handles, and the editor's playhead on the
+    /// frame under Klipp's (the clip's nearest when it is elsewhere).
+    fn veylvik_place(&mut self, clip: ClipId) {
+        let Some((range, time)) = clip_time(&self.state, clip, |t| (t.used_range(), t.composition_time(self.state.playhead))) else { return };
+        if let Some(editor) = self.veylvik_tab.editor.as_mut() {
+            editor.set_range(Some(range));
+        }
+        self.veylvik_tab.going_to = Some(time);
+    }
+
+    /// Where the artist took the editor's playhead, carried to Klipp's
+    /// when it is a frame the clip shows; in the handles, Klipp's stays.
+    fn veylvik_follow(&mut self, clip: ClipId) {
+        let Some(moved) = self.veylvik_tab.editor.as_mut().and_then(|e| e.take_time_change()) else { return };
+        let fps = self.state.sequence().fps;
+        if let Some(frame) = clip_time(&self.state, clip, |t| t.timeline_frame_at(moved)).flatten() {
+            self.veylvik_tab.carried = Some(playhead_at(frame, fps));
+        }
+    }
+
     /// The editor's "unavailable" button: media is Klipp's to relink.
     fn veylvik_relink(&mut self) {
         let clip = self.veylvik_tab.open.as_ref().map(|o| o.clip);
@@ -180,6 +276,9 @@ impl super::KlippApp {
                 // Klipp's clear-cache clears them with the rest.
                 e.set_playback_folder(dirs::cache_dir().map(|d| d.join("klipp").join("veylvik-playback")));
                 self.veylvik_tab.editor = Some(e);
+                // A new editor starts at Veylvik's defaults: Klipp's settings
+                // go in before it is first drawn.
+                self.veylvik_tab.applied = None;
                 Ok(())
             }
             Err(e) => {
@@ -275,6 +374,23 @@ impl super::KlippApp {
         }
         self.sync_compositions_to_engine();
     }
+}
+
+/// Klipp's playhead on timeline frame `frame` of a sequence at `fps`: a
+/// frame is `den` ticks of a rate of `num` (1001 of 24000 at 23.976).
+fn playhead_at(frame: i64, fps: klipp_core::Fps) -> klipp_core::Timecode {
+    klipp_core::Timecode::from_frames(frame * i64::from(fps.den), fps.num)
+}
+
+/// `f` of `clip`'s place in time: on the sequence's timeline, from its
+/// media's frames.
+fn clip_time<T>(state: &crate::state::AppState, clip: ClipId, f: impl FnOnce(&klipp_veylvik::clip_time::ClipTime) -> T) -> Option<T> {
+    let seq = state.sequence();
+    let (t, c) = seq.find_clip(clip)?;
+    let it = &seq.tracks[t].clips[c];
+    let media_fps = state.media_pool.get(&it.media_id()?)?.fps.as_f64();
+    let fps = seq.fps.as_f64();
+    (fps > 0.0 && media_fps > 0.0).then(|| f(&klipp_veylvik::clip_time::ClipTime { clip: it, fps, media_fps }))
 }
 
 /// `clip` as the timeline names it: its own name, else its media's file
@@ -430,6 +546,39 @@ mod tests {
         s.media_pool.get_mut(&item.id).unwrap().offline = true;
         relink(&mut s, Some(id), &missing);
         assert!(s.show_relink_dialog, "offline media: Klipp's Relink");
+    }
+
+    /// The page's place in a clip comes from the sequence's and the media's
+    /// rates, and a frame the artist goes to comes back to Klipp's playhead
+    /// exactly, NTSC rates too.
+    #[test]
+    fn the_page_carries_the_clips_place_at_the_sequences_rate() {
+        let fps = klipp_core::Fps::new(24000, 1001);
+        let mut item = klipp_media::MediaItem::synthetic_for_test(std::path::PathBuf::from("/footage/a.mp4"), None);
+        item.fps = fps;
+        // From timeline frame 100, media frame 30, 48 frames long.
+        let at = |f: i64| playhead_at(f, fps);
+        let clip = Clip::media(item.id, at(100), at(148), at(30), at(78));
+        let id = clip.id;
+        let mut seq = Sequence::new_default();
+        seq.fps = fps;
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips = vec![clip];
+        seq.tracks = vec![v1];
+        let mut s = crate::state::AppState { sequences: vec![seq], ..Default::default() };
+        s.media_pool.add(item);
+        for f in [100, 117, 147] {
+            let time = clip_time(&s, id, |t| t.composition_time(at(f))).expect("a clip with media");
+            let back = clip_time(&s, id, |t| t.timeline_frame_at(time)).flatten().expect("a frame the clip shows");
+            assert_eq!(playhead_at(back, fps), at(f), "timeline frame {f}");
+            assert_eq!(at(f).value, f * 1001, "{f} frames of 23.976 in ticks");
+        }
+        let (start, end) = clip_time(&s, id, |t| t.used_range()).unwrap();
+        assert!((start.seconds().unwrap() - 30.0 * 1001.0 / 24000.0).abs() < 1e-9 && (end.seconds().unwrap() - 78.0 * 1001.0 / 24000.0).abs() < 1e-9, "the trim");
+        let mut tab = VeylvikTab::new(None);
+        tab.carried = Some(at(120));
+        tab.shown();
+        assert_eq!(tab.take_carried(), None, "a new visit starts from Klipp's playhead");
     }
 
     /// On the Veylvik page space, J, K and L never play Klipp's timeline:
