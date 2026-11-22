@@ -223,7 +223,12 @@ impl super::KlippApp {
         }
         let Some(editor) = self.veylvik_tab.editor.as_mut() else { return };
         let lut = self.viewer.lut.lut.clone().map(Arc::new);
-        let display = klipp_veylvik::display::KlippDisplay::new(key.working, key.transfer, lut);
+        let mut display = klipp_veylvik::display::KlippDisplay::new(key.working, key.transfer, lut);
+        // The editor draws on the UI's device; when that is Klipp's shared
+        // one, Klipp's GPU encode can take the page's picture there.
+        if klipp_effects::gpu_context::GpuContext::shared_is_ui_device() {
+            display = display.on_shared_device();
+        }
         editor.set_host_display(Some(Arc::new(display)));
         self.veylvik_tab.view = Some(key);
     }

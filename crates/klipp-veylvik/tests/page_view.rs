@@ -34,20 +34,59 @@ fn the_page_gets_klipps_view_of_its_picture() {
         return;
     };
     let (device, queue) = (ctx.device(), ctx.queue());
+    let mut warm = klipp_color::lut::LutData::identity(17);
+    for c in warm.data.as_chunks_mut::<3>().0 {
+        c[0] = c[0].powf(0.9);
+    }
+    let warm = Arc::new(warm);
+    let mut failed = Vec::new();
     for (w, h) in [(64u32, 36u32), (1920, 1080)] {
+        // Over-bright light, and a band of part and no coverage at the top.
         let picture: Vec<f32> = (0..w * h).flat_map(|i| {
             let (x, y) = ((i % w) as f32 / w as f32, (i / w) as f32 / h as f32);
-            [2.0 * x, y, 0.5 * (1.0 - x), 1.0]
+            let a = if y < 0.1 { x } else { 1.0 };
+            [2.0 * x * a, y * a, 0.5 * (1.0 - x) * a, a]
         }).collect();
         let buffer = wgpu::util::DeviceExt::create_buffer_init(device.as_ref(), &wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&picture), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC });
-        for working in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
-            let display = Arc::new(KlippDisplay::new(working, SdrTransfer::Srgb, None));
-            let t = Instant::now();
-            let texture = display.encode(&device, &queue, &buffer, w, h).expect("encoded");
-            let ms = t.elapsed().as_secs_f64() * 1000.0;
-            eprintln!("{w}x{h} {working:?}: encode {ms:.1} ms");
-            assert_eq!((texture.width(), texture.height()), (w, h));
-            assert_eq!(texture_bytes(&device, &queue, &texture, w, h), display.encode_pixels(&picture), "{w}x{h} {working:?}");
+        for working in [WorkingColorspace::Rec709Linear, WorkingColorspace::Bt2020Linear, WorkingColorspace::AcesCG] {
+            for transfer in [SdrTransfer::Srgb, SdrTransfer::Bt1886] {
+                for lut in [None, Some(Arc::clone(&warm))] {
+                    let display = Arc::new(KlippDisplay::new(working, transfer, lut.clone()).on_shared_device());
+                    let mut ms = f64::MAX;
+                    let mut texture = None;
+                    for _ in 0..3 {
+                        let t = Instant::now();
+                        texture = Some(display.encode(&device, &queue, &buffer, w, h).expect("encoded"));
+                        ms = ms.min(t.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    let texture = texture.unwrap();
+                    let on_gpu = display.encodes_on_gpu();
+                    let what = format!("{w}x{h} {working:?} {transfer:?} lut={}", lut.is_some());
+                    eprintln!("{what}: encode {ms:.1} ms, gpu={on_gpu}");
+                    // Klipp's GPU encode serves an sRGB monitor; BT.1886 has
+                    // no GPU curve and stays on the CPU.
+                    if on_gpu != (transfer == SdrTransfer::Srgb) {
+                        failed.push(format!("{what}: gpu={on_gpu}"));
+                    }
+                    assert_eq!((texture.width(), texture.height()), (w, h));
+                    let got = texture_bytes(&device, &queue, &texture, w, h);
+                    let want = display.encode_pixels(&picture);
+                    let off = got.iter().zip(&want).filter(|(a, b)| a != b).count();
+                    let worst = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+                    if off > 0 {
+                        eprintln!("{what}: {off} bytes off, worst {worst}");
+                    }
+                    // Klipp's GPU encode rounds a hair apart from its CPU
+                    // encode, as Klipp's own viewer does: a code at most, on
+                    // few bytes; a LUT steeper than one stretches that code
+                    // to two.
+                    let allowed = if lut.is_some() { 2 } else { 1 };
+                    if worst > allowed || off * 1000 > got.len() {
+                        failed.push(format!("{what}: {off} bytes off, worst {worst}"));
+                    }
+                }
+            }
         }
     }
+    assert!(failed.is_empty(), "{failed:#?}");
 }
