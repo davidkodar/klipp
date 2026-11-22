@@ -41,6 +41,7 @@ fn fault(message: impl Into<String>) -> veylvik_render::Error {
 }
 
 pub mod clip_sound;
+pub mod composition_sound;
 pub mod clip_time;
 pub mod compose;
 pub mod display;

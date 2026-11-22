@@ -26,6 +26,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetFreezeFolder(_)
         | AppCommand::SetFrozenTracks(_)
         | AppCommand::SetFrozenStems(_)
+        | AppCommand::SetCompositionSounds(_)
         | AppCommand::SetPlaybackQuality(_)
         | AppCommand::DismissPlaybackNote { .. }
         // A dialog, and a job whose clip is placed as its own step when

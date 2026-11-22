@@ -1881,6 +1881,9 @@ pub struct PlaybackEngine {
     /// media id its stand-in clip plays, and that id's file.
     frozen_stems: HashMap<klipp_core::TrackId, (std::path::PathBuf, MediaId)>,
     stem_media: HashMap<MediaId, std::path::PathBuf>,
+    /// Clips' Veylvik composition sounds, and the media id each plays as
+    /// (see [`audio_view_of`]).
+    composition_sounds: HashMap<klipp_core::ClipId, (std::path::PathBuf, MediaId)>,
     /// Each track's GPU time from the last timed frame, and when one was
     /// last asked for (#3207).
     track_gpu_ms: HashMap<klipp_core::TrackId, f64>,
@@ -2454,9 +2457,12 @@ type TrackAudioRow = (
 fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fadeable: &FadeableMedia, tc: Timecode, use_proxies: bool, pcm_cache: bool, stems: &HashMap<MediaId, std::path::PathBuf>) -> Vec<TrackAudioRow> {
     let mut rows = Vec::new();
     let fades = can_fade(fadeable);
+    let real = real_tracks(seq);
     for (track_idx, track) in seq.tracks.iter().enumerate() {
         for sounding in klipp_timeline::crossfade::sounding_at_where(track, tc, &fades) {
             let clip = sounding.clip;
+            // A composition's sound, on its own track's composition lane.
+            let key = |lane| if track_idx < real { source_key(track_idx, lane) } else { source_key(track_idx - real, COMPOSITION_LANE) };
             // A multicam angle is heard where the group's sound rule
             // says, the rule the render gates the same clip by.
             // A ramped clip is silent (#638): its sound has no one speed to
@@ -2467,7 +2473,7 @@ fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fad
             let Some(media_id) = clip.media_id() else { continue };
             if let Some(stem) = stems.get(&media_id) {
                 let source_secs = klipp_compose::render::source_secs(clip, tc, seq.fps.as_f64());
-                rows.push((source_key(track_idx, sounding.lane), media_id, stem.clone(), source_secs, Vec::new(), Default::default()));
+                rows.push((key(sounding.lane), media_id, stem.clone(), source_secs, Vec::new(), Default::default()));
                 continue;
             }
             let Some(item) = pool.get(&media_id) else { continue };
@@ -2506,7 +2512,7 @@ fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fad
                 decode_path
             };
             rows.push((
-                source_key(track_idx, sounding.lane),
+                key(sounding.lane),
                 media_id,
                 path,
                 source_secs,
@@ -2594,9 +2600,63 @@ fn can_fade(fadeable: &FadeableMedia) -> impl Fn(&klipp_timeline::Clip) -> bool 
 /// The clip a source keyed `key` plays at `tc`, with its crossfades:
 /// the ones playback can fade, see [`fadeable_media`].
 fn sounding_for_key<'a>(seq: &'a klipp_timeline::Sequence, fadeable: &FadeableMedia, key: usize, tc: Timecode) -> Option<klipp_timeline::crossfade::Sounding<'a>> {
-    let track = seq.tracks.get(key_track(key))?;
     let lane = (key / LANE_STRIDE) as u8;
+    if lane == COMPOSITION_LANE {
+        // On the track's companion, where its composition sounds are.
+        let track = seq.tracks.get(real_tracks(seq) + key_track(key)).filter(|t| t.name == COMPOSITION_SOUND_TRACK)?;
+        return klipp_timeline::crossfade::sounding_at_where(track, tc, &can_fade(fadeable)).into_iter().find(|s| s.lane == 0);
+    }
+    let track = seq.tracks.get(key_track(key))?;
     klipp_timeline::crossfade::sounding_at_where(track, tc, &can_fade(fadeable)).into_iter().find(|s| s.lane == lane)
+}
+
+/// The lane a clip's Veylvik composition sound plays in, on its own
+/// track: beside its media's two (a cut's and a crossfade's), under the
+/// same fader, pan, mute and solo.
+pub(crate) const COMPOSITION_LANE: u8 = 2;
+
+/// The name of the companion tracks [`with_composition_sounds`] adds.
+pub(crate) const COMPOSITION_SOUND_TRACK: &str = "\u{0}composition sound";
+
+/// How many of `seq`'s tracks are the sequence's own: all, or half when
+/// [`with_composition_sounds`] gave each a companion.
+pub(crate) fn real_tracks(seq: &klipp_timeline::Sequence) -> usize {
+    let n = seq.tracks.len();
+    if n >= 2 && n.is_multiple_of(2) && seq.tracks[n / 2..].iter().all(|t| t.name == COMPOSITION_SOUND_TRACK) {
+        n / 2
+    } else {
+        n
+    }
+}
+
+/// `seq` as its sound plays with clips' composition `sounds`: every track
+/// gets a companion after all of them (track `i`'s at `n + i`), holding a
+/// clip for each of its clips with a composition sound, timed as that
+/// clip is at its own speed (the composition's time is its media's) and playing the
+/// sound's file under the sound's media id, with the clip's gain and
+/// fades. Its sources key onto the track's [`COMPOSITION_LANE`], so the
+/// mixer hears them on the track itself. With no sounds, `seq`.
+pub(crate) fn with_composition_sounds(mut seq: klipp_timeline::Sequence, sounds: &HashMap<klipp_core::ClipId, (std::path::PathBuf, MediaId)>) -> klipp_timeline::Sequence {
+    if sounds.is_empty() {
+        return seq;
+    }
+    let companions: Vec<klipp_timeline::Track> = seq.tracks.iter().map(|t| {
+        let mut c = klipp_timeline::Track::new(COMPOSITION_SOUND_TRACK, klipp_timeline::TrackKind::Audio);
+        // At its own speed only: the file plays at 1x, as the page plays
+        // the media (a retimed clip's time is the page's to learn).
+        c.clips = t.clips.iter().filter(|clip| clip.enabled && clip.speed == 1.0 && clip.speed_keyframes.is_empty() && !clip.is_reversed()).filter_map(|clip| {
+            let (_, media) = sounds.get(&clip.id)?;
+            let mut s = klipp_timeline::Clip::media(*media, clip.timeline_in, clip.timeline_out, clip.source_in, clip.source_out);
+            s.gain = clip.gain;
+            s.volume = clip.volume;
+            s.fade_in_secs = clip.fade_in_secs;
+            s.fade_out_secs = clip.fade_out_secs;
+            Some(s)
+        }).collect();
+        c
+    }).collect();
+    seq.tracks.extend(companions);
+    seq
 }
 
 /// Restarts of what a panic ended, since the person last sought or played
@@ -2646,14 +2706,14 @@ impl PlaybackEngine {
     /// the sequence changes.
     fn audio_sequence(&self) -> Arc<klipp_timeline::Sequence> {
         let (seq, revision) = self.sequence.snapshot_with_revision();
-        if self.frozen_stems.is_empty() {
+        if self.frozen_stems.is_empty() && self.composition_sounds.is_empty() {
             return seq;
         }
         let mut view = self.audio_view.borrow_mut();
         match &*view {
             Some((r, v)) if *r == revision => Arc::clone(v),
             _ => {
-                let v = Arc::new(audio_view_of(&seq, &self.frozen_stems));
+                let v = Arc::new(with_composition_sounds(audio_view_of(&seq, &self.frozen_stems), &self.composition_sounds));
                 *view = Some((revision, Arc::clone(&v)));
                 v
             }
@@ -2670,8 +2730,28 @@ impl PlaybackEngine {
         if next == self.frozen_stems {
             return;
         }
-        self.stem_media = next.values().map(|(p, id)| (*id, p.clone())).collect();
         self.frozen_stems = next;
+        self.sound_files_changed();
+    }
+
+    /// The clips' composition sounds from now on: the sound is opened
+    /// again where they change.
+    fn set_composition_sounds(&mut self, sounds: Vec<(klipp_core::ClipId, std::path::PathBuf)>) {
+        let next: HashMap<klipp_core::ClipId, (std::path::PathBuf, MediaId)> = sounds.into_iter().map(|(c, p)| {
+            let id = stem_media_id(&p);
+            (c, (p, id))
+        }).collect();
+        if next == self.composition_sounds {
+            return;
+        }
+        self.composition_sounds = next;
+        self.sound_files_changed();
+    }
+
+    /// The stems and composition sounds are new: their files by media id,
+    /// the sound's view of the sequence, and what plays.
+    fn sound_files_changed(&mut self) {
+        self.stem_media = self.frozen_stems.values().chain(self.composition_sounds.values()).map(|(p, id)| (*id, p.clone())).collect();
         *self.audio_view.borrow_mut() = None;
         if self.state == PlaybackState::Playing {
             let at = self.playhead;
@@ -3245,6 +3325,7 @@ impl PlaybackEngine {
             frozen_reader: None,
             frozen_stems: HashMap::new(),
             stem_media: HashMap::new(),
+            composition_sounds: HashMap::new(),
             track_gpu_ms: HashMap::new(),
             gpu_timing_at: None,
             playback_record: Default::default(),
@@ -3930,6 +4011,7 @@ impl PlaybackEngine {
                 self.regrade_cached_frame();
             }
             AppCommand::SetFrozenStems(stems) => self.set_frozen_stems(stems),
+            AppCommand::SetCompositionSounds(sounds) => self.set_composition_sounds(sounds),
             #[cfg(not(feature = "test-hooks"))]
             AppCommand::InjectPanic { .. } => warn!("inject_panic: this build has no test hooks"),
 
@@ -5441,8 +5523,8 @@ impl PlaybackEngine {
         }
         {
             let mut m = crate::mix_thread::lock_mixer(&self.mixer);
-            m.ensure_tracks(seq.tracks.len());
-            for (i, track) in seq.tracks.iter().enumerate() {
+            m.ensure_tracks(real_tracks(seq));
+            for (i, track) in seq.tracks.iter().take(real_tracks(seq)).enumerate() {
                 if now[i] || was.get(i).copied().unwrap_or(false) {
                     let value = |param: TrackParam, set: f32| overrides.get(&(i, param)).copied().unwrap_or_else(|| track.automation.value_at(param, at, set));
                     m.tracks[i].volume = value(TrackParam::Volume, track.volume);
@@ -5480,8 +5562,8 @@ impl PlaybackEngine {
             m.set_bus_inserts(i, &bus.effects);
         }
         m.set_bus_order(&seq.bus_order());
-        m.ensure_tracks(seq.tracks.len());
-        for (lane, track) in m.tracks.iter_mut().zip(&seq.tracks) {
+        m.ensure_tracks(real_tracks(seq));
+        for (lane, track) in m.tracks.iter_mut().zip(&seq.tracks[..real_tracks(seq)]) {
             let sends = track.sends.iter().filter_map(|s| Some((seq.bus_index(s.bus)?, s)));
             let mut n = 0;
             for (bus, send) in sends {
@@ -5564,7 +5646,9 @@ impl PlaybackEngine {
         // (#2560): the mix thread runs them, as the export does.
         {
             let mut m = crate::mix_thread::lock_mixer(&self.mixer);
-            for (i, track) in seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio) {
+            // The sequence's own tracks: a composition sound's companion
+            // is heard on its track, through that track's inserts.
+            for (i, track) in seq.tracks.iter().take(real_tracks(&seq)).enumerate().filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio) {
                 m.set_track_inserts(i, &track.effects.audio, 8192);
             }
             self.sync_routing(&mut m, &seq, heard_at);

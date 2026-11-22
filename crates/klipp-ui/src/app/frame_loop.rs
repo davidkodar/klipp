@@ -814,6 +814,7 @@ impl KlippApp {
         self.poll_project_copy();
         self.poll_fetched_fonts();
         self.keep_frozen_tracks(ctx);
+        self.keep_composition_sounds();
         self.keep_reuse_marks(ctx);
         self.poll_bounces();
         self.keep_playback_note();
