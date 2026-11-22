@@ -347,6 +347,14 @@ pub enum ControlCommand {
         version: Option<usize>,
         #[serde(default)]
         name: Option<String>,
+        /// The clip's composition back to its media alone (`reset`), or
+        /// taken off (`remove`), or a copy of clip `copy_from`'s given.
+        #[serde(default)]
+        reset: bool,
+        #[serde(default)]
+        remove: bool,
+        #[serde(default)]
+        copy_from: Option<String>,
     },
     TagMedia {
         media_id: String,

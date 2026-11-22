@@ -560,6 +560,77 @@ impl super::KlippApp {
         Ok(said)
     }
 
+    /// The clip menu's Veylvik items on `clips`: copy the first one's
+    /// composition, or paste, reset or remove the one each shows, all as
+    /// one step; what was done, or why nothing was.
+    pub(super) fn composition_clips(&mut self, clips: &[ClipId], action: klipp_core::CompositionClipAction) -> Result<String, String> {
+        use klipp_core::CompositionClipAction as A;
+        let seq = self.state.sequence();
+        let found: Vec<klipp_timeline::Clip> = clips.iter().filter_map(|id| seq.find_clip(*id).map(|(t, c)| seq.tracks[t].clips[c].clone())).collect();
+        let first = found.first().ok_or("the clip is no longer on the timeline")?;
+        if action == A::Copy {
+            let id = first.composition.ok_or("the clip has no composition")?;
+            let bytes = self.state.compositions.get(&id).cloned().ok_or("the project doesn't hold the clip's composition")?;
+            self.state.composition_clipboard = Some((id, bytes));
+            return Ok("Copied the clip's composition; Paste Composition gives a clip a copy".into());
+        }
+        let home = self.compositions_home();
+        let mut edits = Vec::new();
+        let mut changed = 0;
+        for old in &found {
+            if old.media_id().is_none() {
+                continue;
+            }
+            let mut new = old.clone();
+            match action {
+                A::Copy => unreachable!(),
+                A::Paste => {
+                    let (from, bytes) = self.state.composition_clipboard.clone().ok_or("nothing is copied")?;
+                    let id = CompositionId::new();
+                    if let Err(e) = klipp_project::compositions::copy_composition_assets(&home, from, id) {
+                        return Err(format!("the composition's files could not be copied: {e}"));
+                    }
+                    // The version shown becomes the copy; the others stay.
+                    if let Some(v) = new.composition_versions.iter_mut().find(|v| Some(v.id) == old.composition) {
+                        v.id = id;
+                    }
+                    new.composition = Some(id);
+                    edits.push(crate::history::EditCommand::SetComposition { id, before: None, after: Some(bytes), label: "Veylvik: Paste composition".into() });
+                }
+                A::Reset => {
+                    let Some(id) = old.composition else { continue };
+                    let (_, bytes) = fresh_composition(&self.state, old)?;
+                    edits.push(crate::history::EditCommand::SetComposition { id, before: self.state.compositions.get(&id).cloned(), after: Some(bytes), label: "Veylvik: Reset composition".into() });
+                    changed += 1;
+                    continue;
+                }
+                A::Remove => {
+                    if old.composition.is_none() {
+                        continue;
+                    }
+                    new.composition = None;
+                    new.composition_versions.clear();
+                }
+            }
+            edits.push(crate::history::EditCommand::ReplaceClip { description: "Veylvik composition", old: Box::new(old.clone()), new: Box::new(new) });
+            changed += 1;
+        }
+        if changed == 0 {
+            return Err("none of the clips has a composition to change".into());
+        }
+        let (label, did) = match action {
+            A::Paste => ("Veylvik: Paste Composition", "Pasted the composition on"),
+            A::Reset => ("Veylvik: Reset Composition", "Reset the composition of"),
+            _ => ("Veylvik: Remove Composition", "Removed the composition of"),
+        };
+        self.apply_edits_as_one(&edits, label);
+        if self.veylvik_tab.open.as_ref().is_some_and(|o| clips.contains(&o.clip)) {
+            self.veylvik_tab.reopen();
+        }
+        self.sync_compositions_to_engine();
+        Ok(format!("{did} {changed} clip{}", if changed == 1 { "" } else { "s" }))
+    }
+
     /// Compositions an undo or redo of Klipp's put back: the tab opens
     /// its clip's again if it was one of them.
     pub(super) fn veylvik_compositions_put_back(&mut self, changed: &[(CompositionId, Option<Arc<[u8]>>)]) {

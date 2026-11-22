@@ -1337,6 +1337,19 @@ pub enum VersionAction {
     Delete(usize),
 }
 
+/// What the clip menu's Veylvik items do with a clip's composition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompositionClipAction {
+    /// The first clip's, to paste.
+    Copy,
+    /// A copy of the one copied, for each clip, its files too.
+    Paste,
+    /// Each clip's back to its media alone.
+    Reset,
+    /// Each clip shows its media as it is again.
+    Remove,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     /// A batch of graph ops on one picture, applied as one undo step named
@@ -1837,6 +1850,9 @@ pub enum AppCommand {
     CompositionVersion { clip_id: ClipId, action: VersionAction },
     /// Show the Veylvik page, or Edit again from it.
     ToggleVeylvikPage,
+    /// Copy a clip's Veylvik composition, or paste, reset or remove the
+    /// one these clips show, as one step.
+    CompositionClips { clip_ids: Vec<ClipId>, action: CompositionClipAction },
     /// Play these pointer steps into the app's input, one a frame, as a
     /// mouse's events (the control socket's `pointer`, test hooks only):
     /// the input only, never the document by itself.

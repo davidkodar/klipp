@@ -1591,6 +1591,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "version_action": args.get("version_action").and_then(|v| v.as_str()),
             "version": args.get("version").and_then(|v| v.as_u64()),
             "name": args.get("name").and_then(|v| v.as_str()),
+            "reset": args.get("reset").and_then(|v| v.as_bool()).unwrap_or(false),
+            "remove": args.get("remove").and_then(|v| v.as_bool()).unwrap_or(false),
+            "copy_from": args.get("copy_from").and_then(|v| v.as_str()),
         }),
         "klipp_tag_media" => json!({
             "method": "tag_media",
@@ -2923,7 +2926,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "set": { "type": "object", "description": "Settings shown on Edit, by label, and their new values" },
                  "version_action": { "type": "string", "enum": ["new", "duplicate", "switch", "rename", "remove"] },
                  "version": { "type": "integer", "minimum": 1 },
-                 "name": { "type": "string" }
+                 "name": { "type": "string" },
+                 "reset": { "type": "boolean" },
+                 "remove": { "type": "boolean" },
+                 "copy_from": { "type": "string", "description": "A clip id: this clip gets a copy of that clip's composition" }
              }), vec!["clip_id"]),
         tool("klipp_tag_media",
              "Tag a media item, or remove tags. Details: klipp_guide topic tag_media.",

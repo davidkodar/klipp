@@ -257,7 +257,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::VeylvikComposition { clip_id, make, open, set, version_action, version, name } => {
+        ControlCommand::VeylvikComposition { clip_id, make, open, set, version_action, version, name, reset, remove, copy_from } => {
             let id = klipp_core::ClipId(parse_uuid(&clip_id, "clip_id")?);
             let named = |ctx: &ControlContext| -> Result<(Option<klipp_timeline::CompositionId>, bool), String> {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -271,6 +271,32 @@ pub(crate) fn respond(
             }
             if open || (make && had.is_none()) {
                 send_envelope(ctx, vec![AppCommand::VeylvikComposition { clip_id: id, open }], false)?;
+            }
+            if [reset, remove, copy_from.is_some()].iter().filter(|b| **b).count() > 1 {
+                return Err("reset, remove and copy_from are one at a time".into());
+            }
+            let comp_of = |ctx: &ControlContext, clip: klipp_core::ClipId| -> Result<Option<klipp_timeline::CompositionId>, String> {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let (t, c) = seq.find_clip(clip).ok_or_else(|| format!("no clip {} in the open sequence", clip.0))?;
+                Ok(seq.tracks[t].clips[c].composition)
+            };
+            if let Some(from) = copy_from.as_deref() {
+                use klipp_core::CompositionClipAction as A;
+                let from = klipp_core::ClipId(parse_uuid(from, "copy_from")?);
+                if comp_of(ctx, from)?.is_none() {
+                    return Err("the clip copy_from names has no Veylvik composition".into());
+                }
+                if !has_media {
+                    return Err("the clip has no media to compose with: a video or still clip has".into());
+                }
+                send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![from], action: A::Copy }, AppCommand::CompositionClips { clip_ids: vec![id], action: A::Paste }], false)?;
+            }
+            if reset || remove {
+                use klipp_core::CompositionClipAction as A;
+                if comp_of(ctx, id)?.is_none() {
+                    return Err("the clip has no Veylvik composition".into());
+                }
+                send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![id], action: if reset { A::Reset } else { A::Remove } }], false)?;
             }
             if let Some(what) = version_action.as_deref() {
                 use klipp_core::VersionAction as A;

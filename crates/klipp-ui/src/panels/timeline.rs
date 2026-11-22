@@ -9180,6 +9180,31 @@ impl TimelinePanel {
                     });
                 }
 
+                // ── Veylvik ──
+                // A picture clip of media: its composition.
+                if is_video_track && clip.media_id().is_some() {
+                    use klipp_core::CompositionClipAction as V;
+                    ui.menu_rows("Veylvik", |ui| {
+                        let has = clip.composition.is_some();
+                        let label = if has { "Open on Veylvik Page" } else { "Compose on Veylvik Page" };
+                        if ui.add(egui::Button::new(label).shortcut_text(crate::keybindings::key_text(ui.ctx(), "toggle_veylvik_page"))).clicked() {
+                            cmds.push(AppCommand::VeylvikComposition { clip_id, open: true });
+                            ui.close_kind(egui::UiKind::Menu);
+                        }
+                        ui.separator();
+                        let mut item = |ui: &mut egui::Ui, text: &str, hover: &str, on: bool, action: V| {
+                            if ui.add_enabled(on, egui::Button::new(text)).on_hover_text(hover).clicked() {
+                                cmds.push(AppCommand::CompositionClips { clip_ids: if action == V::Copy { vec![clip_id] } else { targets.clone() }, action });
+                                ui.close_kind(egui::UiKind::Menu);
+                            }
+                        };
+                        item(ui, "Copy Composition", "Keep this clip's composition to paste on others", has, V::Copy);
+                        item(ui, "Paste Composition", "Give each selected clip a copy of the one copied, its files too", state.composition_clipboard.is_some(), V::Paste);
+                        item(ui, "Reset Composition", "Start the composition shown again from the clip's media alone", has, V::Reset);
+                        item(ui, "Remove Composition", "Show the clip's media as it is; undo brings the composition back", has, V::Remove);
+                    });
+                }
+
                 // ── Text ──
                 if let Some(td) = &title_data {
                     ui.menu_rows("Text", |ui| {
