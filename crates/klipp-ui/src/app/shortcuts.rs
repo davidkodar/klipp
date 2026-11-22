@@ -170,6 +170,11 @@ impl KlippApp {
                 self.state.show_preferences = true;
             }
         });
+        // The Veylvik page and back, from it as well (its editor has the
+        // other keys there); never while a field is typed in.
+        if !ctx.egui_wants_keyboard_input() && ctx.input(|i| kb.is_action_pressed("toggle_veylvik_page", i)) {
+            cmds.push(AppCommand::ToggleVeylvikPage);
+        }
     }
 
     /// The Ctrl keys that work wherever the keyboard is. A field with the

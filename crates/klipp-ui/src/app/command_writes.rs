@@ -473,6 +473,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::VeylvikComposition { .. }
         | AppCommand::SetCompositionSettings { .. }
         | AppCommand::CompositionVersion { .. }
+        | AppCommand::ToggleVeylvikPage
         | AppCommand::CreateCompoundClip { .. }
         | AppCommand::CreateMulticamClip
         | AppCommand::CreateSyncedMulticam { .. }

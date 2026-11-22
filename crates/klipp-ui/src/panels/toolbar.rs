@@ -1190,6 +1190,10 @@ impl ToolbarPanel {
                 state.show_color_panel = !state.show_color_panel;
                 ui.close_kind(egui::UiKind::Menu);
             }
+            if menu_toggle(ui, "Veylvik Page", &kb.display_for("toggle_veylvik_page"), state.active_workspace == crate::state::Workspace::Veylvik).clicked() {
+                cmds.push(AppCommand::ToggleVeylvikPage);
+                ui.close_kind(egui::UiKind::Menu);
+            }
             ui.separator();
             if ui.add(egui::Button::new("Extract Frame to File\u{2026}").shortcut_text(kb.display_for("extract_frame_to_file"))).clicked() {
                 cmds.push(AppCommand::FrameGrab);
@@ -1599,7 +1603,7 @@ fn page_hovers(ctx: &egui::Context) -> Vec<String> {
         "Cut and arrange clips on the timeline".to_owned(),
         crate::keybindings::tip(ctx, "Grade the clip under the playhead", "toggle_color_panel"),
         "Build effects as a node graph".to_owned(),
-        "Open the selected clip in Veylvik, to compose it in 3D and effects; Klipp plays and exports the result".to_owned(),
+        crate::keybindings::tip(ctx, "Open the selected clip in Veylvik, to compose it in 3D and effects; Klipp plays and exports the result", "toggle_veylvik_page"),
         "Render the sequence to a file".to_owned(),
     ]
 }
