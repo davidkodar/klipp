@@ -1835,6 +1835,8 @@ pub enum AppCommand {
     SetCompositionSettings { clip_id: ClipId, set: Vec<(String, serde_json::Value)> },
     /// Change `clip_id`'s Veylvik composition versions, as one step.
     CompositionVersion { clip_id: ClipId, action: VersionAction },
+    /// Show the Veylvik page, or Edit again from it.
+    ToggleVeylvikPage,
     /// Play these pointer steps into the app's input, one a frame, as a
     /// mouse's events (the control socket's `pointer`, test hooks only):
     /// the input only, never the document by itself.

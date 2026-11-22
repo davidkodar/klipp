@@ -1851,6 +1851,11 @@ impl KlippApp {
                 self.state.toast.show("Click something grey, white or black in the viewer (Esc cancels)");
                 true
             }
+            AppCommand::ToggleVeylvikPage => {
+                use crate::state::Workspace;
+                self.state.active_workspace = if self.state.active_workspace == Workspace::Veylvik { Workspace::Edit } else { Workspace::Veylvik };
+                true
+            }
             AppCommand::ToggleColorPanel => {
                 // Move the workspace and nothing else: the panel
                 // visibility and the browser borrow are settled by
