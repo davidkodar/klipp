@@ -20,6 +20,43 @@ use crate::{fault, identity, mix, working_pixels, Time};
 /// rather than reading on to it.
 const JUMP_SECS: f64 = 2.0;
 
+/// Frames a decoder reads ahead of the last one asked of it.
+const AHEAD: usize = 3;
+
+/// One of the footage's decoders, reading on from where it was last asked.
+struct Cursor {
+    source: ExportFrameSource<'static>,
+    /// The last frame it decoded, and the last asked of it.
+    last: f64,
+    asked: f64,
+    /// How far apart its last two asks were, in frames: playing in real
+    /// time with frames skipped, the next ask is that far on.
+    stride: f64,
+    /// Frames read ahead, in order.
+    ahead: std::collections::VecDeque<(f64, Decoded)>,
+    /// When it was last asked, to give the least used up.
+    used: u64,
+}
+
+/// The decoder for a frame at `secs`: one reading on to it within reach,
+/// else a new one while there are fewer than two, else the one asked
+/// least lately.
+fn pick(cursors: &mut Vec<Cursor>, secs: f64, frame_secs: f64, fresh: &dyn Fn() -> ExportFrameSource<'static>) -> usize {
+    let reach = |c: &Cursor| {
+        let ahead = c.ahead.iter().any(|(t, _)| (t - secs).abs() < 0.5 * frame_secs);
+        let on = secs >= c.last - 0.5 * frame_secs && secs <= c.last + JUMP_SECS;
+        (ahead || on).then_some(if ahead { 0.0 } else { secs - c.last })
+    };
+    if let Some((i, _)) = cursors.iter().enumerate().filter_map(|(i, c)| reach(c).map(|d| (i, d))).min_by(|a, b| a.1.total_cmp(&b.1)) {
+        return i;
+    }
+    if cursors.len() < 2 {
+        cursors.push(Cursor { source: fresh(), last: f64::NEG_INFINITY, asked: f64::NEG_INFINITY, stride: 1.0, ahead: Default::default(), used: 0 });
+        return cursors.len() - 1;
+    }
+    cursors.iter().enumerate().min_by_key(|(_, c)| c.used).map_or(0, |(i, _)| i)
+}
+
 /// A footage frame on the card and its size, or why there is none.
 type Decoded = std::result::Result<(wgpu::Buffer, u32, u32), String>;
 
@@ -61,8 +98,6 @@ impl EditorFootage {
             let fresh = || ExportFrameSource::shared(Arc::clone(&media), fps, working);
             // Made when the first frame is asked for: footage never asked
             // of (a clip opened and left) compiles no converter for nothing.
-            let mut source: Option<ExportFrameSource<'static>> = None;
-            let mut last = f64::NEG_INFINITY;
             let duration_secs = f64::from(frames) / fps;
             let upload = |pixels: &[f32]| wgpu::util::DeviceExt::create_buffer_init(
                 device.as_ref(),
@@ -79,6 +114,7 @@ impl EditorFootage {
                 copy
             };
             let decode = |source: &mut ExportFrameSource<'static>, secs: f64| -> Decoded {
+                let took = std::time::Instant::now();
                 let frame = source.frame(&clip, secs, size[0], size[1]).ok_or_else(|| format!("Klipp has no frame of the clip at {secs:.3} s"))?;
                 let (fw, fh) = (frame.width, frame.height);
                 let buffer = match frame.pixels {
@@ -90,12 +126,15 @@ impl EditorFootage {
                     SourcePixels::SceneReferred { codes, transfer, source_to_working } => upload(&codes.to_scene_linear_rgba(transfer, source_to_working)),
                     SourcePixels::Linear(pixels) => upload(&pixels),
                 };
+                tracing::trace!("VEYLVIK_FOOTAGE frame {secs:.3} s in {:.1} ms", took.elapsed().as_secs_f64() * 1000.0);
                 Ok((buffer, fw, fh))
             };
             let frame_secs = 1.0 / fps;
-            // The frame after the one last asked for, read while Veylvik
-            // renders that one: playing on, it is ready when asked.
-            let mut ahead: Option<(f64, Decoded)> = None;
+            // Veylvik asks from two places at once, the frame shown and the
+            // frames it prepares to keep, each reading on in time: one
+            // decoder for each, so neither seeks the other's back.
+            let mut cursors: Vec<Cursor> = Vec::new();
+            let mut clock = 0u64;
             // A request that came while reading ahead, taken next.
             let mut pending: Option<Ask> = None;
             // Until the footage is let go (another clip opened, the tab closed).
@@ -107,34 +146,54 @@ impl EditorFootage {
                         Err(_) => break,
                     },
                 };
-                let made = match ahead.take() {
-                    Some((at, made)) if (at - secs).abs() < 0.5 * frame_secs => made,
-                    _ => {
+                clock += 1;
+                let at = pick(&mut cursors, secs, frame_secs, &fresh);
+                let cursor = &mut cursors[at];
+                cursor.used = clock;
+                let step = ((secs - cursor.asked) / frame_secs).round();
+                cursor.stride = if (1.0..=4.0).contains(&step) { step } else { 1.0 };
+                cursor.asked = secs;
+                // Read ahead already: taken, and what is behind it let go.
+                cursor.ahead.retain(|(t, _)| *t > secs - 0.5 * frame_secs);
+                let made = match cursor.ahead.iter().position(|(t, _)| (t - secs).abs() < 0.5 * frame_secs) {
+                    Some(i) => cursor.ahead.remove(i).map(|(_, m)| m).expect("found"),
+                    None => {
+                        cursor.ahead.clear();
                         // An export's decoder reads on, never back: a scrub
                         // back, or a jump far ahead, moves it to the frame,
                         // the decoder kept (made again, a scrub waited
                         // ~180 ms on a 4K file before decoding anything).
-                        match source.as_mut() {
-                            None => source = Some(fresh()),
-                            Some(s) if secs < last - 0.5 * frame_secs || secs > last + JUMP_SECS => s.seek(&clip, secs),
-                            Some(_) => {}
+                        if secs < cursor.last - 0.5 * frame_secs || secs > cursor.last + JUMP_SECS {
+                            cursor.source.seek(&clip, secs);
                         }
-                        last = secs;
-                        decode(source.as_mut().expect("just made"), secs)
+                        cursor.last = secs;
+                        decode(&mut cursor.source, secs)
                     }
                 };
                 let _ = answer.send(made);
-                // Read on only while nobody is waiting, and inside the media.
-                match rx.try_recv() {
-                    Ok(ask) => pending = Some(ask),
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        let next = secs + frame_secs;
-                        if let (true, Some(source)) = (next < duration_secs, source.as_mut()) {
-                            last = next;
-                            ahead = Some((next, decode(source, next)));
+                // Read on while nobody is waiting, inside the media: the
+                // decoder asked last, a frame at a time, up to AHEAD frames
+                // on at the stride it is asked at.
+                loop {
+                    match rx.try_recv() {
+                        Ok(ask) => {
+                            pending = Some(ask);
+                            break;
                         }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {}
                     }
+                    let Some(cursor) = cursors.iter_mut().max_by_key(|c| c.used) else { break };
+                    if cursor.ahead.len() >= AHEAD {
+                        break;
+                    }
+                    let next = cursor.ahead.back().map_or(cursor.asked, |(t, _)| *t) + cursor.stride * frame_secs;
+                    if next >= duration_secs {
+                        break;
+                    }
+                    cursor.last = next;
+                    let made = decode(&mut cursor.source, next);
+                    cursor.ahead.push_back((next, made));
                 }
             }
         });

@@ -8,6 +8,9 @@ impl KlippApp {
     /// tools, interaction and the heartbeat, system audio, dropped files and
     /// the popup state.
     pub(super) fn begin_frame(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.state.active_workspace == crate::state::Workspace::Veylvik {
+            self.veylvik_tab.pace();
+        }
         // Where this frame's floating windows may go: below the menus.
         crate::widgets::note_screen(ctx);
         self.state.note_timeline_length();

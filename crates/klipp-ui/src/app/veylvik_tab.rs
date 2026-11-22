@@ -12,6 +12,9 @@ use klipp_timeline::CompositionId;
 use klipp_veylvik::editor_footage::{EditorFootage, TabHost};
 use klipp_veylvik::veylvik_editor as editor;
 
+/// The most frames a second the page draws.
+const PAGE_FPS: f64 = 60.0;
+
 /// The page's editor and what it has open. The editor is made the first
 /// time the page is shown, never for a session that doesn't.
 pub(crate) struct VeylvikTab {
@@ -46,6 +49,8 @@ pub(crate) struct VeylvikTab {
     /// What they were last worked out from, and when.
     sounds_from: Option<(klipp_timeline::SequenceRevision, usize, usize)>,
     sounds_checked: Option<std::time::Instant>,
+    /// When the page last began a frame (see [`VeylvikTab::pace`]).
+    paced: Option<std::time::Instant>,
 }
 
 /// What makes Klipp's view of a picture.
@@ -67,7 +72,7 @@ struct Open {
 
 impl VeylvikTab {
     pub(crate) fn new(render_state: Option<eframe::egui_wgpu::RenderState>) -> Self {
-        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true, place: true, going_to: None, carried: None, applied: None, shortcuts: false, view: None, sounds: None, sounds_from: None, sounds_checked: None }
+        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true, place: true, going_to: None, carried: None, applied: None, shortcuts: false, view: None, sounds: None, sounds_from: None, sounds_checked: None, paced: None }
     }
 
     /// Whether the editor has the keyboard: the page shows and it was
@@ -96,6 +101,23 @@ impl VeylvikTab {
 
     /// Open the clip again on the next frame: its composition's folder
     /// moved (a save somewhere else), or the project changed under it.
+    /// Hold the page to at most [`PAGE_FPS`] frames a second. Klipp shows
+    /// its frames without waiting for the screen (see `ui_present_mode`),
+    /// and the editor asks for the next one at once while it plays, so the
+    /// page drew 140 to 180 frames a second, each with the composition's
+    /// picture put through Klipp's display on the card the editor renders
+    /// on, for frames no screen shows.
+    pub(crate) fn pace(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(last) = self.paced {
+            let frame = std::time::Duration::from_secs_f64(1.0 / PAGE_FPS);
+            if let Some(wait) = frame.checked_sub(now - last) {
+                std::thread::sleep(wait);
+            }
+        }
+        self.paced = Some(std::time::Instant::now());
+    }
+
     pub(crate) fn reopen(&mut self) {
         self.open = None;
     }
