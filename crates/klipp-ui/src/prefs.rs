@@ -58,6 +58,16 @@ pub struct Preferences {
     pub veylvik: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Veylvik settings Klipp starts from differently than Veylvik Studio:
+/// the page plays the moment play is pressed, at full quality, skipping a
+/// frame it can't make in time, while it keeps preparing frames in the
+/// background (Studio holds play until they are made). Veylvik's guess at
+/// a frame's cost took the first frame's one-time start (its programs
+/// compiled, the decoder opened) for every frame's, 6.5 s against 22 ms,
+/// and held a 4K clip that plays in real time. Preferences → Veylvik
+/// turns the hold back on.
+const KLIPP_VEYLVIK_DEFAULTS: &[(&str, bool)] = &[("wait_for_frames", false)];
+
 impl Default for Preferences {
     fn default() -> Self {
         Self {
@@ -1298,6 +1308,12 @@ impl Preferences {
     /// their defaults rather than failing the page.
     pub fn veylvik_settings<T: Serialize + serde::de::DeserializeOwned + Default>(&self) -> T {
         let Ok(serde_json::Value::Object(mut merged)) = serde_json::to_value(T::default()) else { return T::default() };
+        // Klipp's own defaults where they differ from Veylvik Studio's.
+        for (key, value) in KLIPP_VEYLVIK_DEFAULTS {
+            if let Some(at) = merged.get_mut(*key) {
+                *at = (*value).into();
+            }
+        }
         merged.extend(self.veylvik.iter().map(|(k, v)| (k.clone(), v.clone())));
         serde_json::from_value(serde_json::Value::Object(merged)).unwrap_or_else(|e| {
             tracing::warn!("Veylvik's settings in Klipp's preferences can't be read, its defaults used: {e}");
