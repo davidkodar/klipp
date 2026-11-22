@@ -309,7 +309,11 @@ impl super::KlippApp {
         let rate = if (fps - fps.round()).abs() < 1e-6 { klipp_veylvik::Time { ticks: fps.round() as i64, rate: 1 } } else if ((fps * 1001.0 / 1000.0) - (fps * 1001.0 / 1000.0).round()).abs() < 1e-3 { klipp_veylvik::Time { ticks: (fps * 1001.0 / 1000.0).round() as i64 * 1000, rate: 1001 } } else { rate };
         let frames = ((item.duration.to_secs_f64() * fps).floor() as u32).max(1);
         let label = item.filename.clone();
-        let size = [item.resolution.width.max(1), item.resolution.height.max(1)];
+        // The sequence's size, the footage fitted inside it, as Resolve's
+        // Fusion compositions are the timeline's: a title or an effect is
+        // drawn at the frame's own resolution and may reach past the clip's
+        // picture (a portrait clip's sides). Its time stays the media's.
+        let size = [seq.resolution.width.max(1), seq.resolution.height.max(1)];
         let composition = klipp_veylvik::Composition::from_host_footage(klipp_veylvik::CLIP_MEDIA_KEY, &label, None, size, rate, frames).map_err(|e| e.to_string())?;
         let bytes: Arc<[u8]> = serde_json::to_vec(&composition).map_err(|e| e.to_string())?.into();
         let id = CompositionId::new();

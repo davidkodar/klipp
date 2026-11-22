@@ -142,6 +142,9 @@ struct Ask<'a> {
     secs: f64,
     fps: f64,
     frame: &'a SourceFrame,
+    /// The size Klipp renders the frame at: the sequence's, or a part of
+    /// it for a smaller preview.
+    size: [u32; 2],
     working: WorkingColorspace,
     live: bool,
     /// The media's length in frames, when the source knows it.
@@ -452,7 +455,7 @@ impl Compositor {
     /// composition not ready yet is made ready on a thread of its own: for a
     /// `live` view this gives [`Declined::Preparing`] meanwhile; else it waits.
     fn render(self: &Arc<Self>, ask: Ask<'_>) -> Result<SourceFrame, Declined> {
-        let Ask { clip, id, secs, fps, frame, working, live, frames, neighbours } = ask;
+        let Ask { clip, id, secs, fps, frame, size, working, live, frames, neighbours } = ask;
         self.renders.fetch_add(1, Ordering::Relaxed);
         let footage = self.on_gpu(frame)?;
         let mut state = self.state();
@@ -493,7 +496,8 @@ impl Compositor {
         };
         let Some(Slot::Ready(live)) = state.live.get_mut(&key) else { unreachable!("ready, just seen") };
         let index = frame_index(secs, live.fps);
-        let ([w, h], _, _) = live.source.format().map_err(|e| e.to_string())?;
+        let (own, _, _) = live.source.format().map_err(|e| e.to_string())?;
+        let [w, h] = drawn_size(own, size);
         let mut out = match live.spare.take().and_then(|s| Arc::try_unwrap(s).ok()).filter(|c| (c.width, c.height) == (w, h)) {
             Some(mut reused) => {
                 reused.linear = OnceLock::new();
@@ -848,6 +852,20 @@ pub(crate) fn frame_time(index: i64, fps: f64) -> Time {
     Time { ticks: index * i64::from(rate.rate), rate: rate.ticks as u32 }
 }
 
+/// The size a composition of size `own` is drawn at for a frame Klipp
+/// renders at `size`. One of the frame's shape (made at the sequence's
+/// size) is the whole frame, drawn at the size asked: sharp at full size,
+/// and no more work than it shows for a smaller preview. One of another
+/// shape (made at its media's size, or before the sequence changed) is
+/// drawn at its own size, and Klipp fits it into the frame as it fits
+/// media.
+pub(crate) fn drawn_size(own: [u32; 2], size: [u32; 2]) -> [u32; 2] {
+    let (a, b) = (u64::from(own[0]) * u64::from(size[1]), u64::from(size[0]) * u64::from(own[1]));
+    // The same shape, within a pixel's rounding at the smaller size.
+    let close = a.abs_diff(b) <= u64::from(own[0].max(size[0])).max(u64::from(own[1].max(size[1])));
+    if close && size[0] > 0 && size[1] > 0 { size } else { own }
+}
+
 /// `fps` as Veylvik's exact rate: whole rates as they are, NTSC's as
 /// thousandths over 1001.
 pub(crate) fn rate_of(fps: f64) -> Time {
@@ -983,7 +1001,7 @@ impl FrameSource for CompositionSource<'_> {
             cpu: if reach == Reach::Files { inner.temporal_frames_linear_at_size(clip, working, w, h) } else { None },
             source_in: clip.source_in.to_secs_f64(),
         };
-        let ask = Ask { clip, id, secs: source_secs, fps, frame: &frame, working, live, frames, neighbours: &mut neighbours };
+        let ask = Ask { clip, id, secs: source_secs, fps, frame: &frame, size: [width, height], working, live, frames, neighbours: &mut neighbours };
         match self.compositor.render(ask) {
             Ok(picture) => Some(picture),
             Err(Declined::Preparing) => Some(frame),
@@ -1120,6 +1138,17 @@ mod tests {
 
     /// A frame's time names that frame again where Veylvik's footage reads
     /// it, at every rate and far into a clip. In microseconds, every third
+    /// A composition of the frame's shape is drawn at the size Klipp
+    /// renders at, a preview's too; one of another shape at its own size.
+    #[test]
+    fn a_composition_of_the_frames_shape_is_drawn_at_the_frames_size() {
+        assert_eq!(drawn_size([3840, 2160], [1920, 1080]), [1920, 1080], "a half-size preview");
+        assert_eq!(drawn_size([1920, 1080], [3840, 2160]), [3840, 2160], "a sequence at twice the size");
+        assert_eq!(drawn_size([1920, 1080], [961, 540]), [961, 540], "a preview rounded a pixel");
+        assert_eq!(drawn_size([1080, 1920], [1920, 1080]), [1080, 1920], "a portrait composition in a landscape frame");
+        assert_eq!(drawn_size([1920, 1080], [0, 0]), [1920, 1080]);
+    }
+
     /// frame at 23.976 named the frame before.
     #[test]
     fn a_frames_time_names_that_frame() {
