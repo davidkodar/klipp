@@ -7807,7 +7807,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "veylvik-audio"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "cpal",
  "veylvik-document",
@@ -7817,7 +7817,7 @@ dependencies = [
 [[package]]
 name = "veylvik-color"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "cc",
  "naga",
@@ -7827,7 +7827,7 @@ dependencies = [
 [[package]]
 name = "veylvik-control"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "base64 0.22.1",
  "serde_json",
@@ -7838,7 +7838,7 @@ dependencies = [
 [[package]]
 name = "veylvik-decode"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "ffmpeg-next",
  "veylvik-interop",
@@ -7847,7 +7847,7 @@ dependencies = [
 [[package]]
 name = "veylvik-document"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -7862,7 +7862,7 @@ dependencies = [
 [[package]]
 name = "veylvik-editor"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "ashpd",
  "bytemuck",
@@ -7896,12 +7896,12 @@ dependencies = [
 [[package]]
 name = "veylvik-expr"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 
 [[package]]
 name = "veylvik-interop"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "ash",
  "cudarc",
@@ -7911,7 +7911,7 @@ dependencies = [
 [[package]]
 name = "veylvik-io"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "exr",
  "gltf",
@@ -7935,7 +7935,7 @@ dependencies = [
 [[package]]
 name = "veylvik-mesh"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "lyon_tessellation",
  "veylvik-document",
@@ -7944,7 +7944,7 @@ dependencies = [
 [[package]]
 name = "veylvik-presets"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "serde_json",
  "veylvik-document",
@@ -7953,7 +7953,7 @@ dependencies = [
 [[package]]
 name = "veylvik-preview"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "bytemuck",
  "flate2",
@@ -7968,7 +7968,7 @@ dependencies = [
 [[package]]
 name = "veylvik-render"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "bytemuck",
  "half",
@@ -7991,7 +7991,7 @@ dependencies = [
 [[package]]
 name = "veylvik-render3d"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "bytemuck",
  "veylvik-document",
@@ -8003,7 +8003,7 @@ dependencies = [
 [[package]]
 name = "veylvik-scene"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "veylvik-document",
  "veylvik-mesh",
@@ -8013,7 +8013,7 @@ dependencies = [
 [[package]]
 name = "veylvik-segment"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "image",
  "serde",
@@ -8027,17 +8027,17 @@ dependencies = [
 [[package]]
 name = "veylvik-shader"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 
 [[package]]
 name = "veylvik-solve"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 
 [[package]]
 name = "veylvik-text"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "epaint_default_fonts",
  "harfrust",
@@ -8049,7 +8049,7 @@ dependencies = [
 [[package]]
 name = "veylvik-track"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "bytemuck",
  "serde",
@@ -8065,7 +8065,7 @@ dependencies = [
 [[package]]
 name = "veylvik-warp"
 version = "0.1.0"
-source = "git+https://github.com/davidkodar/veylvik?rev=8a2a08c#8a2a08cad18879ecfab7f0c8f1e23ef4111b1e52"
+source = "git+https://github.com/davidkodar/veylvik?rev=2ebf3c2#2ebf3c24876a96b79d0a4b4a5efd9a0c4120a521"
 dependencies = [
  "veylvik-document",
 ]
@@ -8672,7 +8672,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
