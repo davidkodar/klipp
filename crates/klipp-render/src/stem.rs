@@ -97,8 +97,20 @@ pub fn stem_snapshot(seq: &Sequence, all_sequences: &[Sequence], pool: &MediaPoo
 /// track's file carries for sound.
 pub fn linked_sound_snapshot(seq: &Sequence, all_sequences: &[Sequence], pool: &MediaPool, video: TrackId) -> Result<Option<SequenceSnapshot>, RenderError> {
     let Some(v) = seq.tracks.iter().find(|t| t.id == video) else { return Ok(None) };
-    let ids: std::collections::HashSet<klipp_core::ClipId> = v.clips.iter().map(|c| c.id).collect();
-    let linked = |c: &klipp_timeline::Clip| c.linked_clip_id.is_some_and(|l| ids.contains(&l)) || v.clips.iter().any(|vc| vc.linked_clip_id == Some(c.id));
+    sound_linked_to(seq, all_sequences, pool, &v.clips)
+}
+
+/// The sound linked to video clip `clip` alone, as
+/// [`linked_sound_snapshot`] hears a track's: what Edit plays with that
+/// clip, at unity and centred. `None` when nothing is linked to it.
+pub fn clip_sound_snapshot(seq: &Sequence, all_sequences: &[Sequence], pool: &MediaPool, clip: klipp_core::ClipId) -> Result<Option<SequenceSnapshot>, RenderError> {
+    let Some(c) = seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| &t.clips).find(|c| c.id == clip) else { return Ok(None) };
+    sound_linked_to(seq, all_sequences, pool, std::slice::from_ref(c))
+}
+
+fn sound_linked_to(seq: &Sequence, all_sequences: &[Sequence], pool: &MediaPool, video: &[klipp_timeline::Clip]) -> Result<Option<SequenceSnapshot>, RenderError> {
+    let ids: std::collections::HashSet<klipp_core::ClipId> = video.iter().map(|c| c.id).collect();
+    let linked = |c: &klipp_timeline::Clip| c.linked_clip_id.is_some_and(|l| ids.contains(&l)) || video.iter().any(|vc| vc.linked_clip_id == Some(c.id));
     let mut tracks = Vec::new();
     for t in seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio) {
         let clips: Vec<_> = t.clips.iter().filter(|c| linked(c)).cloned().collect();
