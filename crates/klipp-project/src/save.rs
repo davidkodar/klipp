@@ -678,6 +678,7 @@ fn clip_to_json(c: &klipp_timeline::Clip, project_dir: &Path) -> ClipJson {
         keep_pitch: c.keep_pitch.then_some(true),
         sound_apart: c.sound_apart.then_some(true),
         composition: c.composition,
+        composition_versions: c.composition_versions.clone(),
         hold: c.hold.as_ref().map(timecode_to_json),
         source_rotation: if c.source_rotation == 0 { None } else { Some(c.source_rotation) },
         enabled: if c.enabled { None } else { Some(false) },

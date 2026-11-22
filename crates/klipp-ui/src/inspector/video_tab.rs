@@ -205,6 +205,7 @@ fn show_bin_media_video(
         keep_pitch: false,
         sound_apart: false,
         composition: None,
+        composition_versions: Vec::new(),
         hold: None,
         source_rotation: 0,
         enabled: true,

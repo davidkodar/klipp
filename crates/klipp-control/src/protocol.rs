@@ -339,6 +339,14 @@ pub enum ControlCommand {
         open: bool,
         #[serde(default)]
         set: serde_json::Map<String, serde_json::Value>,
+        /// A change to the clip's versions: new, duplicate, switch, rename
+        /// or remove; `version` (from 1) names the one, `name` its name.
+        #[serde(default)]
+        version_action: Option<String>,
+        #[serde(default)]
+        version: Option<usize>,
+        #[serde(default)]
+        name: Option<String>,
     },
     TagMedia {
         media_id: String,

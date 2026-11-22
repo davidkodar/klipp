@@ -460,7 +460,7 @@ impl NewInspectorPanel {
                                 "These controls affect the complete title clip and its video frame.",
                             );
                         }
-                        self.control_change = self.composition_controls.show(ui, theme, state, clip);
+                        self.control_change = self.composition_controls.show(ui, theme, state, clip, &mut cmds);
                         video_tab::show(ui, theme, state, Some((clip, clip_time_secs, true)), bin_media, &mut cmds);
                     } else {
                         video_tab::show(ui, theme, state, None, bin_media, &mut cmds);
@@ -528,6 +528,7 @@ impl NewInspectorPanel {
                             keep_pitch: false,
                             sound_apart: false,
                             composition: None,
+                            composition_versions: Vec::new(),
                             hold: None,
                             source_rotation: 0,
                             enabled: true,

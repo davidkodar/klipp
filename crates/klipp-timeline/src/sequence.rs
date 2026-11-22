@@ -2072,6 +2072,7 @@ impl Track {
             keep_pitch: false,
             sound_apart: false,
             composition: None,
+            composition_versions: Vec::new(),
             hold: None,
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
@@ -2392,6 +2393,7 @@ impl Track {
             keep_pitch: clip.keep_pitch,
             sound_apart: clip.sound_apart,
             composition: clip.composition,
+            composition_versions: clip.composition_versions.clone(),
             hold: clip.hold,
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
@@ -2478,6 +2480,7 @@ impl Track {
             keep_pitch: clip.keep_pitch,
             sound_apart: clip.sound_apart,
             composition: clip.composition,
+            composition_versions: clip.composition_versions.clone(),
             hold: clip.hold,
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
@@ -3019,6 +3022,11 @@ pub struct Clip {
     /// [`crate::veylvik`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composition: Option<crate::veylvik::CompositionId>,
+    /// The clip's compositions to choose from, each named, the one it
+    /// shows among them (Resolve's Fusion versions); empty while it has
+    /// one. See [`crate::veylvik::versions`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composition_versions: Vec<crate::veylvik::CompositionVersion>,
     /// A freeze frame (#2773): the source time shown for the clip's whole
     /// length, whatever its speed, its sound silent. Its length is its
     /// timeline length; `None` plays the clip.
@@ -3612,6 +3620,7 @@ impl Clip {
             keep_pitch: false,
             sound_apart: false,
             composition: None,
+            composition_versions: Vec::new(),
             hold: None,
             source_rotation: 0,
             enabled: true,
@@ -3734,6 +3743,7 @@ impl Clip {
             keep_pitch: false,
             sound_apart: false,
             composition: None,
+            composition_versions: Vec::new(),
             hold: None,
             source_rotation: 0,
             enabled: true,
@@ -3845,6 +3855,7 @@ impl Clip {
             keep_pitch: false,
             sound_apart: false,
             composition: None,
+            composition_versions: Vec::new(),
             hold: None,
             source_rotation: 0,
             enabled: true,

@@ -87,6 +87,17 @@ pub fn save_compositions(project_dir: &Path, sequences: &[Sequence], composition
     Ok(missing)
 }
 
+/// Composition `from`'s assets in `home` into composition `to`'s folder
+/// there, for a copy made in the session (a clip's version duplicated):
+/// what can't be copied is said, nothing copied when it has none.
+pub fn copy_composition_assets(home: &Path, from: CompositionId, to: CompositionId) -> Result<Vec<String>, std::io::Error> {
+    let there = composition_dir(home, from);
+    if !there.is_dir() {
+        return Ok(Vec::new());
+    }
+    copy_assets(&there, &composition_dir(home, to), ASSET_DEPTH)
+}
+
 /// Every file in `from` but the composition's own into `to`, as plain
 /// files and folders: one already there with the same length and time is
 /// left as it is. A link is not followed or copied, and is said: what it

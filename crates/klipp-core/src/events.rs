@@ -1321,6 +1321,22 @@ pub enum CollectMode {
     Trimmed { handle_secs: f64 },
 }
 
+/// What to do with a clip's Veylvik composition versions (its
+/// compositions to choose from), by their place in its list.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VersionAction {
+    /// A new version made of the clip's media alone, shown.
+    New,
+    /// A copy of the version shown, shown.
+    Duplicate,
+    /// Show this version.
+    Switch(usize),
+    /// Name this version.
+    Rename(usize, String),
+    /// Remove this version; the clip's last can't be.
+    Delete(usize),
+}
+
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     /// A batch of graph ops on one picture, applied as one undo step named
@@ -1817,6 +1833,8 @@ pub enum AppCommand {
     /// Give settings of `clip_id`'s Veylvik composition, named by their
     /// labels on Edit (the ones it publishes), these values, as one step.
     SetCompositionSettings { clip_id: ClipId, set: Vec<(String, serde_json::Value)> },
+    /// Change `clip_id`'s Veylvik composition versions, as one step.
+    CompositionVersion { clip_id: ClipId, action: VersionAction },
     /// Play these pointer steps into the app's input, one a frame, as a
     /// mouse's events (the control socket's `pointer`, test hooks only):
     /// the input only, never the document by itself.

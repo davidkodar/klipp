@@ -464,6 +464,7 @@ mod tests {
             keep_pitch: false,
             sound_apart: false,
             composition: None,
+            composition_versions: Vec::new(),
             hold: None,
             audio_effects: Vec::new(),
             audio_effect_keyframes: Default::default(),

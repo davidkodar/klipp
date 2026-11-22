@@ -571,6 +571,7 @@ impl KlippApp {
                 keep_pitch: clip.keep_pitch,
                 sound_apart: clip.sound_apart,
                 composition: clip.composition,
+                composition_versions: clip.composition_versions.clone(),
                 hold: None,
                 source_rotation: clip.source_rotation,
                 enabled: clip.enabled,
