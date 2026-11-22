@@ -1832,6 +1832,10 @@ pub enum AppCommand {
     /// Frozen sound tracks' stems (#3207), each current: the track plays
     /// its stem in place of its clips and its inserts.
     SetFrozenStems(Vec<(crate::TrackId, std::path::PathBuf)>),
+    /// The sound of clips' Veylvik compositions, each current: a clip in
+    /// the list plays its composition's own sound (a raw stereo f32 file
+    /// at 48 kHz, from the composition's start) besides its media's.
+    SetCompositionSounds(Vec<(crate::ClipId, std::path::PathBuf)>),
     /// Open the Colour workspace on video track `track_id`'s own grade
     /// (#1408): the layout only, never the document.
     GradeTrackInColour { track_id: TrackId },

@@ -41,6 +41,11 @@ pub(crate) struct VeylvikTab {
     /// last given it: given again when the project's working space, the
     /// monitor's transfer or the viewer's LUT change.
     view: Option<ViewKey>,
+    /// The sounds of the timeline's compositions, for Edit and the export.
+    sounds: Option<klipp_veylvik::composition_sound::Sounds>,
+    /// What they were last worked out from, and when.
+    sounds_from: Option<(klipp_timeline::SequenceRevision, usize, usize)>,
+    sounds_checked: Option<std::time::Instant>,
 }
 
 /// What makes Klipp's view of a picture.
@@ -62,7 +67,7 @@ struct Open {
 
 impl VeylvikTab {
     pub(crate) fn new(render_state: Option<eframe::egui_wgpu::RenderState>) -> Self {
-        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true, place: true, going_to: None, carried: None, applied: None, shortcuts: false, view: None }
+        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true, place: true, going_to: None, carried: None, applied: None, shortcuts: false, view: None, sounds: None, sounds_from: None, sounds_checked: None }
     }
 
     /// Whether the editor has the keyboard: the page shows and it was
@@ -369,6 +374,46 @@ impl super::KlippApp {
         ];
         self.apply_edits_as_one(&edits, "Veylvik: Make Composition");
         Ok((composition, id))
+    }
+
+    /// The sounds of the timeline's compositions kept as they are, for
+    /// Edit's playback and the export: worked out again when the timeline
+    /// or a composition changes, and while one is being made.
+    pub(super) fn keep_composition_sounds(&mut self) {
+        if self.state.compositions.is_empty() && self.veylvik_tab.sounds.is_none() {
+            return;
+        }
+        let from = (self.sequence.revision(), self.state.compositions.len(), self.state.compositions.values().map(|b| b.as_ptr() as usize).fold(0, usize::wrapping_add));
+        let busy = self.veylvik_tab.sounds.as_ref().is_some_and(|s| s.busy());
+        let recent = self.veylvik_tab.sounds_checked.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(250));
+        if recent || (!busy && self.veylvik_tab.sounds_from == Some(from)) {
+            return;
+        }
+        self.veylvik_tab.sounds_from = Some(from);
+        self.veylvik_tab.sounds_checked = Some(std::time::Instant::now());
+        // Every composed clip of the sequence Edit plays, at its own speed
+        // (the sound plays at 1x, as the page plays the media).
+        let wants: Vec<(ClipId, Arc<[u8]>, std::path::PathBuf, f64)> = self
+            .state
+            .sequence()
+            .tracks
+            .iter()
+            .flat_map(|t| &t.clips)
+            .filter(|c| c.enabled && c.speed == 1.0 && c.speed_keyframes.is_empty() && !c.is_reversed())
+            .filter_map(|c| {
+                let id = c.composition?;
+                let bytes = self.state.compositions.get(&id)?;
+                Some((c.id, Arc::clone(bytes), self.composition_assets_dir(id), c.source_out.to_secs_f64()))
+            })
+            .collect();
+        let folder = dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("klipp").join("veylvik-sound");
+        let sounds = self.veylvik_tab.sounds.get_or_insert_with(|| klipp_veylvik::composition_sound::Sounds::new(folder));
+        let given = sounds.update(wants.iter().map(|(clip, bytes, assets, until)| klipp_veylvik::composition_sound::Want { clip: *clip, bytes, assets: assets.clone(), until_secs: *until }));
+        if let Some(list) = given {
+            // The export reads the WAV beside each: its decoder's format.
+            klipp_render::snapshot::set_composition_sounds(list.iter().map(|(c, p)| (*c, p.with_extension("wav"))).collect());
+            let _ = self.cmd_tx.send(klipp_core::AppCommand::SetCompositionSounds(list));
+        }
     }
 
     /// The sound linked to the open clip, as Edit plays it.

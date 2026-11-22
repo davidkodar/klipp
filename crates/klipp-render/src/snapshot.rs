@@ -517,6 +517,15 @@ impl SequenceSnapshot {
                 }
             }
         }
+        // A clip's Veylvik composition's own sound, as playback hears it.
+        let sounds = composition_sounds();
+        if !sounds.is_empty() {
+            for track in seq.tracks.iter().rev() {
+                if let Some(t) = snapshot_composition_sound(track, &sounds, fps) {
+                    audio_tracks.push(t);
+                }
+            }
+        }
 
         // Video: the viewer's flattened timeline, as it is. Subtitle
         // tracks render into the picture only when burning captions in
@@ -860,6 +869,53 @@ fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaP
             varispeed,
         });
     }
+    if clips.is_empty() {
+        return None;
+    }
+    Some(AudioTrackSnapshot { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo, clips, automation: track.automation.clone(), effects: track.effects.audio.clone(), sends: track.sends.clone() })
+}
+
+/// The clips' Veylvik composition sounds, as WAV files by clip: set by the
+/// app as playback has them, so every export hears the same.
+static COMPOSITION_SOUNDS: std::sync::RwLock<Option<HashMap<klipp_core::ClipId, std::path::PathBuf>>> = std::sync::RwLock::new(None);
+
+/// The composition sounds every snapshot takes from now on.
+pub fn set_composition_sounds(sounds: HashMap<klipp_core::ClipId, std::path::PathBuf>) {
+    *COMPOSITION_SOUNDS.write().unwrap_or_else(|e| e.into_inner()) = Some(sounds);
+}
+
+fn composition_sounds() -> HashMap<klipp_core::ClipId, std::path::PathBuf> {
+    COMPOSITION_SOUNDS.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
+}
+
+/// `track`'s clips' composition sounds, on a track of their own with
+/// `track`'s fader, pan, mute, solo, automation and sends: each from its
+/// file, timed as its clip at its own speed (the composition's time is
+/// its media's), with the clip's gain and fades. As playback plays them
+/// on `track`'s composition lane.
+fn snapshot_composition_sound(track: &Track, sounds: &HashMap<klipp_core::ClipId, std::path::PathBuf>, fps: f64) -> Option<AudioTrackSnapshot> {
+    let clips: Vec<AudioClipSnapshot> = track
+        .clips
+        .iter()
+        .filter(|c| c.enabled && c.speed == 1.0 && c.speed_keyframes.is_empty() && !c.is_reversed())
+        .filter_map(|clip| {
+            let path = sounds.get(&clip.id)?;
+            let (start, end) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+            let (start_frame, end_frame) = AudioClipSnapshot::frames_of(start, end, fps);
+            Some(AudioClipSnapshot {
+                timeline_start_frame: start_frame,
+                timeline_end_frame: end_frame,
+                exact_secs: Some((start, end)),
+                source_start_secs: clip.source_in.to_secs_f64(),
+                path: path.clone(),
+                audio_effects: Vec::new(),
+                audio_effect_keyframes: HashMap::new(),
+                source_range: (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64()),
+                shape: AudioClipShape::of(clip, clip.duration().to_secs_f64()),
+                varispeed: None,
+            })
+        })
+        .collect();
     if clips.is_empty() {
         return None;
     }
