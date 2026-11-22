@@ -142,7 +142,8 @@ fn target(state: &crate::state::AppState) -> Target {
     if let Some(id) = state.selected_clip {
         return if has_media(id) { Target::Clip(id) } else { Target::Nothing("The selected clip has no media to compose with. Select a clip of a video or a still.") };
     }
-    let under = seq.tracks.iter().rev().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).find_map(|t| t.clip_at_timecode(state.playhead).map(|(_, c)| c.id).filter(|id| has_media(*id)));
+    // The first track is the top one, as the renders stack them.
+    let under = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).find_map(|t| t.clip_at_timecode(state.playhead).map(|(_, c)| c.id).filter(|id| has_media(*id)));
     match under {
         Some(id) => Target::Clip(id),
         None => Target::Nothing("Select a clip on the timeline, or move the playhead over one, to open it in Veylvik."),
@@ -752,7 +753,8 @@ fn clip_strip(ui: &mut egui::Ui, state: &crate::state::AppState, open: ClipId, t
     if clips.len() < 2 {
         return None;
     }
-    clips.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    // The first track is the top one.
+    clips.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut picked = None;
     let clock = state.timecode_display();
     // Brought into view when the page opens another clip, else left
@@ -774,8 +776,8 @@ fn clip_strip(ui: &mut egui::Ui, state: &crate::state::AppState, open: ClipId, t
                 let text = if c.composition.is_some() { format!("\u{25c6} {name}") } else { name };
                 let here = c.id == open;
                 let resp = ui.selectable_label(here, text).on_hover_text(format!(
-                    "V{} at {}{}",
-                    track + 1,
+                    "{} at {}{}",
+                    seq.tracks[*track].name,
                     clock.position(c.timeline_in),
                     if c.composition.is_some() { ", composed in Veylvik" } else { "" }
                 ));
@@ -862,7 +864,8 @@ mod tests {
         let mut v2 = Track::new("V2", TrackKind::Video);
         v2.clips = vec![high];
         let mut seq = Sequence::new_default();
-        seq.tracks = vec![v1, v2];
+        // The first track is the top one, as the renders stack them.
+        seq.tracks = vec![v2, v1];
         let mut s = crate::state::AppState { sequences: vec![seq], ..Default::default() };
         let opened = |s: &crate::state::AppState| match target(s) {
             Target::Clip(id) => Some(id),
@@ -872,7 +875,7 @@ mod tests {
         assert_eq!(opened(&s), Some(high_id), "the top one under the playhead");
         s.playhead = t(0.5);
         assert_eq!(opened(&s), Some(low_id));
-        s.sequences[0].tracks[1].visible = false;
+        s.sequences[0].tracks[0].visible = false;
         s.playhead = t(2.0);
         assert_eq!(opened(&s), Some(low_id), "a hidden track's clip is not shown");
         s.selected_clip = Some(high_id);
