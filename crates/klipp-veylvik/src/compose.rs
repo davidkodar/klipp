@@ -30,7 +30,7 @@ use klipp_nodes::frame_context::GpuFramePixels;
 use klipp_timeline::{Clip, CompositionId};
 use veylvik_document::{Composition, Time};
 
-use crate::{working_pixels, ClipFootage, ClipSource, HostSource, KlippHost, Renderer, SourceInfo};
+use crate::{mix, working_pixels, ClipFootage, ClipSource, HostSource, KlippHost, Renderer, SourceInfo};
 
 /// The project's compositions, by id: each file's bytes (as
 /// `klipp_project::compositions::Compositions`).
@@ -39,6 +39,11 @@ pub type Compositions = BTreeMap<CompositionId, Arc<[u8]>>;
 /// The key under which a composition finds its clip's own media: what a
 /// composition made for a clip names its footage by.
 pub const CLIP_MEDIA_KEY: &str = "clip";
+
+/// The key under which a composition finds what is below its clip in the
+/// frame Klipp renders: the tracks under it, composited. A composition
+/// that names it is drawn over them.
+pub const BELOW_KEY: &str = "below";
 
 /// Footage frames a composition keeps of one clip's media.
 const FOOTAGE_BUDGET: u64 = 256 << 20;
@@ -123,6 +128,10 @@ struct Now {
     neighbours: Option<Neighbours>,
     /// Asked for another frame with no readers to give it.
     missed: bool,
+    /// What is below the clip in this render, for a composition that
+    /// reads it, and its name: a new one each render.
+    below: Option<Arc<dyn GpuFramePixels>>,
+    below_name: u64,
 }
 
 /// Klipp's readers of a clip's other frames, by clip time (as its own
@@ -153,6 +162,8 @@ struct Ask<'a> {
     /// composition reads other times: with the file's reader too, or only
     /// the frames held on the GPU (opening the file costs every frame).
     neighbours: &'a mut dyn FnMut(Reach) -> Neighbours,
+    /// What is below the clip in this render, when the renderer gave it.
+    below: Option<&'a SourceFrame>,
 }
 
 /// How far a composition reads past the frame rendered, as learnt from
@@ -209,6 +220,9 @@ struct LiveKey {
     /// streams, proxies), not an export's, so neither is given a picture
     /// made of the other's.
     live: bool,
+    /// For a composition that reads what is below its clip: the size of
+    /// that picture, the render's.
+    below: Option<[u32; 2]>,
 }
 
 /// A composition for one clip's media: being made ready, ready, or what
@@ -432,7 +446,7 @@ impl Compositor {
     /// `inner` with every clip that names a composition shown through it,
     /// in `working`.
     pub fn source<'a>(self: &Arc<Self>, inner: &'a mut dyn FrameSource, working: WorkingColorspace) -> CompositionSource<'a> {
-        CompositionSource { compositor: Arc::clone(self), inner, working }
+        CompositionSource { compositor: Arc::clone(self), inner, working, below: None }
     }
 
     /// The composition `id`, read from its bytes once.
@@ -455,9 +469,17 @@ impl Compositor {
     /// composition not ready yet is made ready on a thread of its own: for a
     /// `live` view this gives [`Declined::Preparing`] meanwhile; else it waits.
     fn render(self: &Arc<Self>, ask: Ask<'_>) -> Result<SourceFrame, Declined> {
-        let Ask { clip, id, secs, fps, frame, size, working, live, frames, neighbours } = ask;
+        let Ask { clip, id, secs, fps, frame, size, working, live, frames, neighbours, below } = ask;
         self.renders.fetch_add(1, Ordering::Relaxed);
         let footage = self.on_gpu(frame)?;
+        let reads_below = reads_below(id).then_some(size);
+        // Nothing below (the clip is the lowest), or not at the render's
+        // size: a clear picture stands in.
+        let below = match below.filter(|b| reads_below == Some([b.width, b.height])) {
+            Some(b) => Some(self.on_gpu(b)?),
+            None => None,
+        };
+        let below_name = mix(BELOW_NAMES.fetch_add(1, Ordering::Relaxed));
         let mut state = self.state();
         let deadline = Instant::now() + PREPARE_WAIT;
         let key = loop {
@@ -465,7 +487,7 @@ impl Compositor {
             // this waited.
             let media = clip.media_id();
             let media_state = media.and_then(|m| state.media_states.get(&m).copied()).unwrap_or(0);
-            let key = LiveKey { composition: id, media, working, footage: [frame.width, frame.height], generation: state.generation, media_state, live };
+            let key = LiveKey { composition: id, media, working, footage: [frame.width, frame.height], generation: state.generation, media_state, live, below: reads_below };
             match state.live.get(&key) {
                 Some(Slot::Ready(_)) => break key,
                 Some(Slot::Failed(why)) => return Err(Declined::Failed(why.clone())),
@@ -515,7 +537,7 @@ impl Compositor {
         // asks for the frame before, which Klipp hasn't given it.
         let at = frame_time(index, live.fps);
         let attempt = |live: &mut Live, readers: Option<Neighbours>| {
-            *live.current.lock().unwrap_or_else(|e| e.into_inner()) = Some(Now { index, frame: Arc::clone(&footage), neighbours: readers, missed: false });
+            *live.current.lock().unwrap_or_else(|e| e.into_inner()) = Some(Now { index, frame: Arc::clone(&footage), neighbours: readers, missed: false, below: below.clone(), below_name });
             let rendered = live.source.render(at, [w, h], &out.buffer, &working_pixels(working)).map_err(|e| e.to_string());
             // Klipp's frames are the footage of this render only.
             let now = live.current.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -603,6 +625,11 @@ impl Compositor {
         let footage = ClipFootage::new(info, fps, [w, h], working_pixels(key.working), salt(&key), fetch);
         let host = Arc::new(KlippHost::new());
         host.insert(CLIP_MEDIA_KEY, Arc::new(HostSource::new(footage, FOOTAGE_BUDGET)));
+        if let Some([bw, bh]) = key.below {
+            let info = SourceInfo { width: bw, height: bh, duration, frame_rate: Some(rate), frames, description: "what is below the clip in Klipp".into() };
+            let below = BelowFootage { info, size: [bw, bh], pixels: working_pixels(key.working), current: Arc::clone(&current), device: Arc::clone(&self.device), clear: OnceLock::new() };
+            host.insert(BELOW_KEY, Arc::new(HostSource::new(below, FOOTAGE_BUDGET)));
+        }
         // Its assets in its folder in the project; a project never saved
         // has none yet, and an empty folder of the session's own stands in.
         let assets = assets.unwrap_or_else(no_assets);
@@ -721,10 +748,36 @@ impl Compositor {
 /// render's clips are shown through once [`install`] has run.
 static PROJECT: Mutex<Option<Compositions>> = Mutex::new(None);
 
+/// The open project's compositions that read what is below their clip
+/// ([`BELOW_KEY`]), as last set.
+static READS_BELOW: Mutex<Option<HashSet<CompositionId>>> = Mutex::new(None);
+
+/// Counts the pictures of what is below handed to renders: each is named
+/// by its count, never the same name twice.
+static BELOW_NAMES: AtomicU64 = AtomicU64::new(1);
+
+/// Whether composition `id` of the open project reads what is below its
+/// clip: a footage node of [`BELOW_KEY`] in it.
+pub fn reads_below(id: CompositionId) -> bool {
+    READS_BELOW.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|set| set.contains(&id))
+}
+
+/// Whether the composition in `bytes` has a footage node of [`BELOW_KEY`].
+pub fn bytes_read_below(bytes: &[u8]) -> bool {
+    // Read only when the word is there at all: most compositions never
+    // name it, and this runs on every edit.
+    if !bytes.windows(BELOW_KEY.len()).any(|w| w == BELOW_KEY.as_bytes()) {
+        return false;
+    }
+    serde_json::from_slice::<Composition>(bytes).is_ok_and(|c| c.nodes.values().any(|n| matches!(&n.operation, veylvik_document::Operation::Footage(f) if f.asset == BELOW_KEY)))
+}
+
 /// The open project's compositions now: on open, on a save that gave a
 /// copied clip its own, on a new project (none). Veylvik's renderer starts
 /// with the first frame that needs it, never for a project without any.
 pub fn set_project_compositions(compositions: Compositions) {
+    let below: HashSet<CompositionId> = compositions.iter().filter(|(_, b)| bytes_read_below(b)).map(|(id, _)| *id).collect();
+    *READS_BELOW.lock().unwrap_or_else(|e| e.into_inner()) = Some(below);
     let mut project = PROJECT.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(Some(compositor)) = SHARED.get() {
         compositor.set_compositions(compositions.clone());
@@ -804,6 +857,10 @@ impl klipp_compose::source_wrap::SourceWrap for Wrap {
 
     fn revision(&self) -> u64 {
         revision()
+    }
+
+    fn reads_below(&self, clip: &Clip) -> bool {
+        clip.media_id().is_some() && clip.composition.is_some_and(reads_below)
     }
 
     fn wrap<'a>(&self, inner: &'a mut dyn FrameSource, working: WorkingColorspace) -> Box<dyn FrameSource + 'a> {
@@ -974,11 +1031,48 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &wgpu::Buffer) 
     }
 }
 
+/// What is below a clip in the frame Klipp renders, as the footage of
+/// [`BELOW_KEY`]: the picture handed to this render, or a clear one when
+/// the clip is the lowest. Named anew each render.
+struct BelowFootage {
+    info: SourceInfo,
+    size: [u32; 2],
+    pixels: crate::HostPixels,
+    current: Current,
+    device: Arc<wgpu::Device>,
+    /// The clear picture, made the first time nothing is below.
+    clear: OnceLock<wgpu::Buffer>,
+}
+
+impl crate::HostMedia for BelowFootage {
+    fn info(&self) -> SourceInfo {
+        self.info.clone()
+    }
+
+    fn identity(&self, _time: Time) -> u64 {
+        self.current.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(0, |n| n.below_name)
+    }
+
+    fn frame(&self, _time: Time, _target: Option<[u32; 2]>) -> veylvik_render::Result<crate::HostFrame> {
+        let given = self.current.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|n| n.below.as_ref().map(|b| b.buffer().clone()));
+        let buffer = given.unwrap_or_else(|| {
+            let [w, h] = self.size;
+            // A new buffer is zeroed: clear, transparent.
+            self.clear
+                .get_or_init(|| self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("veylvik nothing below"), size: u64::from(w) * u64::from(h) * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false }))
+                .clone()
+        });
+        Ok(crate::HostFrame { buffer, width: self.size[0], height: self.size[1], pixels: self.pixels })
+    }
+}
+
 /// A frame source whose clips with a composition are shown through it.
 pub struct CompositionSource<'a> {
     compositor: Arc<Compositor>,
     inner: &'a mut dyn FrameSource,
     working: WorkingColorspace,
+    /// What is below the clip whose frame is asked next, from the renderer.
+    below: Option<(klipp_core::ClipId, SourceFrame)>,
 }
 
 impl CompositionSource<'_> {
@@ -988,9 +1082,14 @@ impl CompositionSource<'_> {
 }
 
 impl FrameSource for CompositionSource<'_> {
+    fn below(&mut self, clip: &Clip, below: Option<SourceFrame>) {
+        self.below = below.map(|b| (clip.id, b));
+    }
+
     fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
         let frame = self.inner.frame(clip, source_secs, width, height)?;
         let Some(id) = Self::composed(clip) else { return Some(frame) };
+        let below = self.below.as_ref().filter(|(c, _)| *c == clip.id).map(|(_, b)| b);
         let fps = self.inner.media_fps(clip).filter(|f| *f > 0.0).unwrap_or(25.0);
         let live = self.inner.shows_live();
         let frames = self.inner.media_range(clip).map(|(start, end)| ((end - start).max(0.0) * fps + 1e-6).floor() as u32);
@@ -1001,7 +1100,7 @@ impl FrameSource for CompositionSource<'_> {
             cpu: if reach == Reach::Files { inner.temporal_frames_linear_at_size(clip, working, w, h) } else { None },
             source_in: clip.source_in.to_secs_f64(),
         };
-        let ask = Ask { clip, id, secs: source_secs, fps, frame: &frame, size: [width, height], working, live, frames, neighbours: &mut neighbours };
+        let ask = Ask { clip, id, secs: source_secs, fps, frame: &frame, size: [width, height], working, live, frames, neighbours: &mut neighbours, below };
         match self.compositor.render(ask) {
             Ok(picture) => Some(picture),
             Err(Declined::Preparing) => Some(frame),

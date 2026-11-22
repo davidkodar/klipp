@@ -353,6 +353,13 @@ impl GpuEffectsPipeline {
         Some(KeptPicture(id))
     }
 
+    /// The buffer `picture` lies in, linear RGBA f32 at the stack's size,
+    /// for a reader on this device that copies it before the picture is
+    /// given back.
+    pub fn kept_picture_buffer(&self, picture: &KeptPicture) -> wgpu::Buffer {
+        self.slot_pool.buffer(picture.0).clone()
+    }
+
     /// Layer `slot` of the stack in a pool slot of its own (#2758): a title
     /// drawn there as a layer is, handed to a clip's run as its side
     /// picture. `None` without that layer or a slot.

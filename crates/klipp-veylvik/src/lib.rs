@@ -40,6 +40,7 @@ fn fault(message: impl Into<String>) -> veylvik_render::Error {
     veylvik_render::Error::Message(message.into())
 }
 
+pub mod below;
 pub mod clip_sound;
 pub mod composition_sound;
 pub mod clip_time;
@@ -47,7 +48,7 @@ pub mod compose;
 pub mod controls;
 pub mod display;
 pub mod editor_footage;
-pub use compose::{install, media_changed, preparing, project_assets, project_compositions, revision, set_media_states, set_project_assets, set_project_compositions, Compositor, CompositionSource, Compositions, Declined, CLIP_MEDIA_KEY};
+pub use compose::{install, media_changed, preparing, project_assets, project_compositions, revision, set_media_states, set_project_assets, set_project_compositions, bytes_read_below, reads_below, Compositor, CompositionSource, Compositions, Declined, BELOW_KEY, CLIP_MEDIA_KEY};
 
 /// Klipp's frames of one clip's media at a time in the media, on the GPU at
 /// the size it was made for: the clip's `temporal_frames_on_gpu`.

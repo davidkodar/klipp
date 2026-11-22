@@ -9202,6 +9202,9 @@ impl TimelinePanel {
                         item(ui, "Paste Composition", "Give each selected clip a copy of the one copied, its files too", state.composition_clipboard.is_some(), V::Paste);
                         item(ui, "Reset Composition", "Start the composition shown again from the clip's media alone", has, V::Reset);
                         item(ui, "Remove Composition", "Show the clip's media as it is; undo brings the composition back", has, V::Remove);
+                        ui.separator();
+                        let over = clip.composition.is_some_and(|id| state.compositions.get(&id).is_some_and(|b| klipp_veylvik::bytes_read_below(b)));
+                        item(ui, "Over the Layers Below", "Draw the composition over the tracks under the clip: a \"Layers below\" footage node on the Veylvik page, its picture merged over it", !over, V::OverBelow);
                     });
                 }
 

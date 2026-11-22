@@ -21,6 +21,13 @@ pub trait SourceWrap: Send + Sync {
     fn revision(&self) -> u64 {
         0
     }
+    /// Whether `clip`'s picture through the wrapped source is made over
+    /// what is below it, so a render draws it in its stacking loop over the
+    /// composite so far and hands that to the source first
+    /// ([`crate::FrameSource::below`]). `false` by default.
+    fn reads_below(&self, _clip: &klipp_timeline::Clip) -> bool {
+        false
+    }
     /// `inner` as a render in `working` reads it.
     fn wrap<'a>(&self, inner: &'a mut dyn FrameSource, working: WorkingColorspace) -> Box<dyn FrameSource + 'a>;
 }
@@ -37,6 +44,12 @@ pub fn install(wrap: Arc<dyn SourceWrap>) -> bool {
 /// sees it move on draws its frame again. 0 with none.
 pub fn revision() -> u64 {
     WRAP.get().map_or(0, |w| w.revision())
+}
+
+/// Whether the installed wrapper makes `clip`'s picture over what is
+/// below it ([`SourceWrap::reads_below`]); `false` with none, or none active.
+pub fn reads_below(clip: &klipp_timeline::Clip) -> bool {
+    clip.composition.is_some() && WRAP.get().is_some_and(|w| w.active() && w.reads_below(clip))
 }
 
 thread_local! {

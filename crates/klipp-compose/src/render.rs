@@ -201,6 +201,13 @@ pub trait FrameSource {
     /// for this clip.
     fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame>;
 
+    /// What is below `clip` in the frame being rendered, for a source
+    /// whose picture of the clip is made over it (a Veylvik composition
+    /// that reads the layers below): given just before `clip`'s frame is
+    /// asked, linear RGBA in the working space at the render's size, and
+    /// `None` once it has been. The default has no use for it.
+    fn below(&mut self, _clip: &Clip, _below: Option<SourceFrame>) {}
+
     /// The frame after the one [`frame`](Self::frame) returns for
     /// `source_secs`, for frame blending. Asked only after `frame`, for
     /// the same time. `None` (the default) shows the one frame unblended.
@@ -2838,6 +2845,9 @@ impl Renderer {
                     if crate::resolve::reads_below(c) {
                         self.stack_below = self.executor.gpu_pipeline_or_init().and_then(|g| g.stack_acc_as_picture());
                         let laid = self.place_layer(*slot, c, time, fps, width, height, src, &transforms, &mut stats);
+                        if crate::source_wrap::reads_below(c) {
+                            src.below(c, None);
+                        }
                         // Not read (no frame here, or declined): given back.
                         if let (Some(picture), Some(g)) = (self.stack_below.take(), self.executor.gpu_pipeline_or_init()) {
                             g.release_picture(picture);
@@ -2995,6 +3005,16 @@ impl Renderer {
         // Read at the render's size: a gap is in its pixels.
         let split = fx.iter().rev().find_map(|e| e.split_blend(height));
         self.title_light(c, &mut fx);
+        let gives_below = crate::source_wrap::reads_below(c);
+        if gives_below {
+            // Its source's picture is made over what is below: the
+            // composite so far, copied by the source before it is let go.
+            let below = self.stack_below.as_ref().zip(self.executor.gpu_pipeline_or_init()).map(|(picture, g)| {
+                let seed = AccSeed { buffer: Arc::new(g.kept_picture_buffer(picture)), device: g.device(), queue: g.queue(), width, height };
+                SourceFrame { pixels: SourcePixels::Gpu(Arc::new(seed)), width, height, pts: None }
+            });
+            src.below(c, below);
+        }
         if crate::resolve::reads_below(c) {
             // Where the stack places it, as it places any layer.
             let place = transforms.get(&c.id).map(|xf| transform_effect(*xf, tilt(c, &fx, eval_clip_time(c, time))));
@@ -4667,6 +4687,14 @@ impl Renderer {
                     // scene drawn inside this clip has a loop of its own.
                     let outer = self.below.replace(Arc::new(acc.clone().unwrap_or_else(canvas)));
                     let layer = match item {
+                        TrackItem::Clip(c) if crate::source_wrap::reads_below(c) => {
+                            // Its source's picture is made over the composite so far.
+                            let below = self.below.clone().map(|p| SourceFrame { pixels: SourcePixels::Linear(p), width, height, pts: None });
+                            src.below(c, below);
+                            let layer = self.render_clip(c, time, fps, width, height, src, &transforms).map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode, split: reflection_split(c, time, fps, height, self.px_scale) });
+                            src.below(c, None);
+                            layer
+                        }
                         TrackItem::Clip(c) => self.render_clip(c, time, fps, width, height, src, &transforms).map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode, split: reflection_split(c, time, fps, height, self.px_scale) }),
                         TrackItem::Transition { a, b, kind, progress, params, shutter } => self
                             .render_transition(a, b, *kind, *progress, params, *shutter, time, fps, width, height, src, &transforms, None)
@@ -9297,6 +9325,9 @@ struct AccSeed {
 impl GpuPixels for AccSeed {
     fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
         exec.prime_chain_from_gpu_linear_buffer(&self.buffer, width, height)
+    }
+    fn on_device(&self) -> Option<(OnDevice<'_>, u32, u32)> {
+        Some((OnDevice::Linear(&self.buffer), self.width, self.height))
     }
     fn read(&self) -> Arc<Vec<f32>> {
         let bytes = (self.width as u64) * (self.height as u64) * 16;

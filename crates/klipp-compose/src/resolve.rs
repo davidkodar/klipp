@@ -575,10 +575,12 @@ pub fn title_sources(clip: &Clip) -> Vec<String> {
     found
 }
 
-/// Whether `clip`'s picture holds an enabled Clip Below node (#1746): the
-/// clip is drawn over what is below it.
+/// Whether `clip`'s picture holds an enabled Clip Below node (#1746), or
+/// its source's picture is made over what is below it (a Veylvik
+/// composition that reads the layers below): the clip is drawn over what
+/// is below it.
 pub fn reads_below(clip: &Clip) -> bool {
-    clip.picture_v2().is_ok_and(|p| p.picture.graph.nodes.iter().any(|n| n.enabled && klipp_graph_lift::effect_params::tag(n) == Some("clip_below")))
+    crate::source_wrap::reads_below(clip) || clip.picture_v2().is_ok_and(|p| p.picture.graph.nodes.iter().any(|n| n.enabled && klipp_graph_lift::effect_params::tag(n) == Some("clip_below")))
 }
 
 /// Whether `clip`'s picture holds an enabled grade compound (#1746).

@@ -238,6 +238,9 @@ impl super::KlippApp {
         let assets = self.composition_assets_dir(id);
         let _ = std::fs::create_dir_all(&assets);
         self.veylvik_tab.host.set(self.veylvik_footage(clip));
+        // What is below it as Edit has it now, before the editor looks for
+        // its media.
+        self.veylvik_tab.host.set_below(self.veylvik_below(clip));
         let made = match self.veylvik_tab.editor.as_mut() {
             Some(editor) => editor.set_composition(ctx, composition, assets).map_err(|e| e.to_string()),
             None => self.veylvik_make_editor(ctx, composition, assets),
@@ -457,6 +460,32 @@ impl super::KlippApp {
         klipp_veylvik::clip_sound::ClipSound::new(self.state.sequence(), &self.state.sequences, &self.state.media_pool, clip)
     }
 
+    /// What is below the open clip, for a composition that reads it: the
+    /// tracks under it drawn as the export draws them.
+    fn veylvik_below(&self, clip: ClipId) -> Option<klipp_veylvik::below::PageBelow> {
+        let seq = self.state.sequence();
+        let (t, c) = seq.find_clip(clip)?;
+        let it = seq.tracks[t].clips[c].clone();
+        let id = it.composition?;
+        if !self.state.compositions.get(&id).is_some_and(|b| klipp_veylvik::bytes_read_below(b)) {
+            return None;
+        }
+        let item = self.state.media_pool.get(&it.media_id()?)?;
+        let media_fps = item.fps.as_f64();
+        let frames = (item.duration.to_secs_f64() * media_fps).floor().max(1.0) as u32;
+        let below = klipp_veylvik::below::without_from(seq, t);
+        let working = klipp_engine::video_decoder::working_colorspace();
+        let snapshot = match klipp_render::SequenceSnapshot::from_sequence_with_all(&below, &self.state.sequences, &self.state.media_pool, &klipp_core::ExportSettings::default(), None, false, working) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("the Veylvik page has nothing below the clip: {e}");
+                return None;
+            }
+        };
+        let ctx = klipp_effects::gpu_context::GpuContext::shared()?;
+        Some(klipp_veylvik::below::PageBelow::new(snapshot, it, media_fps, frames, ctx.device()))
+    }
+
     /// The open clip's media as the editor reads it.
     fn veylvik_footage(&self, clip: ClipId) -> Option<EditorFootage> {
         let seq = self.state.sequence();
@@ -640,15 +669,34 @@ impl super::KlippApp {
                     new.composition = None;
                     new.composition_versions.clear();
                 }
+                A::OverBelow => {
+                    let had = old.composition.and_then(|id| self.state.compositions.get(&id).cloned().map(|b| (id, b)));
+                    let (id, before, bytes) = match had {
+                        Some((id, b)) => (id, Some(b.clone()), b),
+                        None => (CompositionId::new(), None, fresh_composition(&self.state, old)?.1),
+                    };
+                    if klipp_veylvik::bytes_read_below(&bytes) {
+                        continue;
+                    }
+                    let after = klipp_veylvik::below::over_below(&bytes)?;
+                    let made = before.is_none();
+                    edits.push(crate::history::EditCommand::SetComposition { id, before, after: Some(after), label: "Veylvik: Over the layers below".into() });
+                    if !made {
+                        changed += 1;
+                        continue;
+                    }
+                    new.composition = Some(id);
+                }
             }
             edits.push(crate::history::EditCommand::ReplaceClip { description: "Veylvik composition", old: Box::new(old.clone()), new: Box::new(new) });
             changed += 1;
         }
         if changed == 0 {
-            return Err("none of the clips has a composition to change".into());
+            return Err(if action == A::OverBelow { "each clip's composition reads the layers below it already".into() } else { "none of the clips has a composition to change".into() });
         }
         let (label, did) = match action {
             A::Paste => ("Veylvik: Paste Composition", "Pasted the composition on"),
+            A::OverBelow => ("Veylvik: Over the Layers Below", "Drew the composition over the layers below on"),
             A::Reset => ("Veylvik: Reset Composition", "Reset the composition of"),
             _ => ("Veylvik: Remove Composition", "Removed the composition of"),
         };
