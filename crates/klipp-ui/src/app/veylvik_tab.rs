@@ -142,6 +142,9 @@ impl super::KlippApp {
             }
             if had != Some(clip) || std::mem::take(&mut self.veylvik_tab.place) {
                 self.veylvik_place(clip);
+                // The clip's sound as Edit has it now: on each visit, so
+                // a change made on Edit is heard here.
+                self.veylvik_tab.host.set_sound(self.veylvik_sound(clip));
             }
             if let (Some(time), Some(editor)) = (self.veylvik_tab.going_to, self.veylvik_tab.editor.as_mut()) {
                 // Not while an inspector drag is under way: next frame.
@@ -366,6 +369,11 @@ impl super::KlippApp {
         ];
         self.apply_edits_as_one(&edits, "Veylvik: Make Composition");
         Ok((composition, id))
+    }
+
+    /// The sound linked to the open clip, as Edit plays it.
+    fn veylvik_sound(&self, clip: ClipId) -> Option<klipp_veylvik::clip_sound::ClipSound> {
+        klipp_veylvik::clip_sound::ClipSound::new(self.state.sequence(), &self.state.sequences, &self.state.media_pool, clip)
     }
 
     /// The open clip's media as the editor reads it.

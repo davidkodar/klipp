@@ -173,6 +173,7 @@ impl HostMedia for EditorFootage {
 #[derive(Default)]
 pub struct TabHost {
     footage: Mutex<Option<Arc<dyn veylvik_render::FrameSource>>>,
+    sound: Mutex<Option<Arc<crate::clip_sound::ClipSound>>>,
 }
 
 impl TabHost {
@@ -186,6 +187,12 @@ impl TabHost {
         let source = footage.map(|f| Arc::new(veylvik_render::HostSource::new(f, 512 << 20).lasting()) as Arc<dyn veylvik_render::FrameSource>);
         *self.footage.lock().unwrap_or_else(|e| e.into_inner()) = source;
     }
+
+    /// The open clip's sound from now on; none while no clip is open or
+    /// it has none.
+    pub fn set_sound(&self, sound: Option<crate::clip_sound::ClipSound>) {
+        *self.sound.lock().unwrap_or_else(|e| e.into_inner()) = sound.map(Arc::new);
+    }
 }
 
 impl crate::Host for TabHost {
@@ -195,5 +202,14 @@ impl crate::Host for TabHost {
 
     fn media(&self, key: &str) -> Option<Arc<dyn veylvik_render::FrameSource>> {
         (key == crate::CLIP_MEDIA_KEY).then(|| self.footage.lock().unwrap_or_else(|e| e.into_inner()).clone()).flatten()
+    }
+
+    fn media_sound(&self, key: &str, window: [f64; 2], rate: u32) -> Option<veylvik_audio::Pcm> {
+        if key != crate::CLIP_MEDIA_KEY {
+            return None;
+        }
+        // Mixed off the lock: the editor's mix thread may take a while.
+        let sound = self.sound.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+        sound.pcm(window, rate)
     }
 }
