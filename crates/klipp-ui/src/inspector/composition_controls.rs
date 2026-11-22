@@ -16,6 +16,7 @@ use klipp_veylvik::veylvik_document::{groups, Composition};
 use klipp_veylvik::veylvik_editor::controls::{self, ControlsState};
 
 use crate::state::AppState;
+use klipp_core::AppCommand;
 use crate::theme::KlippTheme;
 
 /// A change made in the panel, for the app to take
@@ -36,12 +37,14 @@ pub struct CompositionControls {
     read: Option<(Arc<[u8]>, Arc<Composition>)>,
     /// The step a held drag is named for.
     drag_label: String,
+    /// A version being named: its place and the name so far.
+    renaming: Option<(usize, String)>,
 }
 
 impl CompositionControls {
     /// The section for `clip`, when its composition shows settings on Edit;
     /// a change made comes back.
-    pub fn show(&mut self, ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip) -> Option<ControlChange> {
+    pub fn show(&mut self, ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, cmds: &mut Vec<AppCommand>) -> Option<ControlChange> {
         let id = clip.composition?;
         let bytes = state.compositions.get(&id)?.clone();
         if self.clip != Some(clip.id) {
@@ -55,20 +58,79 @@ impl CompositionControls {
                 doc
             }
         };
-        if groups::published(&composition).is_empty() {
-            return None;
-        }
-        let time = composition_time(state, clip)?;
+        let shows = !groups::published(&composition).is_empty();
+        let time = composition_time(state, clip);
         let mut change = None;
         crate::widgets::inspector_group::section_card(ui, "COMPOSITION", None, theme, |ui| {
             ui.add_space(4.0);
             egui::Frame::default().inner_margin(egui::Margin { left: 14, right: 14, top: 0, bottom: 0 }).show(ui, |ui| {
-                let response = controls::ui(ui, &composition, time, &mut self.state);
-                change = self.take(id, &bytes, response);
+                self.versions(ui, clip, cmds);
+                if let (true, Some(time)) = (shows, time) {
+                    ui.add_space(6.0);
+                    let response = controls::ui(ui, &composition, time, &mut self.state);
+                    change = self.take(id, &bytes, response);
+                }
             });
             ui.add_space(4.0);
         });
         change
+    }
+
+    /// The clip's versions: which one it shows, and new, duplicate,
+    /// rename and remove.
+    fn versions(&mut self, ui: &mut egui::Ui, clip: &Clip, cmds: &mut Vec<AppCommand>) {
+        use klipp_core::VersionAction as A;
+        let list = klipp_timeline::veylvik::versions(clip);
+        let shown = list.iter().position(|v| Some(v.id) == clip.composition).unwrap_or(0);
+        let mut send = |action| cmds.push(AppCommand::CompositionVersion { clip_id: clip.id, action });
+        ui.horizontal(|ui| {
+            ui.label("Version");
+            let name = list.get(shown).map_or("", |v| v.name.as_str());
+            egui::ComboBox::from_id_salt(("composition version", clip.id.0)).selected_text(name).show_ui(ui, |ui| {
+                for (i, v) in list.iter().enumerate() {
+                    if ui.selectable_label(i == shown, &v.name).clicked() && i != shown {
+                        send(A::Switch(i));
+                    }
+                }
+            });
+            ui.menu_button("⋯", |ui| {
+                if ui.button("New version").on_hover_text("A new composition of the clip's media alone, shown; the others kept").clicked() {
+                    send(A::New);
+                    ui.close();
+                }
+                if ui.button("Duplicate version").on_hover_text("A copy of the version shown, to try something on").clicked() {
+                    send(A::Duplicate);
+                    ui.close();
+                }
+                if ui.button("Rename version…").clicked() {
+                    self.renaming = Some((shown, list.get(shown).map(|v| v.name.clone()).unwrap_or_default()));
+                    ui.close();
+                }
+                if ui.add_enabled(list.len() > 1, egui::Button::new("Remove version")).clicked() {
+                    send(A::Delete(shown));
+                    ui.close();
+                }
+            });
+        });
+        if let Some((i, mut name)) = self.renaming.take() {
+            let mut keep = true;
+            ui.horizontal(|ui| {
+                let edit = ui.add(egui::TextEdit::singleline(&mut name).desired_width(140.0));
+                if !edit.has_focus() && !edit.lost_focus() {
+                    edit.request_focus();
+                }
+                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if enter || ui.button("Rename").clicked() {
+                    send(A::Rename(i, name.clone()));
+                    keep = false;
+                } else if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    keep = false;
+                }
+            });
+            if keep {
+                self.renaming = Some((i, name));
+            }
+        }
     }
 
     /// What the panel's `response` makes of composition `id`, now `bytes`:

@@ -1176,6 +1176,7 @@ fn load_clip(c: &ClipJson, project_dir: &Path, effects_by_clip: &HashMap<&str, V
         keep_pitch: c.keep_pitch.unwrap_or(false),
         sound_apart: c.sound_apart.unwrap_or(false),
         composition: c.composition,
+        composition_versions: c.composition_versions.clone(),
         hold: c.hold.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
         source_rotation: c.source_rotation.unwrap_or(0),
         enabled: c.enabled.unwrap_or(true),

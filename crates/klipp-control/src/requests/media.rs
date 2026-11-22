@@ -257,7 +257,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::VeylvikComposition { clip_id, make, open, set } => {
+        ControlCommand::VeylvikComposition { clip_id, make, open, set, version_action, version, name } => {
             let id = klipp_core::ClipId(parse_uuid(&clip_id, "clip_id")?);
             let named = |ctx: &ControlContext| -> Result<(Option<klipp_timeline::CompositionId>, bool), String> {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -272,6 +272,44 @@ pub(crate) fn respond(
             if open || (make && had.is_none()) {
                 send_envelope(ctx, vec![AppCommand::VeylvikComposition { clip_id: id, open }], false)?;
             }
+            if let Some(what) = version_action.as_deref() {
+                use klipp_core::VersionAction as A;
+                let place = || version.filter(|v| *v >= 1).map(|v| v - 1).ok_or("version (from 1) names the version");
+                let action = match what {
+                    "new" => A::New,
+                    "duplicate" => A::Duplicate,
+                    "switch" => A::Switch(place()?),
+                    "rename" => A::Rename(place()?, name.clone().ok_or("name gives the version's new name")?),
+                    "remove" => A::Delete(place()?),
+                    other => return Err(format!("version_action is new, duplicate, switch, rename or remove, not {other}")),
+                };
+                let before = {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    let (t, c) = seq.find_clip(id).ok_or("the clip is gone")?;
+                    let clip = &seq.tracks[t].clips[c];
+                    if clip.composition.is_none() && !matches!(action, A::New) {
+                        return Err("the clip has no Veylvik composition; make: true or version_action new gives it one".into());
+                    }
+                    let n = klipp_timeline::veylvik::versions(clip).len();
+                    if let A::Switch(i) | A::Rename(i, _) | A::Delete(i) = &action {
+                        if *i >= n {
+                            return Err(format!("the clip has {n} version(s)"));
+                        }
+                    }
+                    if matches!(action, A::Delete(_)) && n < 2 {
+                        return Err("a clip's last version can't be removed".into());
+                    }
+                    (clip.composition, clip.composition_versions.clone())
+                };
+                send_envelope(ctx, vec![AppCommand::CompositionVersion { clip_id: id, action }], false)?;
+                let after = {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    seq.find_clip(id).map(|(t, c)| (seq.tracks[t].clips[c].composition, seq.tracks[t].clips[c].composition_versions.clone()))
+                };
+                if after.as_ref() == Some(&before) {
+                    return Err("the versions weren't changed (the app says why in its message)".into());
+                }
+            }
             if !set.is_empty() {
                 let (has, _) = named(ctx)?;
                 let comp = has.ok_or("the clip has no Veylvik composition to set; make: true gives it one")?;
@@ -282,7 +320,16 @@ pub(crate) fn respond(
                 send_envelope(ctx, vec![AppCommand::SetCompositionSettings { clip_id: id, set }], false)?;
             }
             let (now, _) = named(ctx)?;
-            Ok(veylvik_composition_reply(id, now, had.is_none() && now.is_some(), open))
+            let mut reply = veylvik_composition_reply(id, now, had.is_none() && now.is_some(), open);
+            if let Ok(seq) = ctx.sequence.read() {
+                if let Some((t, c)) = seq.find_clip(id) {
+                    let clip = &seq.tracks[t].clips[c];
+                    reply["versions"] = json!(klipp_timeline::veylvik::versions(clip).iter().enumerate()
+                        .map(|(i, v)| json!({ "version": i + 1, "name": v.name, "composition_id": v.id.to_string(), "shown": Some(v.id) == clip.composition }))
+                        .collect::<Vec<_>>());
+                }
+            }
+            Ok(reply)
         }
 
         ControlCommand::TagMedia { media_id, add, remove } => {

@@ -4051,6 +4051,13 @@ impl KlippApp {
                 self.state.control_shared.pointer_steps.store(self.pointer.pending(), std::sync::atomic::Ordering::SeqCst);
                 true
             }
+            AppCommand::CompositionVersion { clip_id, action } => {
+                match self.composition_version(*clip_id, action) {
+                    Ok(said) => self.state.toast.show(said),
+                    Err(why) => self.state.toast.show(format!("The clip's versions weren't changed: {why}")),
+                }
+                true
+            }
             AppCommand::SetCompositionSettings { clip_id, set } => {
                 let changed = self.state.sequence().all_clips().find(|c| c.id == *clip_id).and_then(|c| c.composition)
                     .and_then(|id| Some((id, self.state.compositions.get(&id).cloned()?)))

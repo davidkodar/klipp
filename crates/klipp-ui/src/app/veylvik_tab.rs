@@ -359,20 +359,7 @@ impl super::KlippApp {
                 return Ok((composition, id));
             }
         }
-        let media = it.media_id().ok_or("the clip has no media")?;
-        let item = self.state.media_pool.get(&media).ok_or("the clip's media is not in the project")?;
-        let fps = item.fps.as_f64();
-        let rate = klipp_veylvik::Time { ticks: (fps * 1000.0).round() as i64, rate: 1000 };
-        let rate = if (fps - fps.round()).abs() < 1e-6 { klipp_veylvik::Time { ticks: fps.round() as i64, rate: 1 } } else if ((fps * 1001.0 / 1000.0) - (fps * 1001.0 / 1000.0).round()).abs() < 1e-3 { klipp_veylvik::Time { ticks: (fps * 1001.0 / 1000.0).round() as i64 * 1000, rate: 1001 } } else { rate };
-        let frames = ((item.duration.to_secs_f64() * fps).floor() as u32).max(1);
-        let label = item.filename.clone();
-        // The sequence's size, the footage fitted inside it, as Resolve's
-        // Fusion compositions are the timeline's: a title or an effect is
-        // drawn at the frame's own resolution and may reach past the clip's
-        // picture (a portrait clip's sides). Its time stays the media's.
-        let size = [seq.resolution.width.max(1), seq.resolution.height.max(1)];
-        let composition = klipp_veylvik::Composition::from_host_footage(klipp_veylvik::CLIP_MEDIA_KEY, &label, None, size, rate, frames).map_err(|e| e.to_string())?;
-        let bytes: Arc<[u8]> = serde_json::to_vec(&composition).map_err(|e| e.to_string())?.into();
+        let (composition, bytes) = fresh_composition(&self.state, it)?;
         let id = CompositionId::new();
         let old = it.clone();
         let mut new = it.clone();
@@ -484,6 +471,95 @@ impl super::KlippApp {
         self.sync_compositions_to_engine();
     }
 
+    /// `action` on `clip`'s composition versions, as one step; what was
+    /// done, or why nothing was.
+    pub(super) fn composition_version(&mut self, clip: ClipId, action: &klipp_core::VersionAction) -> Result<String, String> {
+        use klipp_core::VersionAction as A;
+        use klipp_timeline::veylvik::{next_version_name, versions};
+        let seq = self.state.sequence();
+        let (t, c) = seq.find_clip(clip).ok_or("the clip is no longer on the timeline")?;
+        let old = seq.tracks[t].clips[c].clone();
+        let mut list = versions(&old);
+        let mut new = old.clone();
+        let mut made: Option<(CompositionId, Arc<[u8]>)> = None;
+        let shown = list.iter().position(|v| Some(v.id) == old.composition);
+        let at = |i: usize, list: &Vec<klipp_timeline::CompositionVersion>| list.get(i).cloned().ok_or_else(|| format!("the clip has no version {}", i + 1));
+        let (label, said) = match action {
+            A::New => {
+                let (_, bytes) = fresh_composition(&self.state, &old)?;
+                let id = CompositionId::new();
+                let name = next_version_name(&old);
+                list.push(klipp_timeline::CompositionVersion { name: name.clone(), id });
+                new.composition = Some(id);
+                made = Some((id, bytes));
+                ("Veylvik: New version", format!("Made {name} of the clip's media and showed it"))
+            }
+            A::Duplicate => {
+                let from = old.composition.ok_or("the clip has no composition to copy; make one first")?;
+                let bytes = self.state.compositions.get(&from).cloned().ok_or("the project doesn't hold the clip's composition")?;
+                let id = CompositionId::new();
+                let home = self.compositions_home();
+                match klipp_project::compositions::copy_composition_assets(&home, from, id) {
+                    Ok(said) => said.into_iter().take(1).for_each(|s| self.state.toast.show(s)),
+                    Err(e) => return Err(format!("its files could not be copied: {e}")),
+                }
+                let name = next_version_name(&old);
+                let of = shown.and_then(|i| list.get(i)).map(|v| v.name.clone()).unwrap_or_default();
+                list.push(klipp_timeline::CompositionVersion { name: name.clone(), id });
+                new.composition = Some(id);
+                made = Some((id, bytes));
+                ("Veylvik: Duplicate version", format!("Made {name}, a copy of {of}, and showed it"))
+            }
+            A::Switch(i) => {
+                let v = at(*i, &list)?;
+                if Some(v.id) == old.composition {
+                    return Ok(format!("{} is already shown", v.name));
+                }
+                if !self.state.compositions.contains_key(&v.id) {
+                    return Err(format!("the project doesn't hold {}", v.name));
+                }
+                new.composition = Some(v.id);
+                ("Veylvik: Switch version", format!("Showing {}", v.name))
+            }
+            A::Rename(i, name) => {
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err("a version needs a name".into());
+                }
+                let v = at(*i, &list)?;
+                if list.iter().any(|o| o.name == name && o.id != v.id) {
+                    return Err(format!("another version is named {name}"));
+                }
+                list[*i].name = name.to_owned();
+                ("Veylvik: Rename version", format!("Named {} {name}", v.name))
+            }
+            A::Delete(i) => {
+                let v = at(*i, &list)?;
+                if list.len() < 2 {
+                    return Err("a clip's last version can't be removed".into());
+                }
+                list.remove(*i);
+                if Some(v.id) == old.composition {
+                    new.composition = list.get(i.saturating_sub(1)).map(|o| o.id);
+                }
+                ("Veylvik: Remove version", format!("Removed {}", v.name))
+            }
+        };
+        // One version under the first name is the clip's one composition.
+        new.composition_versions = if list.len() == 1 && list[0].name == klipp_timeline::veylvik::version_name(1) { Vec::new() } else { list };
+        let mut edits = Vec::new();
+        if let Some((id, bytes)) = made {
+            edits.push(crate::history::EditCommand::SetComposition { id, before: None, after: Some(bytes), label: label.into() });
+        }
+        edits.push(crate::history::EditCommand::ReplaceClip { description: "Veylvik composition version", old: Box::new(old), new: Box::new(new) });
+        self.apply_edits_as_one(&edits, label);
+        if self.veylvik_tab.open.as_ref().is_some_and(|o| o.clip == clip) {
+            self.veylvik_tab.reopen();
+        }
+        self.sync_compositions_to_engine();
+        Ok(said)
+    }
+
     /// Compositions an undo or redo of Klipp's put back: the tab opens
     /// its clip's again if it was one of them.
     pub(super) fn veylvik_compositions_put_back(&mut self, changed: &[(CompositionId, Option<Arc<[u8]>>)]) {
@@ -502,6 +578,28 @@ impl super::KlippApp {
         }
         self.sync_compositions_to_engine();
     }
+}
+
+/// A composition of `clip`'s media alone, at the sequence's size and the
+/// media's rate, and its file's bytes: what a clip's first composition,
+/// and a new version, start as.
+fn fresh_composition(state: &crate::state::AppState, it: &klipp_timeline::Clip) -> Result<(klipp_veylvik::Composition, Arc<[u8]>), String> {
+    let seq = state.sequence();
+        let media = it.media_id().ok_or("the clip has no media")?;
+        let item = state.media_pool.get(&media).ok_or("the clip's media is not in the project")?;
+        let fps = item.fps.as_f64();
+        let rate = klipp_veylvik::Time { ticks: (fps * 1000.0).round() as i64, rate: 1000 };
+        let rate = if (fps - fps.round()).abs() < 1e-6 { klipp_veylvik::Time { ticks: fps.round() as i64, rate: 1 } } else if ((fps * 1001.0 / 1000.0) - (fps * 1001.0 / 1000.0).round()).abs() < 1e-3 { klipp_veylvik::Time { ticks: (fps * 1001.0 / 1000.0).round() as i64 * 1000, rate: 1001 } } else { rate };
+        let frames = ((item.duration.to_secs_f64() * fps).floor() as u32).max(1);
+        let label = item.filename.clone();
+        // The sequence's size, the footage fitted inside it, as Resolve's
+        // Fusion compositions are the timeline's: a title or an effect is
+        // drawn at the frame's own resolution and may reach past the clip's
+        // picture (a portrait clip's sides). Its time stays the media's.
+        let size = [seq.resolution.width.max(1), seq.resolution.height.max(1)];
+        let composition = klipp_veylvik::Composition::from_host_footage(klipp_veylvik::CLIP_MEDIA_KEY, &label, None, size, rate, frames).map_err(|e| e.to_string())?;
+        let bytes: Arc<[u8]> = serde_json::to_vec(&composition).map_err(|e| e.to_string())?.into();
+    Ok((composition, bytes))
 }
 
 /// The page's strip above the editor, in place of the bar the editor drew
