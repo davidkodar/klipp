@@ -8,11 +8,17 @@
 //! The picture comes from the viewer, at the viewer's size; the encode runs
 //! on Veylvik's preview worker when the frame, the exposure or the display
 //! changes, never on a pan or a zoom.
+//!
+//! On Klipp's own device the encode is Klipp's GPU display encode, the one
+//! its viewer plays through: the picture never comes to the CPU as floats,
+//! only its display bytes do. Elsewhere, and for a BT.1886 monitor (which
+//! Klipp's GPU encode has no curve for), the CPU encode does the same work.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use klipp_color::lut::LutData;
 use klipp_core::{SdrTransfer, ToneMapOp, WorkingColorspace};
+use klipp_effects::gpu::GpuEffectsPipeline;
 use veylvik_editor::host::HostDisplay;
 use veylvik_preview::screen::HostEncode;
 
@@ -22,6 +28,52 @@ pub struct KlippDisplay {
     transfer: SdrTransfer,
     lut: Option<Arc<LutData>>,
     identity: u64,
+    /// Whether `encode`'s device is Klipp's shared one, so Klipp's GPU
+    /// encode can take the picture where it is.
+    on_shared_device: bool,
+    gpu: Mutex<GpuState>,
+}
+
+enum GpuState {
+    Untried,
+    Ready(Box<Gpu>),
+    /// Made and failed, or lost: the CPU encode from here on.
+    Off,
+}
+
+/// Klipp's display encode, and the step before it.
+struct Gpu {
+    effects: GpuEffectsPipeline,
+    prepare: wgpu::ComputePipeline,
+    layout: wgpu::BindGroupLayout,
+    params: wgpu::Buffer,
+    straight: Option<wgpu::Buffer>,
+    /// The ACES output transform's or BT.2020's tables, made once.
+    tables: Vec<f32>,
+    finish: wgpu::ComputePipeline,
+    finish_layout: wgpu::BindGroupLayout,
+    finish_params: wgpu::Buffer,
+    /// The viewer's LUT as `LutData` holds it, or one zero when none.
+    lut: wgpu::Buffer,
+    lut_size: u32,
+    bytes: Option<wgpu::Buffer>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct FinishParams {
+    width: u32,
+    height: u32,
+    n: u32,
+    lut_on: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct PrepareParams {
+    m: [[f32; 4]; 3],
+    count: u32,
+    _pad: [u32; 3],
 }
 
 impl KlippDisplay {
@@ -43,15 +95,36 @@ impl KlippDisplay {
                 identity = crate::mix(identity ^ word);
             }
         }
-        Self { working, transfer, lut, identity: identity.max(1) }
+        Self { working, transfer, lut, identity: identity.max(1), on_shared_device: false, gpu: Mutex::new(GpuState::Untried) }
+    }
+
+    /// The same display, told that the device `encode` is given is
+    /// Klipp's shared one (`GpuContext::shared`), so the encode runs there
+    /// on the GPU. Its pictures are the same either way.
+    pub fn on_shared_device(mut self) -> Self {
+        self.on_shared_device = true;
+        self
+    }
+
+    /// Whether the last encode ran on the GPU.
+    pub fn encodes_on_gpu(&self) -> bool {
+        matches!(*self.gpu.lock().unwrap_or_else(|e| e.into_inner()), GpuState::Ready(_))
     }
 
     /// The display-encoded bytes of `picture` (RGBA, scene-linear Rec.709,
     /// premultiplied), as Klipp's viewer shows them, premultiplied again.
     pub fn encode_pixels(&self, picture: &[f32]) -> Vec<u8> {
+        let straight = self.straight_working(picture);
+        // Klipp's viewer's own encode, tone map and all, as it runs on a frame.
+        let bytes = klipp_color::display::display_transform_ws_dithered_to(&straight, ToneMapOp::None, self.working, self.transfer);
+        self.finish(bytes)
+    }
+
+    /// `picture` as Klipp's frames are: straight colour in the working
+    /// space. `display_in.wgsl` is the twin.
+    fn straight_working(&self, picture: &[f32]) -> Vec<f32> {
         let to_working = klipp_color::primaries::working_space_conversion_matrix(WorkingColorspace::Rec709Linear, self.working);
-        // Klipp's frames are straight colour in the working space.
-        let straight: Vec<f32> = picture
+        picture
             .as_chunks::<4>()
             .0
             .iter()
@@ -61,13 +134,15 @@ impl KlippDisplay {
                 let w = to_working.map_or(c, |m| std::array::from_fn(|r| m[r][0] * c[0] + m[r][1] * c[1] + m[r][2] * c[2]));
                 [w[0], w[1], w[2], a]
             })
-            .collect();
-        // Klipp's viewer's own encode, tone map and all, as it runs on a frame.
-        let mut bytes = klipp_color::display::display_transform_ws_dithered_to(&straight, ToneMapOp::None, self.working, self.transfer);
+            .collect()
+    }
+
+    /// Display bytes through the viewer's LUT, premultiplied as Veylvik's
+    /// viewer takes them; opaque pixels as they are.
+    fn finish(&self, mut bytes: Vec<u8>) -> Vec<u8> {
         if let Some(lut) = &self.lut {
             klipp_color::lut::apply_3d_lut(&mut bytes, lut, 1.0);
         }
-        // Premultiplied, as Veylvik's viewer takes it; opaque pixels as they are.
         for p in bytes.as_chunks_mut::<4>().0 {
             if p[3] < 255 {
                 let a = u16::from(p[3]);
@@ -78,6 +153,161 @@ impl KlippDisplay {
         }
         bytes
     }
+
+    /// `picture` encoded by Klipp's GPU encode, through the LUT and
+    /// premultiplied there too, `None` when it cannot run here and the CPU
+    /// encode is to.
+    fn encode_on_gpu(&self, device: &wgpu::Device, queue: &wgpu::Queue, picture: &wgpu::Buffer, width: u32, height: u32) -> Option<wgpu::Texture> {
+        if !self.on_shared_device || self.transfer != SdrTransfer::Srgb {
+            return None;
+        }
+        let mut state = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(*state, GpuState::Untried) {
+            *state = match Gpu::new(device, self.working, self.lut.as_deref()) {
+                Some(g) => GpuState::Ready(Box::new(g)),
+                None => {
+                    tracing::warn!("the Veylvik page's view: Klipp's GPU encode is unavailable, encoding on the CPU");
+                    GpuState::Off
+                }
+            };
+        }
+        let GpuState::Ready(gpu) = &mut *state else { return None };
+        let texture = gpu.encode(device, queue, picture, width, height, self.working);
+        if texture.is_none() {
+            tracing::warn!("the Veylvik page's view: Klipp's GPU encode failed, encoding on the CPU");
+            *state = GpuState::Off;
+        }
+        texture
+    }
+}
+
+impl Gpu {
+    fn new(device: &wgpu::Device, working: WorkingColorspace, lut: Option<&LutData>) -> Option<Self> {
+        let effects = GpuEffectsPipeline::new()?;
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("veylvik page view in"), source: wgpu::ShaderSource::Wgsl(include_str!("display_in.wgsl").into()) });
+        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("veylvik page view in"),
+            entries: &[
+                storage(0, true),
+                storage(1, false),
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("veylvik page view in"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let prepare = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("veylvik page view in"), layout: Some(&pipeline_layout), module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+        let params = device.create_buffer(&wgpu::BufferDescriptor { label: Some("veylvik page view in"), size: std::mem::size_of::<PrepareParams>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let tables = match working {
+            WorkingColorspace::Rec709Linear => Vec::new(),
+            WorkingColorspace::AcesCG => klipp_color::aces::aces_rec709_gpu_data(1024),
+            WorkingColorspace::Bt2020Linear => klipp_color::gamut::bt2020_to_bt709_gpu_data(),
+        };
+        let finish_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("veylvik page view out"), source: wgpu::ShaderSource::Wgsl(include_str!("display_out.wgsl").into()) });
+        let finish_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("veylvik page view out"),
+            entries: &[
+                storage(0, true),
+                storage(1, true),
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D2 }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            ],
+        });
+        let finish_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("veylvik page view out"), bind_group_layouts: &[Some(&finish_layout)], immediate_size: 0 });
+        let finish = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("veylvik page view out"), layout: Some(&finish_pipeline_layout), module: &finish_module, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+        let finish_params = device.create_buffer(&wgpu::BufferDescriptor { label: Some("veylvik page view out"), size: std::mem::size_of::<FinishParams>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let table: &[f32] = lut.filter(|l| l.size >= 2).map_or(&[0.0], |l| &l.data);
+        let lut_buffer = wgpu::util::DeviceExt::create_buffer_init(device, &wgpu::util::BufferInitDescriptor { label: Some("veylvik page view LUT"), contents: bytemuck::cast_slice(table), usage: wgpu::BufferUsages::STORAGE });
+        let lut_size = lut.filter(|l| l.size >= 2).map_or(0, |l| l.size as u32);
+        Some(Self { effects, prepare, layout, params, straight: None, tables, finish, finish_layout, finish_params, lut: lut_buffer, lut_size, bytes: None })
+    }
+
+    fn encode(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, picture: &wgpu::Buffer, width: u32, height: u32, working: WorkingColorspace) -> Option<wgpu::Texture> {
+        let count = width.checked_mul(height)?;
+        let size = u64::from(count) * 16;
+        if count == 0 || picture.size() < size {
+            return None;
+        }
+        if self.straight.as_ref().is_none_or(|b| b.size() < size) {
+            self.straight = Some(device.create_buffer(&wgpu::BufferDescriptor { label: Some("veylvik page view, straight"), size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false }));
+        }
+        let straight = self.straight.as_ref()?;
+        let m = klipp_color::primaries::working_space_conversion_matrix(WorkingColorspace::Rec709Linear, working).unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&PrepareParams { m: m.map(|r| [r[0], r[1], r[2], 0.0]), count, _pad: [0; 3] }));
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("veylvik page view in"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: picture, offset: 0, size: std::num::NonZeroU64::new(size) }) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: straight, offset: 0, size: std::num::NonZeroU64::new(size) }) },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params.as_entire_binding() },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("veylvik page view in") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("veylvik page view in"), timestamp_writes: None });
+            pass.set_pipeline(&self.prepare);
+            pass.set_bind_group(0, &group, &[]);
+            let groups = count.div_ceil(256);
+            let x = groups.min(65_535);
+            pass.dispatch_workgroups(x, groups.div_ceil(x), 1);
+        }
+        queue.submit([encoder.finish()]);
+        if !self.effects.copy_linear_into_chain(straight, width, height) {
+            return None;
+        }
+        let bytes = match working {
+            WorkingColorspace::Rec709Linear => self.effects.encode_chain_to_display_u8(true, width, height, None),
+            WorkingColorspace::AcesCG => self.effects.encode_chain_to_aces_rec709_u8(true, width, height, &self.tables),
+            WorkingColorspace::Bt2020Linear => self.effects.encode_chain_to_bt2020_display_u8(true, width, height, &self.tables),
+        }?;
+        // Klipp's encodes hand the bytes back; the LUT and the alpha are
+        // done on the card again, into the texture the viewer samples.
+        let byte_size = u64::from(count) * 4;
+        if bytes.len() as u64 != byte_size {
+            return None;
+        }
+        if self.bytes.as_ref().is_none_or(|b| b.size() < byte_size) {
+            self.bytes = Some(device.create_buffer(&wgpu::BufferDescriptor { label: Some("veylvik page view, display bytes"), size: byte_size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+        }
+        let bytes_buffer = self.bytes.as_ref()?;
+        queue.write_buffer(bytes_buffer, 0, &bytes);
+        queue.write_buffer(&self.finish_params, 0, bytemuck::bytes_of(&FinishParams { width, height, n: self.lut_size, lut_on: u32::from(self.lut_size >= 2) }));
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("veylvik page, Klipp's view"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("veylvik page view out"),
+            layout: &self.finish_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: bytes_buffer, offset: 0, size: std::num::NonZeroU64::new(byte_size) }) },
+                wgpu::BindGroupEntry { binding: 1, resource: self.lut.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 3, resource: self.finish_params.as_entire_binding() },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("veylvik page view out") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("veylvik page view out"), timestamp_writes: None });
+            pass.set_pipeline(&self.finish);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(width.div_ceil(16), height.div_ceil(16), 1);
+        }
+        queue.submit([encoder.finish()]);
+        Some(texture)
+    }
 }
 
 impl HostEncode for KlippDisplay {
@@ -86,8 +316,10 @@ impl HostEncode for KlippDisplay {
     }
 
     fn encode(&self, device: &wgpu::Device, queue: &wgpu::Queue, picture: &wgpu::Buffer, width: u32, height: u32) -> Result<wgpu::Texture, String> {
-        let pixels = read_back(device, queue, picture, width, height)?;
-        let bytes = self.encode_pixels(&pixels);
+        if let Some(texture) = self.encode_on_gpu(device, queue, picture, width, height) {
+            return Ok(texture);
+        }
+        let bytes = self.encode_pixels(&read_back(device, queue, picture, width, height)?);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("veylvik page, Klipp's view"),
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
