@@ -200,6 +200,12 @@ impl super::KlippApp {
                 self.state.veylvik_menus = editor.menus(ui.ctx());
                 let missing = editor.unavailable_media().len();
                 relink_asked = veylvik_header(ui, editor, missing, &theme);
+                if let Some(to) = clip_strip(ui, &self.state, clip, &theme) {
+                    // The page follows the selection: the next frame opens
+                    // `to`, its playhead on the frame under Klipp's.
+                    self.state.selected_clip = Some(to);
+                    self.state.selected_clips = vec![to];
+                }
                 editor.ui(ui);
             }
             if relink_asked || self.veylvik_tab.editor.as_mut().is_some_and(|e| e.take_relink_request()) {
@@ -728,6 +734,61 @@ fn veylvik_header(ui: &mut egui::Ui, editor: &mut editor::Editor, missing: usize
         }
     }
     relink
+}
+
+/// The sequence's clips the page can open, in the order they play (the
+/// upper track first where two start together), as a strip of their names
+/// under the page's header; the one open is lit, a composed one marked.
+/// The clip picked comes back.
+fn clip_strip(ui: &mut egui::Ui, state: &crate::state::AppState, open: ClipId, theme: &crate::theme::KlippTheme) -> Option<ClipId> {
+    let seq = state.sequence();
+    let mut clips: Vec<(klipp_core::Timecode, usize, &klipp_timeline::Clip)> = seq
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video)
+        .flat_map(|(i, t)| t.clips.iter().filter(|c| c.media_id().is_some()).map(move |c| (c.timeline_in, i, c)))
+        .collect();
+    if clips.len() < 2 {
+        return None;
+    }
+    clips.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    let mut picked = None;
+    let clock = state.timecode_display();
+    // Brought into view when the page opens another clip, else left
+    // where the artist scrolled it.
+    let shown = egui::Id::new("veylvik clip strip shows");
+    let scroll_to = ui.ctx().data_mut(|d| {
+        let had = d.get_temp::<ClipId>(shown);
+        d.insert_temp(shown, open);
+        had != Some(open)
+    });
+    let height = crate::theme::control::REGULAR + 8.0;
+    let (strip, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
+    ui.painter().hline(strip.x_range(), strip.max.y, egui::Stroke::new(1.0_f32, theme.border));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(strip.shrink2(egui::vec2(8.0, 4.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    egui::ScrollArea::horizontal().id_salt("veylvik clip strip").scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(&mut child, |ui| {
+        ui.horizontal(|ui| {
+            for (n, (_, track, c)) in clips.iter().enumerate() {
+                let name = clip_name(state, c.id).unwrap_or_else(|| format!("Clip {}", n + 1));
+                let text = if c.composition.is_some() { format!("\u{25c6} {name}") } else { name };
+                let here = c.id == open;
+                let resp = ui.selectable_label(here, text).on_hover_text(format!(
+                    "V{} at {}{}",
+                    track + 1,
+                    clock.position(c.timeline_in),
+                    if c.composition.is_some() { ", composed in Veylvik" } else { "" }
+                ));
+                if here && scroll_to {
+                    resp.scroll_to_me(None);
+                }
+                if resp.clicked() && !here {
+                    picked = Some(c.id);
+                }
+            }
+        });
+    });
+    picked
 }
 
 /// Klipp's playhead on timeline frame `frame` of a sequence at `fps`: a
