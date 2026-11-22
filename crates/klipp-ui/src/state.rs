@@ -1723,6 +1723,11 @@ pub struct AppState {
     /// own keys are those of the app alone (save, quit) until a press
     /// elsewhere takes it back.
     pub veylvik_keys: bool,
+    /// The Veylvik page's editor's menus as it offers them this frame, for
+    /// Klipp's menu bar to show; empty off the page.
+    pub veylvik_menus: Vec<klipp_veylvik::veylvik_editor::menu_model::Menu>,
+    /// The editor's menu item picked on Klipp's bar, for the app to run.
+    pub veylvik_menu_pick: Option<String>,
     /// The project differs from what was last loaded or saved, as of the
     /// last time `dirty` was settled (#2626).
     pub unsaved: bool,
@@ -5074,6 +5079,8 @@ impl Default for AppState {
             created_at: None,
             dirty: false,
             veylvik_keys: false,
+            veylvik_menus: Vec::new(),
+            veylvik_menu_pick: None,
             unsaved: false,
             saved_digest: None,
             recorded_tracks: Default::default(),

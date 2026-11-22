@@ -191,6 +191,8 @@ impl KlippApp {
                         return;
                     }
                     self.state.veylvik_keys = false;
+                    self.state.veylvik_menus.clear();
+                    self.state.veylvik_menu_pick = None;
 
                     if browser_open {
                         self.render_browser_panel(ui, browser_rect, all_cmds);

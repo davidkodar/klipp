@@ -5,12 +5,19 @@ use super::*;
 impl KlippApp {
     pub(super) fn handle_playback_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
+            // On the Veylvik page, the composition's own step, by its
+            // editor, which hands it to Klipp's history as one step;
+            // anything it has none of left, Klipp's.
             AppCommand::Undo => {
-                self.apply_undo();
+                if !self.veylvik_page_step(false) {
+                    self.apply_undo();
+                }
                 true
             }
             AppCommand::Redo => {
-                self.apply_redo();
+                if !self.veylvik_page_step(true) {
+                    self.apply_redo();
+                }
                 true
             }
             AppCommand::SquashUndo { count, label, only, expected_revision } => {
