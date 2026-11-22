@@ -1587,6 +1587,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "clip_id": arg_str(args, "clip_id")?,
             "make": args.get("make").and_then(|v| v.as_bool()).unwrap_or(false),
             "open": args.get("open").and_then(|v| v.as_bool()).unwrap_or(false),
+            "set": args.get("set").cloned().unwrap_or(json!({})),
         }),
         "klipp_tag_media" => json!({
             "method": "tag_media",
@@ -2911,11 +2912,12 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Make playback proxies (the timeline's files by default) as a job; use_proxies turns their playback on or off. Details: klipp_guide topic make_proxies.",
              json!({ "media_ids": { "type": "array", "items": { "type": "string" } }, "use_proxies": { "type": "boolean" } }), vec![]),
         tool("klipp_veylvik_composition",
-             "A clip's Veylvik composition: read, make or open it. Details: klipp_guide topic veylvik_composition.",
+             "A clip's Veylvik composition: read, make or open it, or set the settings it shows on Edit. Details: klipp_guide topic veylvik_composition.",
              json!({
                  "clip_id": { "type": "string" },
                  "make": { "type": "boolean" },
-                 "open": { "type": "boolean" }
+                 "open": { "type": "boolean" },
+                 "set": { "type": "object", "description": "Settings shown on Edit, by label, and their new values" }
              }), vec!["clip_id"]),
         tool("klipp_tag_media",
              "Tag a media item, or remove tags. Details: klipp_guide topic tag_media.",

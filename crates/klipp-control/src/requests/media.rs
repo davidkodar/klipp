@@ -257,7 +257,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::VeylvikComposition { clip_id, make, open } => {
+        ControlCommand::VeylvikComposition { clip_id, make, open, set } => {
             let id = klipp_core::ClipId(parse_uuid(&clip_id, "clip_id")?);
             let named = |ctx: &ControlContext| -> Result<(Option<klipp_timeline::CompositionId>, bool), String> {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -271,6 +271,15 @@ pub(crate) fn respond(
             }
             if open || (make && had.is_none()) {
                 send_envelope(ctx, vec![AppCommand::VeylvikComposition { clip_id: id, open }], false)?;
+            }
+            if !set.is_empty() {
+                let (has, _) = named(ctx)?;
+                let comp = has.ok_or("the clip has no Veylvik composition to set; make: true gives it one")?;
+                let bytes = klipp_veylvik::project_compositions().get(&comp).cloned().ok_or("the project doesn't hold the clip's composition")?;
+                let set: Vec<(String, serde_json::Value)> = set.into_iter().collect();
+                // Tried here first, so a refusal is said in the answer.
+                klipp_veylvik::controls::set_by_label(&bytes, &set)?;
+                send_envelope(ctx, vec![AppCommand::SetCompositionSettings { clip_id: id, set }], false)?;
             }
             let (now, _) = named(ctx)?;
             Ok(veylvik_composition_reply(id, now, had.is_none() && now.is_some(), open))
@@ -860,6 +869,10 @@ fn veylvik_composition_reply(clip: klipp_core::ClipId, id: Option<klipp_timeline
                 if opened { ", open on the Veylvik page" } else { "" }
             ));
             reply["nodes"] = json!(nodes);
+            let shown: Vec<serde_json::Value> = bytes.as_deref().and_then(|b| klipp_veylvik::controls::published(b).ok()).unwrap_or_default().into_iter()
+                .map(|p| json!({ "label": p.label, "node": p.node.to_string(), "parameter": p.parameter, "value": p.value }))
+                .collect();
+            reply["settings"] = json!(shown);
         }
         Some(Err(e)) => reply["text"] = json!(format!("The clip names composition {id}, which can't be read: {e}; it shows its media.")),
         None => reply["text"] = json!(format!("The clip names composition {id}, which the project doesn't hold; it shows its media.")),

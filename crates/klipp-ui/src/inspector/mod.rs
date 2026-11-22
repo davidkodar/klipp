@@ -6,6 +6,7 @@ mod gradient_editor;
 pub mod letter_picker;
 pub mod tracker_picker;
 pub mod video_tab;
+pub mod composition_controls;
 pub mod piece_transition;
 pub mod sequence_view;
 pub mod gap_view;
@@ -94,6 +95,10 @@ pub struct NewInspectorPanel {
     pub(crate) colour_grade: Option<crate::inspector::grade_view::GradeSnapshot>,
     /// Auto Colour pressed on the Colour tab this frame, for the app to run.
     pub auto_colour: bool,
+    /// A composed clip's published Veylvik settings, on the Video tab.
+    composition_controls: composition_controls::CompositionControls,
+    /// A change made to one of them this frame, for the app to take.
+    pub control_change: Option<composition_controls::ControlChange>,
 }
 
 impl NewInspectorPanel {
@@ -455,6 +460,7 @@ impl NewInspectorPanel {
                                 "These controls affect the complete title clip and its video frame.",
                             );
                         }
+                        self.control_change = self.composition_controls.show(ui, theme, state, clip);
                         video_tab::show(ui, theme, state, Some((clip, clip_time_secs, true)), bin_media, &mut cmds);
                     } else {
                         video_tab::show(ui, theme, state, None, bin_media, &mut cmds);

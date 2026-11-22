@@ -4051,6 +4051,17 @@ impl KlippApp {
                 self.state.control_shared.pointer_steps.store(self.pointer.pending(), std::sync::atomic::Ordering::SeqCst);
                 true
             }
+            AppCommand::SetCompositionSettings { clip_id, set } => {
+                let changed = self.state.sequence().all_clips().find(|c| c.id == *clip_id).and_then(|c| c.composition)
+                    .and_then(|id| Some((id, self.state.compositions.get(&id).cloned()?)))
+                    .ok_or_else(|| "the clip has no Veylvik composition".to_owned())
+                    .and_then(|(id, bytes)| Ok((id, klipp_veylvik::controls::set_by_label(&bytes, set)?)));
+                match changed {
+                    Ok((id, (bytes, label))) => self.take_control_change(id, bytes, &format!("Veylvik: {label}"), false),
+                    Err(why) => self.state.toast.show(format!("The composition's settings weren't changed: {why}")),
+                }
+                true
+            }
             AppCommand::VeylvikComposition { clip_id, open } => {
                 match self.veylvik_composition_for(*clip_id) {
                     Ok(_) if *open => {

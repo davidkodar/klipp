@@ -1814,6 +1814,9 @@ pub enum AppCommand {
     /// none (one step, as opening it on the Veylvik page does); `open`
     /// also selects the clip and shows the Veylvik page with it.
     VeylvikComposition { clip_id: ClipId, open: bool },
+    /// Give settings of `clip_id`'s Veylvik composition, named by their
+    /// labels on Edit (the ones it publishes), these values, as one step.
+    SetCompositionSettings { clip_id: ClipId, set: Vec<(String, serde_json::Value)> },
     /// Play these pointer steps into the app's input, one a frame, as a
     /// mouse's events (the control socket's `pointer`, test hooks only):
     /// the input only, never the document by itself.
