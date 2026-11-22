@@ -1682,6 +1682,9 @@ pub struct AppState {
     /// their files' bytes: read on open, written on save, carried by
     /// Collect (see `klipp_project::compositions`).
     pub compositions: klipp_project::compositions::Compositions,
+    /// A clip's composition copied from the clip menu, to paste: its id
+    /// (where its files are) and its bytes.
+    pub composition_clipboard: Option<(klipp_timeline::CompositionId, std::sync::Arc<[u8]>)>,
     /// A composition control being dragged in the inspector: its
     /// composition and its bytes when the drag began (see
     /// [`AppState::take_control_change`]).
@@ -5079,6 +5082,7 @@ impl Default for AppState {
             hyperzoom_preset_registry: crate::hyperzoom_presets::HyperzoomPresetRegistry::new(),
             title_assets: std::collections::HashMap::new(),
             compositions: Default::default(),
+            composition_clipboard: None,
             control_drag: None,
             project_path: None,
             created_at: None,

@@ -146,6 +146,12 @@ pub fn publish(ctx: &egui::Context, kb: &KeyBindings) {
 
 /// `label` with `action`'s key in the layout in effect, `"Loop playback
 /// (Ctrl+L)"`, or `label` alone when the action has no key there.
+/// `action`'s key as the app's bindings show it, for a menu row.
+pub fn key_text(ctx: &egui::Context, action: &str) -> String {
+    let kb = ctx.data(|d| d.get_temp::<std::sync::Arc<KeyBindings>>(published_id()));
+    kb.map_or_else(|| KeyBindings::defaults().display_for(action), |kb| kb.display_for(action))
+}
+
 pub fn tip(ctx: &egui::Context, label: &str, action: &str) -> String {
     let kb = ctx.data(|d| d.get_temp::<std::sync::Arc<KeyBindings>>(published_id()));
     let key = kb.map_or_else(|| KeyBindings::defaults().display_for(action), |kb| kb.display_for(action));

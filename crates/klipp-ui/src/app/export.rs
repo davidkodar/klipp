@@ -4051,6 +4051,13 @@ impl KlippApp {
                 self.state.control_shared.pointer_steps.store(self.pointer.pending(), std::sync::atomic::Ordering::SeqCst);
                 true
             }
+            AppCommand::CompositionClips { clip_ids, action } => {
+                match self.composition_clips(clip_ids, *action) {
+                    Ok(said) => self.state.toast.show(said),
+                    Err(why) => self.state.toast.show(format!("Nothing was changed: {why}")),
+                }
+                true
+            }
             AppCommand::CompositionVersion { clip_id, action } => {
                 match self.composition_version(*clip_id, action) {
                     Ok(said) => self.state.toast.show(said),
