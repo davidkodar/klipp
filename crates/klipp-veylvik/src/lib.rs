@@ -42,6 +42,7 @@ fn fault(message: impl Into<String>) -> veylvik_render::Error {
 
 pub mod clip_time;
 pub mod compose;
+pub mod display;
 pub mod editor_footage;
 pub use compose::{install, media_changed, preparing, project_assets, project_compositions, revision, set_media_states, set_project_assets, set_project_compositions, Compositor, CompositionSource, Compositions, Declined, CLIP_MEDIA_KEY};
 

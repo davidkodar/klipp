@@ -37,6 +37,19 @@ pub(crate) struct VeylvikTab {
     applied: Option<serde_json::Map<String, serde_json::Value>>,
     /// The editor's shortcut window opens on the next frame it is drawn.
     shortcuts: bool,
+    /// What Klipp's viewer was showing with when the editor's viewer was
+    /// last given it: given again when the project's working space, the
+    /// monitor's transfer or the viewer's LUT change.
+    view: Option<ViewKey>,
+}
+
+/// What makes Klipp's view of a picture.
+#[derive(Clone, PartialEq)]
+struct ViewKey {
+    working: klipp_core::WorkingColorspace,
+    transfer: klipp_core::SdrTransfer,
+    luts: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
+    lut_loaded: bool,
 }
 
 /// The clip open in the editor.
@@ -49,7 +62,7 @@ struct Open {
 
 impl VeylvikTab {
     pub(crate) fn new(render_state: Option<eframe::egui_wgpu::RenderState>) -> Self {
-        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true, place: true, going_to: None, carried: None, applied: None, shortcuts: false }
+        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true, place: true, going_to: None, carried: None, applied: None, shortcuts: false, view: None }
     }
 
     /// Whether the editor has the keyboard: the page shows and it was
@@ -137,6 +150,7 @@ impl super::KlippApp {
                 }
             }
             self.veylvik_settings_in(ui.ctx());
+            self.veylvik_view_in();
             if let Some(editor) = self.veylvik_tab.editor.as_mut() {
                 if std::mem::take(&mut self.veylvik_tab.shortcuts) {
                     editor.open_shortcuts();
@@ -193,6 +207,25 @@ impl super::KlippApp {
         let revision = self.veylvik_tab.editor.as_ref().map_or(0, |e| e.revision());
         self.veylvik_tab.open = Some(Open { clip, composition: id, revision });
         Ok(())
+    }
+
+    /// Klipp's viewer for the editor's: its picture shown as Klipp's viewer
+    /// shows a frame, given again when what makes that view changes.
+    fn veylvik_view_in(&mut self) {
+        let key = ViewKey {
+            working: klipp_engine::video_decoder::working_colorspace(),
+            transfer: self.prefs.color.sdr_display_transfer,
+            luts: (self.state.project_viewing_lut.clone(), self.prefs.color.viewer_lut_path.clone()),
+            lut_loaded: self.viewer.lut.lut.is_some(),
+        };
+        if self.veylvik_tab.view.as_ref() == Some(&key) {
+            return;
+        }
+        let Some(editor) = self.veylvik_tab.editor.as_mut() else { return };
+        let lut = self.viewer.lut.lut.clone().map(Arc::new);
+        let display = klipp_veylvik::display::KlippDisplay::new(key.working, key.transfer, lut);
+        editor.set_host_display(Some(Arc::new(display)));
+        self.veylvik_tab.view = Some(key);
     }
 
     /// Klipp's Veylvik settings into the editor, when they aren't what it
@@ -279,6 +312,7 @@ impl super::KlippApp {
                 // A new editor starts at Veylvik's defaults: Klipp's settings
                 // go in before it is first drawn.
                 self.veylvik_tab.applied = None;
+                self.veylvik_tab.view = None;
                 Ok(())
             }
             Err(e) => {
