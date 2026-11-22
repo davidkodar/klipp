@@ -1382,6 +1382,13 @@ impl GpuEffectsPipeline {
         Some(Some(bytes))
     }
 
+    /// The display bytes the last [`Self::encode_chain_to_display`] left
+    /// on the card, 4 a pixel, for a caller that goes on with them there
+    /// in its own passes on the same queue, rather than reading them back.
+    pub fn display_u8_buffer(&self) -> Option<&wgpu::Buffer> {
+        self.bridge_u8_out_buf.as_ref()
+    }
+
     /// Dispatch-only display step of a scene-referred clip (phase 2b M2,
     /// step 11c): `klipp_color::hdr::SceneToDisplay::apply` on the chain,
     /// so the effects that follow take the picture where it sits. `kind`,

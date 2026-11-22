@@ -260,22 +260,30 @@ impl Gpu {
         if !self.effects.copy_linear_into_chain(straight, width, height) {
             return None;
         }
-        let bytes = match working {
-            WorkingColorspace::Rec709Linear => self.effects.encode_chain_to_display_u8(true, width, height, None),
-            WorkingColorspace::AcesCG => self.effects.encode_chain_to_aces_rec709_u8(true, width, height, &self.tables),
-            WorkingColorspace::Bt2020Linear => self.effects.encode_chain_to_bt2020_display_u8(true, width, height, &self.tables),
-        }?;
-        // Klipp's encodes hand the bytes back; the LUT and the alpha are
-        // done on the card again, into the texture the viewer samples.
         let byte_size = u64::from(count) * 4;
-        if bytes.len() as u64 != byte_size {
-            return None;
-        }
-        if self.bytes.as_ref().is_none_or(|b| b.size() < byte_size) {
-            self.bytes = Some(device.create_buffer(&wgpu::BufferDescriptor { label: Some("veylvik page view, display bytes"), size: byte_size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
-        }
-        let bytes_buffer = self.bytes.as_ref()?;
-        queue.write_buffer(bytes_buffer, 0, &bytes);
+        let bytes_buffer = if working == WorkingColorspace::Rec709Linear {
+            // Encoded where it stays: the bytes never leave the card (a
+            // 4K frame's read back and sent again cost ~10 ms each frame).
+            self.effects.encode_chain_to_display(true, width, height, None, false, None, None, false)?;
+            self.effects.display_u8_buffer().filter(|b| b.size() >= byte_size)?
+        } else {
+            // These encodes hand the bytes back; sent to the card again.
+            let bytes = match working {
+                WorkingColorspace::AcesCG => self.effects.encode_chain_to_aces_rec709_u8(true, width, height, &self.tables),
+                _ => self.effects.encode_chain_to_bt2020_display_u8(true, width, height, &self.tables),
+            }?;
+            if bytes.len() as u64 != byte_size {
+                return None;
+            }
+            if self.bytes.as_ref().is_none_or(|b| b.size() < byte_size) {
+                self.bytes = Some(device.create_buffer(&wgpu::BufferDescriptor { label: Some("veylvik page view, display bytes"), size: byte_size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+            }
+            let buffer = self.bytes.as_ref()?;
+            queue.write_buffer(buffer, 0, &bytes);
+            buffer
+        };
+        // The LUT and the alpha on the card, into the texture the viewer
+        // samples.
         queue.write_buffer(&self.finish_params, 0, bytemuck::bytes_of(&FinishParams { width, height, n: self.lut_size, lut_on: u32::from(self.lut_size >= 2) }));
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("veylvik page, Klipp's view"),
