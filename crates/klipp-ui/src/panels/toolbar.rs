@@ -124,6 +124,7 @@ impl ToolbarPanel {
                     v.widgets.open.weak_bg_fill = theme.bg_hover;
                     v.widgets.open.bg_stroke = egui::Stroke::NONE;
                 }
+                let extra: &[&str] = if veylvik_menus_shown(state) { &["Veylvik"] } else { &[] };
                 let mut menus = |ui: &mut egui::Ui| {
                     Self::file_menu(ui, &mut cmds, state, recent_projects, kb);
                     Self::edit_menu(ui, &mut cmds, state, kb);
@@ -133,13 +134,14 @@ impl ToolbarPanel {
                     Self::view_menu(ui, &mut cmds, state, kb);
                     Self::window_menu(ui, &mut cmds, state, kb);
                     Self::tools_menu(ui, &mut cmds, state);
+                    Self::veylvik_menu(ui, state);
                     Self::help_menu(ui, state);
                 };
                 // Where the titles don't all fit before the right group,
                 // one "Menu" holding them: in a narrow window (a tiling
                 // compositor gives less than the minimum size) they ran
                 // into each other and under the Nodes button.
-                if ui.cursor().min.x + menu_titles_width(ui) <= right_edge {
+                if ui.cursor().min.x + menu_titles_width(ui, extra) <= right_edge {
                     menus(ui);
                 } else {
                     ui.menu_rows(egui::RichText::new("Menu").size(crate::theme::type_scale::CONTROL), |ui| menus(ui));
@@ -616,6 +618,7 @@ impl ToolbarPanel {
             // The Veylvik page's own settings, as Resolve's Fusion page has
             // its Fusion Settings: Preferences on its Veylvik tab.
             if ui.button("Veylvik Settings...").on_hover_text("Settings for Veylvik's editor on the Veylvik page").clicked() { cmds.push(AppCommand::OpenPreferences { page: Some("veylvik".into()) }); ui.close_kind(egui::UiKind::Menu); }
+            Self::veylvik_section(ui, state, "Edit");
         });
     }
 
@@ -1231,6 +1234,7 @@ impl ToolbarPanel {
                     ui.close_kind(egui::UiKind::Menu);
                 }
             }
+            Self::veylvik_section(ui, state, "View");
         });
     }
 
@@ -1398,7 +1402,87 @@ impl ToolbarPanel {
             }
             ui.separator();
             if ui.button("About Klipp").clicked() { state.show_about_dialog = true; ui.close_kind(egui::UiKind::Menu); }
+            Self::veylvik_section(ui, state, "Help");
         });
+    }
+
+    /// The Veylvik page's own menu, on that page only (as Resolve's Fusion
+    /// page adds one): the editor's File items that a hosted composition
+    /// keeps (importing media, composition settings), what it can add,
+    /// and its tools.
+    fn veylvik_menu(ui: &mut egui::Ui, state: &mut AppState) {
+        if !veylvik_menus_shown(state) {
+            return;
+        }
+        let menus = state.veylvik_menus.clone();
+        let of = |title: &str| menus.iter().find(|m| m.title == title).map(|m| m.items.as_slice()).unwrap_or(&[]);
+        ui.menu_rows(egui::RichText::new("Veylvik").size(crate::theme::type_scale::CONTROL), |ui| {
+            let mut first = true;
+            for (title, items) in [("File", of("File")), ("Add", of("Add")), ("Tools", of("Tools"))] {
+                if items.is_empty() {
+                    continue;
+                }
+                if !first {
+                    ui.separator();
+                }
+                first = false;
+                if title == "Add" {
+                    // Long: a submenu of its own, as on Veylvik's bar.
+                    ui.menu_rows("Add", |ui| veylvik_items(ui, items, &mut state.veylvik_menu_pick));
+                } else {
+                    veylvik_items(ui, items, &mut state.veylvik_menu_pick);
+                }
+            }
+        });
+    }
+
+    /// The editor's items of its menu `title` at the foot of Klipp's own,
+    /// under a heading, while the Veylvik page is open.
+    fn veylvik_section(ui: &mut egui::Ui, state: &mut AppState, title: &str) {
+        if !veylvik_menus_shown(state) {
+            return;
+        }
+        let Some(items) = state.veylvik_menus.iter().find(|m| m.title == title).map(|m| m.items.clone()).filter(|i| !i.is_empty()) else { return };
+        ui.separator();
+        menu_heading(ui, "Veylvik");
+        veylvik_items(ui, &items, &mut state.veylvik_menu_pick);
+    }
+}
+
+/// Whether the bar shows the Veylvik page's editor's menus: on that page,
+/// with its editor running.
+fn veylvik_menus_shown(state: &AppState) -> bool {
+    state.active_workspace == Workspace::Veylvik && !state.veylvik_menus.is_empty()
+}
+
+/// The editor's menu `items` as Klipp's menu rows, each as the editor
+/// offers it now (greyed, ticked, its key); the one clicked goes in
+/// `pick`, for the app to run in the editor.
+fn veylvik_items(ui: &mut egui::Ui, items: &[klipp_veylvik::veylvik_editor::menu_model::MenuItem], pick: &mut Option<String>) {
+    for item in items {
+        if item.separator_before {
+            ui.separator();
+        }
+        if !item.children.is_empty() {
+            ui.add_enabled_ui(item.enabled, |ui| {
+                ui.menu_rows(item.label.as_str(), |ui| veylvik_items(ui, &item.children, pick));
+            });
+            continue;
+        }
+        let key = item.shortcut.as_deref().unwrap_or("");
+        let mut resp = ui
+            .add_enabled_ui(item.enabled, |ui| match item.checked {
+                Some(on) => crate::widgets::menu::menu_toggle(ui, &item.label, key, on),
+                None => crate::widgets::menu::menu_item(ui, &item.label, key),
+            })
+            .inner;
+        if let Some(hint) = &item.hint {
+            resp = resp.on_hover_text(hint);
+        }
+        if resp.clicked() {
+            *pick = Some(item.id.clone());
+            ui.close_kind(egui::UiKind::Menu);
+        }
     }
 }
 
@@ -1535,11 +1619,11 @@ enum SwitcherPlace {
 const MENU_TITLES: [&str; 9] = ["File", "Edit", "Clip", "Timeline", "Mark", "View", "Window", "Tools", "Help"];
 
 /// How wide the menu titles are side by side on the bar, as buttons.
-fn menu_titles_width(ui: &egui::Ui) -> f32 {
+fn menu_titles_width(ui: &egui::Ui, extra: &[&str]) -> f32 {
     let font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
     let pad = ui.spacing().button_padding.x * 2.0;
     let gap = ui.spacing().item_spacing.x;
-    ui.fonts_mut(|f| MENU_TITLES.iter().map(|t| f.layout_no_wrap((*t).to_owned(), font.clone(), egui::Color32::WHITE).size().x + pad + gap).sum())
+    ui.fonts_mut(|f| MENU_TITLES.iter().chain(extra).map(|t| f.layout_no_wrap((*t).to_owned(), font.clone(), egui::Color32::WHITE).size().x + pad + gap).sum())
 }
 
 /// The narrowest drop-down the switcher shrinks to.

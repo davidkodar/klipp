@@ -159,6 +159,7 @@ impl super::KlippApp {
             }
             self.veylvik_settings_in(ui.ctx());
             self.veylvik_view_in();
+            let mut relink_asked = false;
             if let Some(editor) = self.veylvik_tab.editor.as_mut() {
                 if std::mem::take(&mut self.veylvik_tab.shortcuts) {
                     editor.open_shortcuts();
@@ -168,9 +169,18 @@ impl super::KlippApp {
                 if std::mem::take(&mut self.veylvik_tab.just_shown) {
                     editor.set_keyboard(true);
                 }
+                // What was picked on Klipp's bar, then the editor's menus as
+                // they are now, for the bar's next frame: Klipp's one menu
+                // bar shows them, the editor draws none of its own.
+                if let Some(id) = self.state.veylvik_menu_pick.take() {
+                    editor.run_menu_item(ui.ctx(), &id);
+                }
+                self.state.veylvik_menus = editor.menus(ui.ctx());
+                let missing = editor.unavailable_media().len();
+                relink_asked = veylvik_header(ui, editor, missing, &theme);
                 editor.ui(ui);
             }
-            if self.veylvik_tab.editor.as_mut().is_some_and(|e| e.take_relink_request()) {
+            if relink_asked || self.veylvik_tab.editor.as_mut().is_some_and(|e| e.take_relink_request()) {
                 self.veylvik_relink();
             }
             self.veylvik_follow(clip);
@@ -416,6 +426,16 @@ impl super::KlippApp {
         }
     }
 
+    /// Undo (or with `redo`, redo) a step of the composition open on the
+    /// Veylvik page, while it is the page in view: false when it has none.
+    pub(super) fn veylvik_page_step(&mut self, redo: bool) -> bool {
+        if self.state.active_workspace != crate::state::Workspace::Veylvik {
+            return false;
+        }
+        let Some(editor) = self.veylvik_tab.editor.as_mut() else { return false };
+        if redo { editor.redo() } else { editor.undo() }
+    }
+
     /// The sound linked to the open clip, as Edit plays it.
     fn veylvik_sound(&self, clip: ClipId) -> Option<klipp_veylvik::clip_sound::ClipSound> {
         klipp_veylvik::clip_sound::ClipSound::new(self.state.sequence(), &self.state.sequences, &self.state.media_pool, clip)
@@ -470,6 +490,41 @@ impl super::KlippApp {
         }
         self.sync_compositions_to_engine();
     }
+}
+
+/// The page's strip above the editor, in place of the bar the editor drew
+/// itself: its workspaces (Compose, Animate, 3D) on the left, the clip's
+/// name in the middle, and what the composition can't find. Its menus are
+/// on Klipp's own bar. True when relinking was asked for.
+fn veylvik_header(ui: &mut egui::Ui, editor: &mut editor::Editor, missing: usize, theme: &crate::theme::KlippTheme) -> bool {
+    let mut relink = false;
+    let height = crate::theme::control::REGULAR + 8.0;
+    let (strip, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
+    ui.painter().hline(strip.x_range(), strip.max.y, egui::Stroke::new(1.0_f32, theme.border));
+    let font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
+    let workspaces = editor.workspaces();
+    let labels: Vec<&str> = workspaces.iter().map(|(_, l)| l.as_str()).collect();
+    let current = editor.workspace();
+    let active = workspaces.iter().position(|(id, _)| *id == current).unwrap_or(0);
+    let size = crate::widgets::segmented::segmented_size(ui, &labels, &font, crate::theme::control::REGULAR);
+    let at = egui::Rect::from_min_size(egui::pos2(strip.min.x + 8.0, strip.center().y - size.y / 2.0), size);
+    if !labels.is_empty() {
+        if let Some(i) = crate::widgets::segmented::segmented_in(ui, at, &labels, active, theme, font.clone()) {
+            editor.set_workspace(&workspaces[i].0);
+        }
+    }
+    let title = if editor.unsaved() { format!("{} \u{2022}", editor.title()) } else { editor.title() };
+    ui.painter().text(strip.center(), egui::Align2::CENTER_CENTER, title, font.clone(), theme.text_secondary);
+    if missing > 0 {
+        let text = if missing == 1 { "1 file missing".to_string() } else { format!("{missing} files missing") };
+        let width = ui.fonts_mut(|f| f.layout_no_wrap(text.clone(), font.clone(), egui::Color32::WHITE).size().x) + 16.0;
+        let rect = egui::Rect::from_min_size(egui::pos2(strip.max.x - width - 8.0, strip.center().y - crate::theme::control::REGULAR / 2.0), egui::vec2(width, crate::theme::control::REGULAR));
+        let resp = ui.put(rect, egui::Button::new(egui::RichText::new(text).color(theme.marker_warning)));
+        if resp.on_hover_text("Find the files this composition uses that aren't where it says").clicked() {
+            relink = true;
+        }
+    }
+    relink
 }
 
 /// Klipp's playhead on timeline frame `frame` of a sequence at `fps`: a
