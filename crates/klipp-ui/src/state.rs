@@ -1682,6 +1682,10 @@ pub struct AppState {
     /// their files' bytes: read on open, written on save, carried by
     /// Collect (see `klipp_project::compositions`).
     pub compositions: klipp_project::compositions::Compositions,
+    /// A composition control being dragged in the inspector: its
+    /// composition and its bytes when the drag began (see
+    /// [`AppState::take_control_change`]).
+    pub control_drag: Option<(klipp_timeline::CompositionId, Option<std::sync::Arc<[u8]>>)>,
     pub project_path: Option<PathBuf>,
     pub created_at: Option<String>,
     /// Free-form project notes — shot list, delivery specs, anything
@@ -5075,6 +5079,7 @@ impl Default for AppState {
             hyperzoom_preset_registry: crate::hyperzoom_presets::HyperzoomPresetRegistry::new(),
             title_assets: std::collections::HashMap::new(),
             compositions: Default::default(),
+            control_drag: None,
             project_path: None,
             created_at: None,
             dirty: false,
@@ -6309,6 +6314,27 @@ impl AppState {
             CompositionChange::Redo => format!("Veylvik: Redo {label}"),
         };
         self.push_history(EditCommand::SetComposition { id, before, after: now, label });
+    }
+
+    /// A change to composition `id` from its controls in the inspector,
+    /// which is `now`. While a control is dragged it shows at once and
+    /// makes no step; the drag's end makes one step, from where the drag
+    /// began, named `label`.
+    pub fn take_control_change(&mut self, id: klipp_timeline::CompositionId, now: std::sync::Arc<[u8]>, label: &str, dragging: bool) {
+        let current = self.compositions.get(&id).cloned();
+        let began = match self.control_drag.take() {
+            Some((held, began)) if held == id => began,
+            _ => current.clone(),
+        };
+        if current.as_deref() != Some(&now[..]) {
+            self.compositions.insert(id, now.clone());
+            self.dirty = true;
+        }
+        if dragging {
+            self.control_drag = Some((id, began));
+        } else if began.as_deref() != Some(&now[..]) {
+            self.push_history(EditCommand::SetComposition { id, before: began, after: Some(now), label: label.to_owned() });
+        }
     }
 
     /// Which history redo puts the next step back from: the step taken

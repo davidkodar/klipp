@@ -471,6 +471,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ReplaceClipMedia { .. }
         // A composition made for a clip is a step of its own.
         | AppCommand::VeylvikComposition { .. }
+        | AppCommand::SetCompositionSettings { .. }
         | AppCommand::CreateCompoundClip { .. }
         | AppCommand::CreateMulticamClip
         | AppCommand::CreateSyncedMulticam { .. }

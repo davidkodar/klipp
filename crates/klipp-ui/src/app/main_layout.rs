@@ -1473,6 +1473,9 @@ impl KlippApp {
                 );
                 self.new_inspector.colour_grade = None;
                 all_cmds.extend(panel_cmds);
+                if let Some(c) = self.new_inspector.control_change.take() {
+                    self.take_control_change(c.composition, c.bytes, &c.label, c.dragging);
+                }
                 if std::mem::take(&mut self.new_inspector.auto_colour) {
                     self.run_colour_tool(crate::panels::colour_check::ColourAction::AutoColour);
                 }

@@ -329,13 +329,16 @@ pub enum ControlCommand {
     /// A clip's Veylvik composition: read (its size, rate, length and
     /// nodes, and its folder), made of the clip's media when it has none
     /// (`make`), and opened on the Veylvik page (`open`, which makes one
-    /// too).
+    /// too), and the settings it shows on Edit given values (`set`, by
+    /// label).
     VeylvikComposition {
         clip_id: String,
         #[serde(default)]
         make: bool,
         #[serde(default)]
         open: bool,
+        #[serde(default)]
+        set: serde_json::Map<String, serde_json::Value>,
     },
     TagMedia {
         media_id: String,

@@ -472,6 +472,18 @@ impl super::KlippApp {
         self.sync_compositions_to_engine();
     }
 
+    /// A change to composition `id` made on Edit, by its settings in the
+    /// inspector or over the control socket: taken as a step (one a
+    /// drag), shown in the viewer at once, and the page, holding that
+    /// composition, opens it again as it is now.
+    pub(super) fn take_control_change(&mut self, id: CompositionId, bytes: Arc<[u8]>, label: &str, dragging: bool) {
+        self.state.take_control_change(id, bytes, label, dragging);
+        if self.veylvik_tab.open.as_ref().is_some_and(|o| o.composition == id) {
+            self.veylvik_tab.reopen();
+        }
+        self.sync_compositions_to_engine();
+    }
+
     /// Compositions an undo or redo of Klipp's put back: the tab opens
     /// its clip's again if it was one of them.
     pub(super) fn veylvik_compositions_put_back(&mut self, changed: &[(CompositionId, Option<Arc<[u8]>>)]) {
