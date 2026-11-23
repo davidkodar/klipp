@@ -228,14 +228,23 @@ impl HostMedia for EditorFootage {
 }
 
 /// The clip open in the tab, for the editor's host: its media under
-/// [`crate::CLIP_MEDIA_KEY`], whichever clip it is now.
+/// [`crate::CLIP_MEDIA_KEY`], whichever clip it is now, and what is below
+/// it under [`crate::BELOW_KEY`].
 #[derive(Default)]
 pub struct TabHost {
     footage: Mutex<Option<Arc<dyn veylvik_render::FrameSource>>>,
+    below: Mutex<Option<Arc<dyn veylvik_render::FrameSource>>>,
     sound: Mutex<Option<Arc<crate::clip_sound::ClipSound>>>,
 }
 
 impl TabHost {
+    /// What is below the open clip from now on; none while no clip is
+    /// open. Named for this page alone: kept in this session only.
+    pub fn set_below(&self, below: Option<crate::below::PageBelow>) {
+        let source = below.map(|b| Arc::new(veylvik_render::HostSource::new(b, 512 << 20)) as Arc<dyn veylvik_render::FrameSource>);
+        *self.below.lock().unwrap_or_else(|e| e.into_inner()) = source;
+    }
+
     /// The open clip's media from now on; none while no clip is open.
     pub fn set(&self, footage: Option<EditorFootage>) {
         // Lasting: a frame's name is made of the file as it is on disk, how
@@ -260,7 +269,12 @@ impl crate::Host for TabHost {
     }
 
     fn media(&self, key: &str) -> Option<Arc<dyn veylvik_render::FrameSource>> {
-        (key == crate::CLIP_MEDIA_KEY).then(|| self.footage.lock().unwrap_or_else(|e| e.into_inner()).clone()).flatten()
+        let slot = match key {
+            crate::CLIP_MEDIA_KEY => &self.footage,
+            crate::BELOW_KEY => &self.below,
+            _ => return None,
+        };
+        slot.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn media_sound(&self, key: &str, window: [f64; 2], rate: u32) -> Option<veylvik_audio::Pcm> {

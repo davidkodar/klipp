@@ -355,6 +355,9 @@ pub enum ControlCommand {
         remove: bool,
         #[serde(default)]
         copy_from: Option<String>,
+        /// The composition drawn over the layers below the clip.
+        #[serde(default)]
+        below: bool,
     },
     TagMedia {
         media_id: String,

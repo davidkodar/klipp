@@ -257,7 +257,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::VeylvikComposition { clip_id, make, open, set, version_action, version, name, reset, remove, copy_from } => {
+        ControlCommand::VeylvikComposition { clip_id, make, open, set, version_action, version, name, reset, remove, copy_from, below } => {
             let id = klipp_core::ClipId(parse_uuid(&clip_id, "clip_id")?);
             let named = |ctx: &ControlContext| -> Result<(Option<klipp_timeline::CompositionId>, bool), String> {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -272,8 +272,8 @@ pub(crate) fn respond(
             if open || (make && had.is_none()) {
                 send_envelope(ctx, vec![AppCommand::VeylvikComposition { clip_id: id, open }], false)?;
             }
-            if [reset, remove, copy_from.is_some()].iter().filter(|b| **b).count() > 1 {
-                return Err("reset, remove and copy_from are one at a time".into());
+            if [reset, remove, copy_from.is_some(), below].iter().filter(|b| **b).count() > 1 {
+                return Err("reset, remove, copy_from and below are one at a time".into());
             }
             let comp_of = |ctx: &ControlContext, clip: klipp_core::ClipId| -> Result<Option<klipp_timeline::CompositionId>, String> {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -297,6 +297,12 @@ pub(crate) fn respond(
                     return Err("the clip has no Veylvik composition".into());
                 }
                 send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![id], action: if reset { A::Reset } else { A::Remove } }], false)?;
+            }
+            if below {
+                if !has_media {
+                    return Err("the clip has no media to compose with: a video or still clip has".into());
+                }
+                send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![id], action: klipp_core::CompositionClipAction::OverBelow }], false)?;
             }
             if let Some(what) = version_action.as_deref() {
                 use klipp_core::VersionAction as A;
@@ -946,6 +952,7 @@ fn veylvik_composition_reply(clip: klipp_core::ClipId, id: Option<klipp_timeline
                 .map(|p| json!({ "label": p.label, "node": p.node.to_string(), "parameter": p.parameter, "value": p.value }))
                 .collect();
             reply["settings"] = json!(shown);
+            reply["over_below"] = json!(bytes.as_deref().is_some_and(klipp_veylvik::bytes_read_below));
         }
         Some(Err(e)) => reply["text"] = json!(format!("The clip names composition {id}, which can't be read: {e}; it shows its media.")),
         None => reply["text"] = json!(format!("The clip names composition {id}, which the project doesn't hold; it shows its media.")),

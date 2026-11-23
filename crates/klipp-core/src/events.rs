@@ -1348,6 +1348,9 @@ pub enum CompositionClipAction {
     Reset,
     /// Each clip shows its media as it is again.
     Remove,
+    /// Each clip's composition drawn over the layers below the clip (one
+    /// made of its media first, for a clip without).
+    OverBelow,
 }
 
 #[derive(Debug, Clone)]
