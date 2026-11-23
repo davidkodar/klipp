@@ -358,6 +358,9 @@ pub enum ControlCommand {
         /// The composition drawn over the layers below the clip.
         #[serde(default)]
         below: bool,
+        /// A media id of the pool, laid over the composition.
+        #[serde(default)]
+        add_media: Option<String>,
     },
     TagMedia {
         media_id: String,

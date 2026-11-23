@@ -1262,7 +1262,7 @@ fn render_list_view(
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, &bin_list, any_in_a_bin(state), cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, item.is_still, &item.span_parts, &bin_list, item.bin.as_deref(), cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, item.is_still, &item.span_parts, &bin_list, item.bin.as_deref(), compose_target(state), cmds);
                 }
             }));
         }
@@ -1602,7 +1602,7 @@ fn render_grid_view(
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, &bin_list, any_in_a_bin(state), cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, item.is_still, &item.span_parts, &bin_list, item.bin.as_deref(), cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, item.is_still, &item.span_parts, &bin_list, item.bin.as_deref(), compose_target(state), cmds);
                 }
             }));
 
@@ -1969,6 +1969,16 @@ struct MediaRow {
     caption: String,
 }
 
+/// The selected clip, when it is a picture clip of media: what the pool's
+/// Add to Veylvik Composition lays media into.
+fn compose_target(state: &crate::state::AppState) -> Option<klipp_core::ClipId> {
+    let id = state.selected_clip?;
+    let seq = state.sequence();
+    let (t, c) = seq.find_clip(id)?;
+    let clip = &seq.tracks[t].clips[c];
+    (seq.tracks[t].kind == klipp_timeline::TrackKind::Video && clip.media_id().is_some()).then_some(id)
+}
+
 fn show_context_menu(
     ui: &mut egui::Ui,
     media_id: MediaId,
@@ -1982,6 +1992,7 @@ fn show_context_menu(
     span_parts: &[MediaId],
     bins: &[String],
     bin: Option<&str>,
+    compose_into: Option<klipp_core::ClipId>,
     cmds: &mut Vec<AppCommand>,
 ) {
     if span_parts.len() >= 2 && menu_item(ui, &format!("Add All {} Parts to Timeline", span_parts.len()), "")
@@ -2062,6 +2073,12 @@ fn show_context_menu(
     }
     if menu_item(ui, MENU_ADD_TO_END, "").clicked() {
         cmds.push(AppCommand::ImportMediaLinked { media_id, on_new_tracks: false });
+        ui.close_kind(egui::UiKind::Menu);
+    }
+    let lay = ui.add_enabled_ui(compose_into.is_some() && !offline, |ui| menu_item(ui, "Add to Veylvik Composition", "")).inner;
+    let lay = if compose_into.is_some() { lay.on_hover_text("Lay it over the selected clip's Veylvik composition: a footage node merged over its picture, as one step") } else { lay.on_disabled_hover_text("Select a picture clip on the timeline to add it to its Veylvik composition") };
+    if let (true, Some(clip_id)) = (lay.clicked(), compose_into) {
+        cmds.push(AppCommand::CompositionClips { clip_ids: vec![clip_id], action: klipp_core::CompositionClipAction::AddMedia(media_id) });
         ui.close_kind(egui::UiKind::Menu);
     }
     if menu_item(ui, "Generate Proxy", "").clicked() {

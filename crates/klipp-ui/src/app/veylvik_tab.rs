@@ -241,6 +241,7 @@ impl super::KlippApp {
         // What is below it as Edit has it now, before the editor looks for
         // its media.
         self.veylvik_tab.host.set_below(self.veylvik_below(clip));
+        self.veylvik_tab.host.set_pool(self.veylvik_pool(&composition));
         let made = match self.veylvik_tab.editor.as_mut() {
             Some(editor) => editor.set_composition(ctx, composition, assets).map_err(|e| e.to_string()),
             None => self.veylvik_make_editor(ctx, composition, assets),
@@ -486,6 +487,19 @@ impl super::KlippApp {
         Some(klipp_veylvik::below::PageBelow::new(snapshot, it, media_fps, frames, ctx.device()))
     }
 
+    /// The media of the pool `composition` lays in, as the editor reads it.
+    fn veylvik_pool(&self, composition: &klipp_veylvik::Composition) -> Vec<(String, EditorFootage)> {
+        let Some(ctx) = klipp_effects::gpu_context::GpuContext::shared() else { return Vec::new() };
+        let working = klipp_engine::video_decoder::working_colorspace();
+        klipp_veylvik::pool::pool_keys(composition)
+            .into_iter()
+            .filter_map(|key| {
+                let item = self.state.media_pool.get(&klipp_veylvik::pool::media_of_key(&key)?)?;
+                Some((key, EditorFootage::new(item, working, super::engine_sync::media_state(item), ctx.device(), ctx.queue())))
+            })
+            .collect()
+    }
+
     /// The open clip's media as the editor reads it.
     fn veylvik_footage(&self, clip: ClipId) -> Option<EditorFootage> {
         let seq = self.state.sequence();
@@ -669,18 +683,22 @@ impl super::KlippApp {
                     new.composition = None;
                     new.composition_versions.clear();
                 }
-                A::OverBelow => {
+                A::OverBelow | A::AddMedia(_) => {
                     let had = old.composition.and_then(|id| self.state.compositions.get(&id).cloned().map(|b| (id, b)));
                     let (id, before, bytes) = match had {
                         Some((id, b)) => (id, Some(b.clone()), b),
                         None => (CompositionId::new(), None, fresh_composition(&self.state, old)?.1),
                     };
-                    if klipp_veylvik::bytes_read_below(&bytes) {
-                        continue;
-                    }
-                    let after = klipp_veylvik::below::over_below(&bytes)?;
+                    let (after, label) = match action {
+                        A::AddMedia(media) => {
+                            let item = self.state.media_pool.get(&media).ok_or("the media is no longer in the pool")?;
+                            (klipp_veylvik::pool::with_media(&bytes, media, &item.filename, &item.path)?, format!("Veylvik: Add {}", item.filename))
+                        }
+                        _ if klipp_veylvik::bytes_read_below(&bytes) => continue,
+                        _ => (klipp_veylvik::below::over_below(&bytes)?, "Veylvik: Over the layers below".to_string()),
+                    };
                     let made = before.is_none();
-                    edits.push(crate::history::EditCommand::SetComposition { id, before, after: Some(after), label: "Veylvik: Over the layers below".into() });
+                    edits.push(crate::history::EditCommand::SetComposition { id, before, after: Some(after), label });
                     if !made {
                         changed += 1;
                         continue;
@@ -697,6 +715,7 @@ impl super::KlippApp {
         let (label, did) = match action {
             A::Paste => ("Veylvik: Paste Composition", "Pasted the composition on"),
             A::OverBelow => ("Veylvik: Over the Layers Below", "Drew the composition over the layers below on"),
+            A::AddMedia(_) => ("Veylvik: Add Media", "Laid the media over the composition of"),
             A::Reset => ("Veylvik: Reset Composition", "Reset the composition of"),
             _ => ("Veylvik: Remove Composition", "Removed the composition of"),
         };

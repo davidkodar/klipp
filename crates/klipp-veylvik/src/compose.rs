@@ -259,6 +259,9 @@ struct Live {
     reach: Reach,
     /// The last picture, kept to be written into again once nothing holds it.
     spare: Option<Arc<Composed>>,
+    /// The media of Klipp's pool its composition has footage of, each
+    /// answered by a decoder of its own: another set needs it made again.
+    pool: std::collections::BTreeSet<String>,
 }
 
 static SHARED: OnceLock<Option<Arc<Compositor>>> = OnceLock::new();
@@ -385,7 +388,7 @@ impl Compositor {
                 continue;
             }
             let taken = match (slot, parsed.get(&key.composition)) {
-                (Slot::Ready(live), Some(Ok(c))) => live.source.set_composition(c.clone()).is_ok(),
+                (Slot::Ready(live), Some(Ok(c))) => live.pool == crate::pool::pool_keys(c) && live.source.set_composition(c.clone()).is_ok(),
                 _ => false,
             };
             if !taken {
@@ -630,11 +633,20 @@ impl Compositor {
             let below = BelowFootage { info, size: [bw, bh], pixels: working_pixels(key.working), current: Arc::clone(&current), device: Arc::clone(&self.device), clear: OnceLock::new() };
             host.insert(BELOW_KEY, Arc::new(HostSource::new(below, FOOTAGE_BUDGET)));
         }
+        // Media of Klipp's pool it lays in, each decoded as an export
+        // decodes it; one the pool hasn't (gone meanwhile) is unavailable.
+        let pool = crate::pool::pool_keys(&composition);
+        for name in &pool {
+            let Some(found) = crate::pool::media_of_key(name).and_then(project_media) else { continue };
+            let (item, state) = &*found;
+            let footage = crate::editor_footage::EditorFootage::new(item, key.working, *state, Arc::clone(&self.device), Arc::clone(&self.queue));
+            host.insert(name.as_str(), Arc::new(HostSource::new(footage, FOOTAGE_BUDGET)));
+        }
         // Its assets in its folder in the project; a project never saved
         // has none yet, and an empty folder of the session's own stands in.
         let assets = assets.unwrap_or_else(no_assets);
         let source = ClipSource::new(Arc::clone(&self.renderer), composition, assets, Some(host as Arc<dyn crate::Host>)).map_err(|e| e.to_string())?;
-        Ok(Live { source, current, fps, reach: Reach::Frame, spare: None })
+        Ok(Live { source, current, fps, reach: Reach::Frame, spare: None, pool })
     }
 
     /// Klipp's frame as linear floats in the working space on the device:
@@ -831,6 +843,23 @@ pub fn set_media_states(states: HashMap<MediaId, u64>) {
 
 /// The media states as the app last said, for the compositor when it starts.
 static MEDIA_STATES: Mutex<Option<HashMap<MediaId, u64>>> = Mutex::new(None);
+
+/// The open project's media pool, each item with what its frames are made
+/// from: the media a composition lays in from the pool
+/// ([`crate::pool::media_key`]).
+pub fn set_project_media(media: HashMap<MediaId, (klipp_media::MediaItem, u64)>) {
+    *POOL.lock().unwrap_or_else(|e| e.into_inner()) = Some(media.into_iter().map(|(id, m)| (id, Arc::new(m))).collect());
+}
+
+/// Media `id` of the open project's pool, as the app last said.
+pub fn project_media(id: MediaId) -> Option<PoolMedia> {
+    POOL.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(&id).cloned()
+}
+
+/// A pool item and what its frames are made from.
+type PoolMedia = Arc<(klipp_media::MediaItem, u64)>;
+
+static POOL: Mutex<Option<HashMap<MediaId, PoolMedia>>> = Mutex::new(None);
 
 /// Every media's frames may have changed (a decode setting of all of
 /// them): Veylvik's footage frames are not used again.

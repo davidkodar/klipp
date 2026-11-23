@@ -1351,6 +1351,9 @@ pub enum CompositionClipAction {
     /// Each clip's composition drawn over the layers below the clip (one
     /// made of its media first, for a clip without).
     OverBelow,
+    /// This media of the pool laid over each clip's composition (one made
+    /// of its media first, for a clip without).
+    AddMedia(crate::MediaId),
 }
 
 #[derive(Debug, Clone)]
