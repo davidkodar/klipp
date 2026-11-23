@@ -23,38 +23,45 @@ const JUMP_SECS: f64 = 2.0;
 /// Frames a decoder reads ahead of the last one asked of it.
 const AHEAD: usize = 3;
 
-/// One of the footage's decoders, reading on from where it was last asked.
-struct Cursor {
-    source: ExportFrameSource<'static>,
-    /// The last frame it decoded, and the last asked of it.
+/// Where one of the footage's decoders is, shared by its thread and the
+/// thread that hands it frames to read: the last frame it decoded and the
+/// last asked of it, and the frames it has read ahead.
+#[derive(Default)]
+struct Place {
     last: f64,
     asked: f64,
-    /// How far apart its last two asks were, in frames: playing in real
-    /// time with frames skipped, the next ask is that far on.
-    stride: f64,
-    /// Frames read ahead, in order.
-    ahead: std::collections::VecDeque<(f64, Decoded)>,
+    ahead: Vec<f64>,
+}
+
+/// One of the footage's decoders, on a thread of its own, reading on from
+/// where it was last asked and ahead of it while nobody asks.
+struct Cursor {
+    asks: std::sync::mpsc::Sender<Ask>,
+    place: Arc<Mutex<Place>>,
     /// When it was last asked, to give the least used up.
     used: u64,
 }
 
-/// The decoder for a frame at `secs`: one reading on to it within reach,
-/// else a new one while there are fewer than two, else the one asked
-/// least lately.
-fn pick(cursors: &mut Vec<Cursor>, secs: f64, frame_secs: f64, fresh: &dyn Fn() -> ExportFrameSource<'static>) -> usize {
+/// The decoder for a frame at `secs`: one that has it read ahead or reads
+/// on to it within reach, else a new one while there are fewer than two,
+/// else the one asked least lately.
+fn pick(cursors: &mut Vec<Cursor>, secs: f64, frame_secs: f64, fresh: &dyn Fn() -> Option<Cursor>) -> Option<usize> {
     let reach = |c: &Cursor| {
-        let ahead = c.ahead.iter().any(|(t, _)| (t - secs).abs() < 0.5 * frame_secs);
-        let on = secs >= c.last - 0.5 * frame_secs && secs <= c.last + JUMP_SECS;
-        (ahead || on).then_some(if ahead { 0.0 } else { secs - c.last })
+        let place = c.place.lock().unwrap_or_else(|e| e.into_inner());
+        let ahead = place.ahead.iter().any(|t| (t - secs).abs() < 0.5 * frame_secs);
+        let on = secs >= place.last - 0.5 * frame_secs && secs <= place.last + JUMP_SECS;
+        (ahead || on).then_some(if ahead { 0.0 } else { secs - place.last })
     };
     if let Some((i, _)) = cursors.iter().enumerate().filter_map(|(i, c)| reach(c).map(|d| (i, d))).min_by(|a, b| a.1.total_cmp(&b.1)) {
-        return i;
+        return Some(i);
     }
     if cursors.len() < 2 {
-        cursors.push(Cursor { source: fresh(), last: f64::NEG_INFINITY, asked: f64::NEG_INFINITY, stride: 1.0, ahead: Default::default(), used: 0 });
-        return cursors.len() - 1;
+        if let Some(c) = fresh() {
+            cursors.push(c);
+            return Some(cursors.len() - 1);
+        }
     }
-    cursors.iter().enumerate().min_by_key(|(_, c)| c.used).map_or(0, |(i, _)| i)
+    cursors.iter().enumerate().min_by_key(|(_, c)| c.used).map(|(i, _)| i)
 }
 
 /// A footage frame on the card and its size, or why there is none.
@@ -93,107 +100,143 @@ impl EditorFootage {
         let zero = RationalTime::from_secs_f64(0.0, 24000);
         let clip = Clip::media(id, zero, length, zero, length);
         let media: Arc<std::collections::HashMap<MediaId, klipp_render::MediaFile>> = Arc::new([(id, klipp_render::MediaFile::of(item))].into_iter().collect());
-        let (tx, rx) = std::sync::mpsc::channel::<Ask>();
-        let spawned = std::thread::Builder::new().name("klipp-veylvik-tab-decode".into()).spawn(move || {
-            let fresh = || ExportFrameSource::shared(Arc::clone(&media), fps, working);
-            // Made when the first frame is asked for: footage never asked
-            // of (a clip opened and left) compiles no converter for nothing.
-            let duration_secs = f64::from(frames) / fps;
-            let upload = |pixels: &[f32]| wgpu::util::DeviceExt::create_buffer_init(
-                device.as_ref(),
-                &wgpu::util::BufferInitDescriptor { label: Some("veylvik tab footage"), contents: bytemuck::cast_slice(pixels), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC },
-            );
-            // The decoder's converter may reuse its buffer for the next
-            // frame: each frame is copied to one of its own before it is
-            // handed over, so reading ahead can't change one Veylvik reads.
-            let own = |buffer: &wgpu::Buffer| {
-                let copy = device.create_buffer(&wgpu::BufferDescriptor { label: Some("veylvik tab footage"), size: buffer.size(), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("veylvik tab footage") });
-                encoder.copy_buffer_to_buffer(buffer, 0, &copy, 0, buffer.size());
-                queue.submit([encoder.finish()]);
-                copy
-            };
-            let decode = |source: &mut ExportFrameSource<'static>, secs: f64| -> Decoded {
-                let took = std::time::Instant::now();
-                let frame = source.frame(&clip, secs, size[0], size[1]).ok_or_else(|| format!("Klipp has no frame of the clip at {secs:.3} s"))?;
-                let (fw, fh) = (frame.width, frame.height);
-                let buffer = match frame.pixels {
-                    // Decoded on the card and converted there.
-                    SourcePixels::Gpu(g) => match g.on_device() {
-                        Some((OnDevice::Linear(buffer), bw, bh)) if (bw, bh) == (fw, fh) => own(buffer),
-                        _ => upload(&g.read()),
-                    },
-                    SourcePixels::SceneReferred { codes, transfer, source_to_working } => upload(&codes.to_scene_linear_rgba(transfer, source_to_working)),
-                    SourcePixels::Linear(pixels) => upload(&pixels),
+        // The decoder for each place Veylvik reads from (the frame shown,
+        // the frames it prepares), each on a thread of its own: one never
+        // waits on another's decoding, nor on its reading ahead.
+        let decoder = move || -> Option<Cursor> {
+            let (asks, rx) = std::sync::mpsc::channel::<Ask>();
+            let place = Arc::new(Mutex::new(Place { last: f64::NEG_INFINITY, asked: f64::NEG_INFINITY, ahead: Vec::new() }));
+            let shared = Arc::clone(&place);
+            let (media, device, queue, clip) = (Arc::clone(&media), Arc::clone(&device), Arc::clone(&queue), clip.clone());
+            let spawned = std::thread::Builder::new().name("klipp-veylvik-tab-decode".into()).spawn(move || {
+                // Made when its first frame is asked for.
+                let mut source = ExportFrameSource::shared(media, fps, working);
+                let duration_secs = f64::from(frames) / fps;
+                let frame_secs = 1.0 / fps;
+                let upload = |pixels: &[f32]| wgpu::util::DeviceExt::create_buffer_init(
+                    device.as_ref(),
+                    &wgpu::util::BufferInitDescriptor { label: Some("veylvik tab footage"), contents: bytemuck::cast_slice(pixels), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC },
+                );
+                // The decoder's converter may reuse its buffer for the next
+                // frame: each frame is copied to one of its own before it is
+                // handed over, so reading ahead can't change one Veylvik reads.
+                let own = |buffer: &wgpu::Buffer| {
+                    let copy = device.create_buffer(&wgpu::BufferDescriptor { label: Some("veylvik tab footage"), size: buffer.size(), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+                    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("veylvik tab footage") });
+                    encoder.copy_buffer_to_buffer(buffer, 0, &copy, 0, buffer.size());
+                    queue.submit([encoder.finish()]);
+                    copy
                 };
-                tracing::trace!("VEYLVIK_FOOTAGE frame {secs:.3} s in {:.1} ms", took.elapsed().as_secs_f64() * 1000.0);
-                Ok((buffer, fw, fh))
-            };
-            let frame_secs = 1.0 / fps;
-            // Veylvik asks from two places at once, the frame shown and the
-            // frames it prepares to keep, each reading on in time: one
-            // decoder for each, so neither seeks the other's back.
-            let mut cursors: Vec<Cursor> = Vec::new();
-            let mut clock = 0u64;
-            // A request that came while reading ahead, taken next.
-            let mut pending: Option<Ask> = None;
-            // Until the footage is let go (another clip opened, the tab closed).
-            loop {
-                let (secs, answer) = match pending.take() {
-                    Some(ask) => ask,
-                    None => match rx.recv() {
-                        Ok(ask) => ask,
-                        Err(_) => break,
-                    },
+                let decode = |source: &mut ExportFrameSource<'static>, secs: f64| -> Decoded {
+                    let took = std::time::Instant::now();
+                    let frame = source.frame(&clip, secs, size[0], size[1]).ok_or_else(|| format!("Klipp has no frame of the clip at {secs:.3} s"))?;
+                    let (fw, fh) = (frame.width, frame.height);
+                    let buffer = match frame.pixels {
+                        // Decoded on the card and converted there.
+                        SourcePixels::Gpu(g) => match g.on_device() {
+                            Some((OnDevice::Linear(buffer), bw, bh)) if (bw, bh) == (fw, fh) => own(buffer),
+                            _ => upload(&g.read()),
+                        },
+                        SourcePixels::SceneReferred { codes, transfer, source_to_working } => upload(&codes.to_scene_linear_rgba(transfer, source_to_working)),
+                        SourcePixels::Linear(pixels) => upload(&pixels),
+                    };
+                    tracing::trace!("VEYLVIK_FOOTAGE frame {secs:.3} s in {:.1} ms", took.elapsed().as_secs_f64() * 1000.0);
+                    Ok((buffer, fw, fh))
                 };
-                clock += 1;
-                let at = pick(&mut cursors, secs, frame_secs, &fresh);
-                let cursor = &mut cursors[at];
-                cursor.used = clock;
-                let step = ((secs - cursor.asked) / frame_secs).round();
-                cursor.stride = if (1.0..=4.0).contains(&step) { step } else { 1.0 };
-                cursor.asked = secs;
-                // Read ahead already: taken, and what is behind it let go.
-                cursor.ahead.retain(|(t, _)| *t > secs - 0.5 * frame_secs);
-                let made = match cursor.ahead.iter().position(|(t, _)| (t - secs).abs() < 0.5 * frame_secs) {
-                    Some(i) => cursor.ahead.remove(i).map(|(_, m)| m).expect("found"),
-                    None => {
-                        cursor.ahead.clear();
-                        // An export's decoder reads on, never back: a scrub
-                        // back, or a jump far ahead, moves it to the frame,
-                        // the decoder kept (made again, a scrub waited
-                        // ~180 ms on a 4K file before decoding anything).
-                        if secs < cursor.last - 0.5 * frame_secs || secs > cursor.last + JUMP_SECS {
-                            cursor.source.seek(&clip, secs);
-                        }
-                        cursor.last = secs;
-                        decode(&mut cursor.source, secs)
-                    }
-                };
-                let _ = answer.send(made);
-                // Read on while nobody is waiting, inside the media: the
-                // decoder asked last, a frame at a time, up to AHEAD frames
-                // on at the stride it is asked at.
+                let mut ahead: std::collections::VecDeque<(f64, Decoded)> = Default::default();
+                // How far apart its last two asks were, in frames: playing
+                // with frames skipped, the next ask is that far on.
+                let mut stride;
+                let mut pending: Option<Ask> = None;
+                // Until the footage is let go (another clip opened, the tab closed).
                 loop {
-                    match rx.try_recv() {
-                        Ok(ask) => {
-                            pending = Some(ask);
+                    let (secs, answer) = match pending.take() {
+                        Some(ask) => ask,
+                        None => match rx.recv() {
+                            Ok(ask) => ask,
+                            Err(_) => break,
+                        },
+                    };
+                    let (last, asked) = {
+                        let p = shared.lock().unwrap_or_else(|e| e.into_inner());
+                        (p.last, p.asked)
+                    };
+                    let step = ((secs - asked) / frame_secs).round();
+                    stride = if (1.0..=4.0).contains(&step) { step } else { 1.0 };
+                    // Read ahead already: taken, and what is behind it let go.
+                    ahead.retain(|(t, _)| *t > secs - 0.5 * frame_secs);
+                    let made = match ahead.iter().position(|(t, _)| (t - secs).abs() < 0.5 * frame_secs) {
+                        Some(i) => ahead.remove(i).map(|(_, m)| m).expect("found"),
+                        None => {
+                            ahead.clear();
+                            // An export's decoder reads on, never back: a
+                            // scrub back, or a jump far ahead, moves it to
+                            // the frame, the decoder kept (made again, a scrub
+                            // waited ~180 ms on a 4K file before decoding).
+                            if secs < last - 0.5 * frame_secs || secs > last + JUMP_SECS {
+                                source.seek(&clip, secs);
+                            }
+                            let mut p = shared.lock().unwrap_or_else(|e| e.into_inner());
+                            p.last = secs;
+                            drop(p);
+                            decode(&mut source, secs)
+                        }
+                    };
+                    {
+                        let mut p = shared.lock().unwrap_or_else(|e| e.into_inner());
+                        p.asked = secs;
+                        p.ahead = ahead.iter().map(|(t, _)| *t).collect();
+                    }
+                    let _ = answer.send(made);
+                    // Read on while nobody is waiting, inside the media, a
+                    // frame at a time, up to AHEAD frames on at the stride it
+                    // is asked at.
+                    while ahead.len() < AHEAD {
+                        match rx.try_recv() {
+                            Ok(ask) => {
+                                pending = Some(ask);
+                                break;
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+                            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                        }
+                        let next = ahead.back().map_or(secs, |(t, _)| *t) + stride * frame_secs;
+                        if next >= duration_secs {
                             break;
                         }
-                        Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
-                        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                        let made = decode(&mut source, next);
+                        ahead.push_back((next, made));
+                        let mut p = shared.lock().unwrap_or_else(|e| e.into_inner());
+                        p.last = next;
+                        p.ahead.push(next);
                     }
-                    let Some(cursor) = cursors.iter_mut().max_by_key(|c| c.used) else { break };
-                    if cursor.ahead.len() >= AHEAD {
-                        break;
-                    }
-                    let next = cursor.ahead.back().map_or(cursor.asked, |(t, _)| *t) + cursor.stride * frame_secs;
-                    if next >= duration_secs {
-                        break;
-                    }
-                    cursor.last = next;
-                    let made = decode(&mut cursor.source, next);
-                    cursor.ahead.push_back((next, made));
+                }
+            });
+            match spawned {
+                Ok(_) => Some(Cursor { asks, place, used: 0 }),
+                Err(e) => {
+                    tracing::warn!("the Veylvik tab's decoder thread could not start: {e}");
+                    None
+                }
+            }
+        };
+        // Hands each frame asked to the decoder that has it or is nearest.
+        let (tx, rx) = std::sync::mpsc::channel::<Ask>();
+        let spawned = std::thread::Builder::new().name("klipp-veylvik-tab-footage".into()).spawn(move || {
+            let frame_secs = 1.0 / fps;
+            let mut cursors: Vec<Cursor> = Vec::new();
+            let mut clock = 0u64;
+            while let Ok((secs, answer)) = rx.recv() {
+                clock += 1;
+                let Some(at) = pick(&mut cursors, secs, frame_secs, &decoder) else {
+                    let _ = answer.send(Err("the clip's decoder could not start".into()));
+                    continue;
+                };
+                cursors[at].used = clock;
+                if let Err(std::sync::mpsc::SendError((_, answer))) = cursors[at].asks.send((secs, answer)) {
+                    // Its thread has stopped: let it go.
+                    cursors.remove(at);
+                    let _ = answer.send(Err("the clip's decoder has stopped".into()));
                 }
             }
         });
