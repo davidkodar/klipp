@@ -152,6 +152,8 @@ impl KlippApp {
         // A file replaced, relinked or proxied under a composed clip: that
         // media's footage made again, and no other's.
         klipp_veylvik::set_media_states(self.state.media_pool.all().map(|m| (m.id, media_state(m))).collect());
+        // The pool's media a composition lays in, decoded as its own.
+        klipp_veylvik::set_project_media(self.state.media_pool.all().map(|m| (m.id, (m.clone(), media_state(m)))).collect());
     }
 
     /// Tell every render the project's Veylvik compositions as they are now.

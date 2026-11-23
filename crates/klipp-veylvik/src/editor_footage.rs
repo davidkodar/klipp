@@ -277,10 +277,19 @@ impl HostMedia for EditorFootage {
 pub struct TabHost {
     footage: Mutex<Option<Arc<dyn veylvik_render::FrameSource>>>,
     below: Mutex<Option<Arc<dyn veylvik_render::FrameSource>>>,
+    /// Media of Klipp's pool the composition lays in, by key.
+    pool: Mutex<std::collections::HashMap<String, Arc<dyn veylvik_render::FrameSource>>>,
     sound: Mutex<Option<Arc<crate::clip_sound::ClipSound>>>,
 }
 
 impl TabHost {
+    /// The media of Klipp's pool the open composition lays in, by key
+    /// ([`crate::pool::media_key`]), from now on.
+    pub fn set_pool(&self, pool: impl IntoIterator<Item = (String, EditorFootage)>) {
+        let sources = pool.into_iter().map(|(key, f)| (key, Arc::new(veylvik_render::HostSource::new(f, 512 << 20).lasting()) as Arc<dyn veylvik_render::FrameSource>)).collect();
+        *self.pool.lock().unwrap_or_else(|e| e.into_inner()) = sources;
+    }
+
     /// What is below the open clip from now on; none while no clip is
     /// open. Named for this page alone: kept in this session only.
     pub fn set_below(&self, below: Option<crate::below::PageBelow>) {
@@ -315,7 +324,7 @@ impl crate::Host for TabHost {
         let slot = match key {
             crate::CLIP_MEDIA_KEY => &self.footage,
             crate::BELOW_KEY => &self.below,
-            _ => return None,
+            _ => return self.pool.lock().unwrap_or_else(|e| e.into_inner()).get(key).cloned(),
         };
         slot.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }

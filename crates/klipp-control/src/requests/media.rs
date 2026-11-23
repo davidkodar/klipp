@@ -257,7 +257,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::VeylvikComposition { clip_id, make, open, set, version_action, version, name, reset, remove, copy_from, below } => {
+        ControlCommand::VeylvikComposition { clip_id, make, open, set, version_action, version, name, reset, remove, copy_from, below, add_media } => {
             let id = klipp_core::ClipId(parse_uuid(&clip_id, "clip_id")?);
             let named = |ctx: &ControlContext| -> Result<(Option<klipp_timeline::CompositionId>, bool), String> {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -272,8 +272,8 @@ pub(crate) fn respond(
             if open || (make && had.is_none()) {
                 send_envelope(ctx, vec![AppCommand::VeylvikComposition { clip_id: id, open }], false)?;
             }
-            if [reset, remove, copy_from.is_some(), below].iter().filter(|b| **b).count() > 1 {
-                return Err("reset, remove, copy_from and below are one at a time".into());
+            if [reset, remove, copy_from.is_some(), below, add_media.is_some()].iter().filter(|b| **b).count() > 1 {
+                return Err("reset, remove, copy_from, below and add_media are one at a time".into());
             }
             let comp_of = |ctx: &ControlContext, clip: klipp_core::ClipId| -> Result<Option<klipp_timeline::CompositionId>, String> {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -297,6 +297,17 @@ pub(crate) fn respond(
                     return Err("the clip has no Veylvik composition".into());
                 }
                 send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![id], action: if reset { A::Reset } else { A::Remove } }], false)?;
+            }
+            if let Some(media) = add_media.as_deref() {
+                let media = klipp_core::MediaId(parse_uuid(media, "add_media")?);
+                if !has_media {
+                    return Err("the clip has no media to compose with: a video or still clip has".into());
+                }
+                let known = ctx.media_pool.read().recovered().get(&media).is_some();
+                if !known {
+                    return Err(format!("no media {} in the pool", media.0));
+                }
+                send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![id], action: klipp_core::CompositionClipAction::AddMedia(media) }], false)?;
             }
             if below {
                 if !has_media {

@@ -1595,6 +1595,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "remove": args.get("remove").and_then(|v| v.as_bool()).unwrap_or(false),
             "copy_from": args.get("copy_from").and_then(|v| v.as_str()),
             "below": args.get("below").and_then(|v| v.as_bool()).unwrap_or(false),
+            "add_media": args.get("add_media").and_then(|v| v.as_str()),
         }),
         "klipp_tag_media" => json!({
             "method": "tag_media",
@@ -2931,7 +2932,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "reset": { "type": "boolean" },
                  "remove": { "type": "boolean" },
                  "copy_from": { "type": "string", "description": "A clip id: this clip gets a copy of that clip's composition" },
-                 "below": { "type": "boolean", "description": "Draw the composition over the layers below the clip" }
+                 "below": { "type": "boolean", "description": "Draw the composition over the layers below the clip" },
+                 "add_media": { "type": "string", "description": "A media id of the pool, laid over the composition" }
              }), vec!["clip_id"]),
         tool("klipp_tag_media",
              "Tag a media item, or remove tags. Details: klipp_guide topic tag_media.",
