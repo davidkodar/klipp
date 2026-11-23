@@ -46,6 +46,9 @@ pub(crate) struct VeylvikTab {
     view: Option<ViewKey>,
     /// The sounds of the timeline's compositions, for Edit and the export.
     sounds: Option<klipp_veylvik::composition_sound::Sounds>,
+    /// Whether the open clip's footage was given from proxies: Edit's
+    /// Use proxies switched over, it is given again.
+    proxies: Option<bool>,
     /// What they were last worked out from, and when.
     sounds_from: Option<(klipp_timeline::SequenceRevision, usize, usize)>,
     sounds_checked: Option<std::time::Instant>,
@@ -72,7 +75,7 @@ struct Open {
 
 impl VeylvikTab {
     pub(crate) fn new(render_state: Option<eframe::egui_wgpu::RenderState>) -> Self {
-        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true, place: true, going_to: None, carried: None, applied: None, shortcuts: false, view: None, sounds: None, sounds_from: None, sounds_checked: None, paced: None }
+        Self { render_state, editor: None, host: Arc::new(TabHost::default()), open: None, failed: None, just_shown: true, place: true, going_to: None, carried: None, applied: None, shortcuts: false, view: None, sounds: None, proxies: None, sounds_from: None, sounds_checked: None, paced: None }
     }
 
     /// Whether the editor has the keyboard: the page shows and it was
@@ -164,6 +167,11 @@ impl super::KlippApp {
                 Target::Clip(id) => id,
                 Target::Nothing(why) => return say(ui, why),
             };
+            // Use proxies switched over: the footage given again, from
+            // proxies or the files, as Edit now plays it.
+            if self.veylvik_tab.proxies.replace(self.state.use_proxies).is_some_and(|was| was != self.state.use_proxies) {
+                self.veylvik_tab.reopen();
+            }
             let had = self.veylvik_tab.open.as_ref().map(|o| o.clip);
             if let Err(why) = self.veylvik_open(ui.ctx(), clip) {
                 return say(ui, &why);
@@ -495,7 +503,7 @@ impl super::KlippApp {
             .into_iter()
             .filter_map(|key| {
                 let item = self.state.media_pool.get(&klipp_veylvik::pool::media_of_key(&key)?)?;
-                Some((key, EditorFootage::new(item, working, super::engine_sync::media_state(item), ctx.device(), ctx.queue())))
+                Some((key, EditorFootage::of(item, working, super::engine_sync::media_state(item), self.state.use_proxies, ctx.device(), ctx.queue())))
             })
             .collect()
     }
@@ -506,7 +514,8 @@ impl super::KlippApp {
         let (t, c) = seq.find_clip(clip)?;
         let item = self.state.media_pool.get(&seq.tracks[t].clips[c].media_id()?)?;
         let ctx = klipp_effects::gpu_context::GpuContext::shared()?;
-        Some(EditorFootage::new(item, klipp_engine::video_decoder::working_colorspace(), super::engine_sync::media_state(item), ctx.device(), ctx.queue()))
+        // From its proxy when Edit plays from proxies.
+        Some(EditorFootage::of(item, klipp_engine::video_decoder::working_colorspace(), super::engine_sync::media_state(item), self.state.use_proxies, ctx.device(), ctx.queue()))
     }
 
     /// The editor's changes into the project, each as a step of Klipp's
