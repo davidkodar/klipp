@@ -18,72 +18,10 @@ impl KlippApp {
         }
 
         let active_idx = self.state.active_sequence_idx;
-        let fps = self.state.document.sequences[active_idx].fps;
-        let res = self.state.document.sequences[active_idx].resolution;
-
-        // Collect the clips and find the time range
-        let seq = &self.state.document.sequences[active_idx];
-        let mut collected: Vec<(usize, usize, klipp_timeline::Clip)> = Vec::new();
-        for (ti, track) in seq.tracks.iter().enumerate() {
-            for (ci, clip) in track.clips.iter().enumerate() {
-                if target_clips.contains(&clip.id) {
-                    collected.push((ti, ci, clip.clone()));
-                }
-            }
-        }
-        if collected.is_empty() { return; }
-
-        let range_start = collected.iter().map(|(_, _, c)| c.timeline_in).min().unwrap();
-        let range_end = collected.iter().map(|(_, _, c)| c.timeline_out).max().unwrap();
-
-        // Create new sequence with same fps/resolution
-        let mut nested_seq = klipp_timeline::Sequence {
-            // A new sequence starts without a camera; a nest that goes
-            // back into its parent is moved by the parent's.
-            camera: klipp_timeline::Camera::default(),
-            timeline_graph: None,
-            grade_groups: Vec::new(),
-            title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
-            node_labels: Vec::new(),
-            buses: Vec::new(),
-            drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
-            id: klipp_core::SequenceId::new(),
-            name: name.clone(),
-            fps,
-            resolution: res,
-            first_clip_autoset: klipp_timeline::FirstClipAutoSet { resolution: false, fps: false, rate_answered: false },
-            tracks: Vec::new(),
-            in_point: None,
-            out_point: None,
-            markers: Vec::new(),
-            last_playhead: None,
-            brief: None,
-            edit_plan: None,
-            reviews: Vec::new(),
-            covers: Vec::new(),
-            awaiting_refit: false,
-            version_of: None,
-        };
-
-        // Reproduce track structure and move clips (offset to start at 0)
-        let parent_seq = &self.state.document.sequences[active_idx];
-        for (ti, track) in parent_seq.tracks.iter().enumerate() {
-            let mut new_track = klipp_timeline::Track::new(&track.name, track.kind);
-            for (_, _, clip) in collected.iter().filter(|(t, _, _)| *t == ti) {
-                let mut c = clip.clone();
-                c.timeline_in -= range_start;
-                c.timeline_out -= range_start;
-                new_track.clips.push(c);
-            }
-            if !new_track.clips.is_empty() {
-                new_track.sort_clips();
-                nested_seq.tracks.push(new_track);
-            }
-        }
-
-        let nested_seq_id = nested_seq.id;
+        let Some(nest) = nest_clips(&self.state.document.sequences[active_idx], &target_clips, &name) else { return };
+        let nested_seq_id = nest.inner.id;
         let parent_seq_id = self.state.document.sequences[active_idx].id;
-        self.state.document.sequences.push(nested_seq);
+        self.state.document.sequences.push(nest.inner);
 
         // Refuse to create a circular reference: if the new nested sequence
         // (which contains the moved clips, possibly including other compound
@@ -96,19 +34,13 @@ impl KlippApp {
             return;
         }
 
-        // Remove original clips from parent and insert compound clip
+        // Remove original clips from parent and insert compound clip on the
+        // first track that had selected clips, at the range start
         let parent_seq = &mut self.state.document.sequences[active_idx];
-        // Find the first track that had selected clips
-        let first_track_idx = collected.first().map(|(ti, _, _)| *ti).unwrap_or(0);
-        for (ti, _, clip) in &collected {
-            if let Some(track) = parent_seq.tracks.get_mut(*ti) {
-                track.clips.retain(|c| c.id != clip.id);
-            }
-        }
-        // Insert compound clip on the first track at the range start
-        let compound_clip = klipp_timeline::Clip::sequence(nested_seq_id, range_start, range_end);
+        parent_seq.tracks = nest.tracks;
+        let compound_clip = klipp_timeline::Clip::sequence(nested_seq_id, nest.start, nest.end);
         let compound_id = compound_clip.id;
-        if let Some(track) = parent_seq.tracks.get_mut(first_track_idx) {
+        if let Some(track) = parent_seq.tracks.get_mut(nest.track) {
             track.clips.push(compound_clip);
             track.sort_clips();
         }
@@ -515,6 +447,86 @@ impl KlippApp {
         self.state.dirty = true;
         self.sync_sequence_to_engine();
     }
+}
+
+/// What nesting clips `ids` of `parent` makes: a new sequence named `name`,
+/// of `parent`'s format, holding them on tracks as theirs, moved to start at
+/// its beginning; `parent`'s tracks without them; and the track (the first
+/// that had one) and range the nest takes there. `None` when none of them
+/// is in `parent`.
+pub(super) struct Nest {
+    pub(super) inner: klipp_timeline::Sequence,
+    pub(super) tracks: Vec<klipp_timeline::Track>,
+    pub(super) track: usize,
+    pub(super) start: klipp_core::Timecode,
+    pub(super) end: klipp_core::Timecode,
+}
+
+pub(super) fn nest_clips(parent: &klipp_timeline::Sequence, ids: &[klipp_core::ClipId], name: &str) -> Option<Nest> {
+    let fps = parent.fps;
+    let res = parent.resolution;
+    // Collect the clips and find the time range
+    let mut collected: Vec<(usize, klipp_timeline::Clip)> = Vec::new();
+    for (ti, track) in parent.tracks.iter().enumerate() {
+        for clip in &track.clips {
+            if ids.contains(&clip.id) {
+                collected.push((ti, clip.clone()));
+            }
+        }
+    }
+    let range_start = collected.iter().map(|(_, c)| c.timeline_in).min()?;
+    let range_end = collected.iter().map(|(_, c)| c.timeline_out).max()?;
+
+    // Create new sequence with same fps/resolution
+    let mut nested_seq = klipp_timeline::Sequence {
+        // A new sequence starts without a camera; a nest that goes
+        // back into its parent is moved by the parent's.
+        camera: klipp_timeline::Camera::default(),
+        timeline_graph: None,
+        grade_groups: Vec::new(),
+        title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
+        node_labels: Vec::new(),
+        buses: Vec::new(),
+        drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
+        id: klipp_core::SequenceId::new(),
+        name: name.to_string(),
+        fps,
+        resolution: res,
+        first_clip_autoset: klipp_timeline::FirstClipAutoSet { resolution: false, fps: false, rate_answered: false },
+        tracks: Vec::new(),
+        in_point: None,
+        out_point: None,
+        markers: Vec::new(),
+        last_playhead: None,
+        brief: None,
+        edit_plan: None,
+        reviews: Vec::new(),
+        covers: Vec::new(),
+        awaiting_refit: false,
+        version_of: None,
+    };
+
+    // Reproduce track structure and move clips (offset to start at 0)
+    for (ti, track) in parent.tracks.iter().enumerate() {
+        let mut new_track = klipp_timeline::Track::new(&track.name, track.kind);
+        for (_, clip) in collected.iter().filter(|(t, _)| *t == ti) {
+            let mut c = clip.clone();
+            c.timeline_in -= range_start;
+            c.timeline_out -= range_start;
+            new_track.clips.push(c);
+        }
+        if !new_track.clips.is_empty() {
+            new_track.sort_clips();
+            nested_seq.tracks.push(new_track);
+        }
+    }
+    let mut tracks = parent.tracks.clone();
+    for (ti, clip) in &collected {
+        if let Some(track) = tracks.get_mut(*ti) {
+            track.clips.retain(|c| c.id != clip.id);
+        }
+    }
+    Some(Nest { inner: nested_seq, tracks, track: collected[0].0, start: range_start, end: range_end })
 }
 
 /// The v1 canvas's Group into Compound on `old_graph`, kept to hold the

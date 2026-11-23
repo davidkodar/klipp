@@ -361,6 +361,10 @@ pub enum ControlCommand {
         /// A media id of the pool, laid over the composition.
         #[serde(default)]
         add_media: Option<String>,
+        /// Other clips nested with this one in a precomposition, with one
+        /// composition of all their footage on it.
+        #[serde(default)]
+        with_clips: Vec<String>,
     },
     TagMedia {
         media_id: String,

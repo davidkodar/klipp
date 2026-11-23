@@ -208,6 +208,15 @@ pub trait FrameSource {
     /// `None` once it has been. The default has no use for it.
     fn below(&mut self, _clip: &Clip, _below: Option<SourceFrame>) {}
 
+    /// Precomposition `clip`'s picture at `scene_secs` into its scene:
+    /// `scene`, the scene composed there at the render's size, or a
+    /// picture a source makes of it and of the scene's clips (a Veylvik
+    /// composition on the precomposition). Another size than the scene's
+    /// is not taken: the scene is drawn. The default is the scene.
+    fn scene(&mut self, _clip: &Clip, _scene_secs: f64, scene: SourceFrame) -> SourceFrame {
+        scene
+    }
+
     /// The frame after the one [`frame`](Self::frame) returns for
     /// `source_secs`, for frame blending. Asked only after `frame`, for
     /// the same time. `None` (the default) shows the one frame unblended.
@@ -3090,10 +3099,17 @@ impl Renderer {
                     Some(Arc::new(AccSeed { buffer: Arc::clone(&k.buffer), device: g.device(), queue: g.queue(), width, height }) as Arc<dyn GpuPixels>)
                 }));
                 let (pixels, other_size, (fw, fh)) = match kept {
+                    // The scene, or the picture its source makes of it.
+                    Some(seed) if precomp => {
+                        let scene = SourceFrame { pixels: SourcePixels::Gpu(Arc::clone(&seed)), width, height, pts: None };
+                        let pixels = match src.scene(c, at.max(0.0), scene) {
+                            f if (f.width, f.height) == (width, height) => f.pixels,
+                            _ => SourcePixels::Gpu(seed),
+                        };
+                        (pixels, false, (width, height))
+                    }
                     Some(seed) => {
-                        if !precomp {
-                            stats.stills_kept += 1;
-                        }
+                        stats.stills_kept += 1;
                         (SourcePixels::Gpu(seed), false, (width, height))
                     }
                     None => {
@@ -4928,7 +4944,15 @@ impl Renderer {
                 let scene = clip.precomp.clone()?;
                 let at = precomposition_time(clip, &scene, time, fps);
                 let surface = self.render_scene(&scene, at, width, height, src)?;
-                (GradeInput::Cpu(Arc::new(surface)), None)
+                let surface = Arc::new(surface);
+                let scene = SourceFrame { pixels: SourcePixels::Linear(Arc::clone(&surface)), width, height, pts: None };
+                match src.scene(clip, at.to_secs_f64(), scene) {
+                    f if (f.width, f.height) == (width, height) => {
+                        let (pixels, hdr) = to_linear(f, width, height);
+                        (GradeInput::Cpu(pixels), hdr)
+                    }
+                    _ => (GradeInput::Cpu(surface), None),
+                }
             }
         };
 

@@ -649,6 +649,9 @@ impl super::KlippApp {
         let seq = self.state.sequence();
         let found: Vec<klipp_timeline::Clip> = clips.iter().filter_map(|id| seq.find_clip(*id).map(|(t, c)| seq.tracks[t].clips[c].clone())).collect();
         let first = found.first().ok_or("the clip is no longer on the timeline")?;
+        if action == A::FromClips {
+            return self.composition_of_clips(clips);
+        }
         if action == A::Copy {
             let id = first.composition.ok_or("the clip has no composition")?;
             let bytes = self.state.compositions.get(&id).cloned().ok_or("the project doesn't hold the clip's composition")?;
@@ -665,7 +668,7 @@ impl super::KlippApp {
             }
             let mut new = old.clone();
             match action {
-                A::Copy => unreachable!(),
+                A::Copy | A::FromClips => unreachable!(),
                 A::Paste | A::CopyFrom(_) => {
                     let (from, bytes) = source.clone().expect("a paste has its source");
                     let id = CompositionId::new();
@@ -736,6 +739,39 @@ impl super::KlippApp {
         }
         self.sync_compositions_to_engine();
         Ok(format!("{did} {changed} clip{}", if changed == 1 { "" } else { "s" }))
+    }
+
+    /// `clips` on the sequence's video tracks nested in a precomposition,
+    /// as a compound clip nests them, with a composition of their footage
+    /// on it: each clip a footage node of its own, laid in as the tracks
+    /// stack. One step. Their timing stays Klipp's, in the precomposition;
+    /// their sound stays where it is.
+    fn composition_of_clips(&mut self, clips: &[ClipId]) -> Result<String, String> {
+        let seq = self.state.sequence();
+        let picture: Vec<ClipId> = clips.iter().copied().filter(|id| seq.find_clip(*id).is_some_and(|(t, _)| seq.tracks[t].kind == klipp_timeline::TrackKind::Video)).collect();
+        let nest = super::compound::nest_clips(seq, &picture, "Veylvik Composition").ok_or("none of the clips is on a video track")?;
+        let pool = &self.state.document.media_pool;
+        let composition = klipp_veylvik::clips::of_clips(&nest.inner, |c| c.media_id().and_then(|m| pool.get(&m)).map_or_else(|| "Clip".to_string(), |i| i.filename.clone()))?;
+        let bytes: Arc<[u8]> = serde_json::to_vec(&composition).map_err(|e| e.to_string())?.into();
+        let id = CompositionId::new();
+        let mut nested = klipp_timeline::Clip::precomposition(nest.inner.id, nest.start, nest.end);
+        nested.composition = Some(id);
+        let nested_id = nested.id;
+        let mut tracks = nest.tracks;
+        let track = tracks.get_mut(nest.track).ok_or("the clips' track is gone")?;
+        track.clips.push(nested);
+        track.sort_clips();
+        let count = nest.inner.all_clips().count();
+        let edits = [
+            crate::history::EditCommand::AddSequences { sequences: vec![nest.inner] },
+            crate::history::EditCommand::SetTracks { description: "Veylvik composition of clips", old: seq.tracks.clone(), new: tracks },
+            crate::history::EditCommand::SetComposition { id, before: None, after: Some(bytes), label: "Veylvik: Composition from clips".into() },
+        ];
+        self.apply_edits_as_one(&edits, "Veylvik: Composition from Clips");
+        self.state.selected_clip = Some(nested_id);
+        self.state.selected_clips.clear();
+        self.sync_compositions_to_engine();
+        Ok(format!("Nested {count} clip{} in a precomposition with a Veylvik composition of them", if count == 1 { "" } else { "s" }))
     }
 
     /// Compositions an undo or redo of Klipp's put back: the tab opens
