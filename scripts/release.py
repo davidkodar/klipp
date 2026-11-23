@@ -21,6 +21,10 @@ VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*
 # and copied into the output directory.
 PACKAGE_EXT = {"x86_64": "zst", "aarch64": "xz"}
 PLATFORM = {"x86_64": "Arch Linux x86_64", "aarch64": "Arch Linux ARM aarch64"}
+# Klipp hosts Veylvik's engine from its own repository. A release names the
+# Veylvik release it was tested with: a tag, never a bare revision or branch.
+VEYLVIK_URL = "https://github.com/davidkodar/veylvik"
+VEYLVIK_MANIFEST = "crates/klipp-veylvik/Cargo.toml"
 
 
 def run(*args, cwd=ROOT, **kwargs):
@@ -40,6 +44,76 @@ def release_version(tag, manifest):
     if any(len(v) > 1 and v.startswith("0") for v in core.split(".") + [p for p in pre.split(".") if p.isdigit()]):
         raise ValueError("Version contains a numeric component with a leading zero.")
     return version
+
+
+def version_key(tag):
+    """A release tag's order: numbers first, and a prerelease before its release."""
+    core, _, pre = tag[1:].partition("-")
+    parts = tuple(int(part) if part.isdigit() else part for part in pre.split(".")) if pre else ()
+    return tuple(int(part) for part in core.split(".")), not pre, tuple((isinstance(p, str), p) for p in parts)
+
+
+def veylvik_pin(manifest, lock, allow_rev=False):
+    """The Veylvik tag and commit a Klipp manifest and lock file build with.
+    Every Veylvik crate must come from Veylvik's repository at one release
+    tag, and the lock file must hold that same tag at one commit. With
+    allow_rev, a revision pin is let through and its revision given as the tag."""
+    dependencies = tomllib.loads(manifest).get("dependencies", {})
+    pins = {name: spec for name, spec in dependencies.items() if name.startswith("veylvik-")}
+    if not pins:
+        raise ValueError(f"{VEYLVIK_MANIFEST} names no Veylvik crate.")
+    found = set()
+    for name, spec in pins.items():
+        if not isinstance(spec, dict) or spec.get("git") != VEYLVIK_URL:
+            raise ValueError(f"{name} must come from {VEYLVIK_URL}.")
+        if "branch" in spec:
+            raise ValueError(f"{name} follows a branch; pin a Veylvik release tag.")
+        if "tag" in spec:
+            if not (spec["tag"].startswith("v") and VERSION.fullmatch(spec["tag"][1:])) or "rev" in spec:
+                raise ValueError(f"{name}'s tag {spec['tag']!r} isn't a Veylvik release tag such as v0.1.0.")
+            found.add(("tag", spec["tag"]))
+        elif "rev" in spec and allow_rev:
+            found.add(("rev", spec["rev"]))
+        else:
+            raise ValueError(f"{name} is pinned to revision {spec.get('rev')!r}, not a Veylvik release tag.")
+    if len(found) != 1:
+        raise ValueError(f"The Veylvik crates are pinned to different releases: {sorted(f[1] for f in found)}.")
+    (kind, pin), = found
+    expected = re.compile(rf"git\+{re.escape(VEYLVIK_URL)}\?{kind}={re.escape(pin)}#([0-9a-f]{{40}})\Z")
+    locked = {package["name"]: expected.match(package.get("source", ""))
+              for package in tomllib.loads(lock).get("package", []) if package["name"] in pins}
+    commits = {m.group(1) for m in locked.values() if m}
+    if set(locked) != set(pins) or not all(locked.values()) or len(commits) != 1:
+        raise ValueError(f"Cargo.lock doesn't hold every Veylvik crate at {pin}; run cargo update -p veylvik-document.")
+    return pin, commits.pop()
+
+
+def remote_tags(listing):
+    """Release tags and their commits from git ls-remote --tags, peeled."""
+    tags, peeled = {}, {}
+    for line in listing.splitlines():
+        sha, _, ref = line.partition("\t")
+        name = ref.removeprefix("refs/tags/")
+        target = peeled if name.endswith("^{}") else tags
+        name = name.removesuffix("^{}")
+        if name.startswith("v") and VERSION.fullmatch(name[1:]):
+            target[name] = sha
+    # An annotated tag's own object isn't the commit; its peeled line is.
+    return tags | peeled
+
+
+def check_veylvik(manifest, lock, listing, allow_rev=False):
+    """Refuse a Veylvik pin its repository doesn't hold as that release, and
+    give the newer Veylvik releases there are, for a note."""
+    pin, commit = veylvik_pin(manifest, lock, allow_rev)
+    tags = remote_tags(listing)
+    if not pin.startswith("v"):
+        return pin, sorted(tags, key=version_key)[-1:]
+    if pin not in tags:
+        raise ValueError(f"Veylvik has no release {pin}.")
+    if tags[pin] != commit:
+        raise ValueError(f"Veylvik's {pin} is now {tags[pin][:12]}, but Cargo.lock builds {commit[:12]}; the tag moved.")
+    return pin, sorted((t for t in tags if version_key(t) > version_key(pin)), key=version_key)
 
 
 def package_name(version, arch):
@@ -125,6 +199,12 @@ def build(args):
     version = release_version(args.tag, manifest)
     if output("git", "status", "--porcelain", "--untracked-files=no"):
         raise ValueError("Commit tracked changes before building a release.")
+    veylvik, newer = check_veylvik(output("git", "show", f"{ref}:{VEYLVIK_MANIFEST}"), output("git", "show", f"{ref}:Cargo.lock"),
+                                   output("git", "ls-remote", "--tags", VEYLVIK_URL), args.allow_veylvik_rev)
+    if not veylvik.startswith("v"):
+        print(f"Note: this release builds Veylvik at revision {veylvik}, not a Veylvik release.")
+    if newer:
+        print(f"Note: Veylvik has newer releases than {veylvik}: {', '.join(newer)}. This release keeps {veylvik}.")
     destination = args.output.resolve()
     destination.mkdir(parents=True, exist_ok=True)
     # Keep compiler scratch on the output filesystem, not a small /tmp tmpfs.
@@ -241,6 +321,7 @@ def main():
     b = commands.add_parser("build")
     b.add_argument("tag")
     b.add_argument("--output", type=Path, required=True)
+    b.add_argument("--allow-veylvik-rev", action="store_true", help="build with Veylvik pinned to a revision, not a release tag")
     b.set_defaults(func=build)
     m = commands.add_parser("sums", help="list the packages again, after copying in the aarch64 one")
     m.add_argument("release", type=Path, help="the x86_64 build's output directory")

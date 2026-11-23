@@ -117,6 +117,81 @@ def fake_package(directory, name, pkgname="klipp", pkgver="0.3.0-1", arch=None):
 
 
 @unittest.skipUnless(BSDTAR, "bsdtar is not installed")
+class VeylvikPinTests(unittest.TestCase):
+    URL = "https://github.com/davidkodar/veylvik"
+    A = "a" * 40
+    B = "b" * 40
+    CRATES = ("veylvik-document", "veylvik-render")
+
+    def manifest(self, pin):
+        return "[dependencies]\n" + "".join(f'{c} = {{ git = "{self.URL}", {pin} }}\n' for c in self.CRATES)
+
+    def lock(self, query, commit=A, crates=CRATES):
+        return "".join(f'[[package]]\nname = "{c}"\nversion = "0.1.0"\nsource = "git+{self.URL}?{query}#{commit}"\n'
+                       for c in crates)
+
+    def listing(self, **tags):
+        return "".join(f"{sha}\trefs/tags/{tag.replace('_', '.')}\n" for tag, sha in tags.items())
+
+    def test_a_release_tag_at_its_commit_passes_and_newer_releases_are_named(self):
+        pin, newer = release.check_veylvik(self.manifest('tag = "v0.2.0"'), self.lock("tag=v0.2.0"),
+                                           self.listing(v0_1_0=self.B, v0_2_0=self.A, v0_10_0=self.B, v0_3_0=self.B))
+        self.assertEqual((pin, newer), ("v0.2.0", ["v0.3.0", "v0.10.0"]))
+
+    def test_an_annotated_tag_is_read_at_its_commit_in_either_order(self):
+        listing = f"{self.B}\trefs/tags/v0.2.0^{{}}\n{self.A}\trefs/tags/v0.2.0\n"
+        with self.assertRaisesRegex(ValueError, "tag moved"):
+            release.check_veylvik(self.manifest('tag = "v0.2.0"'), self.lock("tag=v0.2.0"), listing)
+        listing = f"{self.A}\trefs/tags/v0.2.0^{{}}\n{self.B}\trefs/tags/v0.2.0\n"
+        self.assertEqual(release.check_veylvik(self.manifest('tag = "v0.2.0"'), self.lock("tag=v0.2.0"), listing),
+                         ("v0.2.0", []))
+
+    def test_a_revision_or_branch_is_refused_unless_a_revision_is_let_through(self):
+        for pin in ('rev = "8bcfd3c"', 'branch = "main"', 'tag = "nightly"'):
+            with self.assertRaises(ValueError):
+                release.check_veylvik(self.manifest(pin), self.lock("rev=8bcfd3c"), "")
+        pin, newer = release.check_veylvik(self.manifest('rev = "8bcfd3c"'), self.lock("rev=8bcfd3c"),
+                                           self.listing(v0_1_0=self.B), allow_rev=True)
+        self.assertEqual((pin, newer), ("8bcfd3c", ["v0.1.0"]))
+        with self.assertRaises(ValueError):
+            release.check_veylvik(self.manifest('branch = "main"'), self.lock("branch=main"), "", allow_rev=True)
+
+    def test_a_tag_veylvik_does_not_have_or_that_moved_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "no release"):
+            release.check_veylvik(self.manifest('tag = "v0.2.0"'), self.lock("tag=v0.2.0"), self.listing(v0_1_0=self.A))
+        with self.assertRaisesRegex(ValueError, "tag moved"):
+            release.check_veylvik(self.manifest('tag = "v0.2.0"'), self.lock("tag=v0.2.0"), self.listing(v0_2_0=self.B))
+
+    def test_a_lock_file_out_of_step_with_the_manifest_is_refused(self):
+        manifest = self.manifest('tag = "v0.2.0"')
+        for lock in (self.lock("rev=8bcfd3c"), self.lock("tag=v0.2.0", crates=self.CRATES[:1]),
+                     self.lock("tag=v0.2.0", crates=self.CRATES[:1]) + self.lock("tag=v0.2.0", self.B, self.CRATES[1:])):
+            with self.assertRaisesRegex(ValueError, "Cargo.lock"):
+                release.check_veylvik(manifest, lock, self.listing(v0_2_0=self.A))
+
+    def test_crates_at_different_releases_or_from_elsewhere_are_refused(self):
+        mixed = f'[dependencies]\nveylvik-document = {{ git = "{self.URL}", tag = "v0.1.0" }}\n' \
+                f'veylvik-render = {{ git = "{self.URL}", tag = "v0.2.0" }}\n'
+        fork = '[dependencies]\nveylvik-document = { git = "https://example.com/veylvik", tag = "v0.2.0" }\n'
+        for manifest in (mixed, fork, "[dependencies]\n"):
+            with self.assertRaises(ValueError):
+                release.check_veylvik(manifest, self.lock("tag=v0.2.0"), self.listing(v0_2_0=self.A))
+
+    def test_prereleases_come_before_their_release(self):
+        tags = ["v1.0.0", "v1.0.0-rc.2", "v0.9.0", "v1.0.0-rc.10", "v1.0.0-beta"]
+        self.assertEqual(sorted(tags, key=release.version_key), ["v0.9.0", "v1.0.0-beta", "v1.0.0-rc.2", "v1.0.0-rc.10", "v1.0.0"])
+
+    def test_the_klipp_manifest_names_its_veylvik_crates_from_veylvik(self):
+        manifest = (ROOT / release.VEYLVIK_MANIFEST).read_text()
+        lock = (ROOT / "Cargo.lock").read_text()
+        try:
+            release.veylvik_pin(manifest, lock)
+        except ValueError as error:
+            # Between releases Klipp may build a Veylvik revision; then only that.
+            self.assertIn("not a Veylvik release tag", str(error))
+            release.veylvik_pin(manifest, lock, allow_rev=True)
+
+
 class ReleasePackagesTests(unittest.TestCase):
     """release.py's SHA256SUMS: exactly one x86_64 package, at most one
     aarch64 one copied in, each checked by name and by what it holds."""
