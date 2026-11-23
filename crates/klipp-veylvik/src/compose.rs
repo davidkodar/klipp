@@ -639,7 +639,10 @@ impl Compositor {
         for name in &pool {
             let Some(found) = crate::pool::media_of_key(name).and_then(project_media) else { continue };
             let (item, state) = &*found;
-            let footage = crate::editor_footage::EditorFootage::new(item, key.working, *state, Arc::clone(&self.device), Arc::clone(&self.queue));
+            // A live view plays from proxies as Klipp's viewer does; an
+            // export reads the files.
+            let proxies = key.live && USE_PROXIES.load(Ordering::Relaxed);
+            let footage = crate::editor_footage::EditorFootage::of(item, key.working, *state, proxies, Arc::clone(&self.device), Arc::clone(&self.queue));
             host.insert(name.as_str(), Arc::new(HostSource::new(footage, FOOTAGE_BUDGET)));
         }
         // Its assets in its folder in the project; a project never saved
@@ -860,6 +863,17 @@ pub fn project_media(id: MediaId) -> Option<PoolMedia> {
 type PoolMedia = Arc<(klipp_media::MediaItem, u64)>;
 
 static POOL: Mutex<Option<HashMap<MediaId, PoolMedia>>> = Mutex::new(None);
+
+/// Whether Klipp's viewer plays from proxies: see [`set_use_proxies`].
+static USE_PROXIES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Whether Klipp's viewer plays from proxies now: the pool's media a
+/// composition lays in does too in a live view. A change makes them again.
+pub fn set_use_proxies(on: bool) {
+    if USE_PROXIES.swap(on, Ordering::Relaxed) != on {
+        media_changed();
+    }
+}
 
 /// Every media's frames may have changed (a decode setting of all of
 /// them): Veylvik's footage frames are not used again.

@@ -600,6 +600,8 @@ impl KlippApp {
     fn publish_proxies(&self) {
         let Ok(mut shared) = self.state.control_shared.proxies.lock() else { return };
         shared.use_proxies = self.state.use_proxies;
+        // The pool's media a composition lays in plays as the viewer does.
+        klipp_veylvik::set_use_proxies(self.state.use_proxies);
         shared.making = self.state.proxy_generating.iter().map(|id| (*id, self.state.proxy_progress.get(id).copied().unwrap_or(0.0))).collect();
     }
 

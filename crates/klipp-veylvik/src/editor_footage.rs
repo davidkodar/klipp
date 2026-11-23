@@ -84,9 +84,16 @@ pub struct EditorFootage {
 }
 
 impl EditorFootage {
-    /// `item` decoded into `working`; `state` names what its frames are
-    /// made from (the media's state, as the pool sync gives it).
+    /// `item` decoded into `working` from its file; `state` names what its
+    /// frames are made from (the media's state, as the pool sync gives it).
     pub fn new(item: &klipp_media::MediaItem, working: WorkingColorspace, state: u64, device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
+        Self::of(item, working, state, false, device, queue)
+    }
+
+    /// [`Self::new`], from its proxy when `proxies` and it has one ready,
+    /// as Klipp's viewer plays it: its frames fitted to the media's size,
+    /// and named apart from the file's.
+    pub fn of(item: &klipp_media::MediaItem, working: WorkingColorspace, state: u64, proxies: bool, device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
         let fps = item.fps.as_f64();
         let fps = if fps > 0.0 { fps } else { 25.0 };
         let rate = crate::compose::rate_of(fps);
@@ -94,12 +101,18 @@ impl EditorFootage {
         let duration = Time { ticks: i64::from(frames) * i64::from(rate.rate), rate: rate.ticks as u32 };
         let size = [item.resolution.width.max(1), item.resolution.height.max(1)];
         let info = SourceInfo { width: size[0], height: size[1], duration: Some(duration), frame_rate: Some(rate), frames: Some(frames), description: "the clip's media, decoded by Klipp".into() };
-        let salt = mix(state ^ mix(working as u64 ^ 0x7ab));
+        let proxy = item.proxy_path.clone().filter(|p| proxies && item.proxy_ready && p.exists());
+        let salt = mix(state ^ mix(working as u64 ^ 0x7ab ^ (u64::from(proxy.is_some()) << 32)));
         let id: MediaId = item.id;
         let length = RationalTime::from_secs_f64(item.duration.to_secs_f64(), 24000);
         let zero = RationalTime::from_secs_f64(0.0, 24000);
         let clip = Clip::media(id, zero, length, zero, length);
-        let media: Arc<std::collections::HashMap<MediaId, klipp_render::MediaFile>> = Arc::new([(id, klipp_render::MediaFile::of(item))].into_iter().collect());
+        // A proxy keeps its original's log curve and transfer: decoded as it.
+        let mut file = klipp_render::MediaFile::of(item);
+        if let Some(proxy) = proxy {
+            file.path = proxy;
+        }
+        let media: Arc<std::collections::HashMap<MediaId, klipp_render::MediaFile>> = Arc::new([(id, file)].into_iter().collect());
         // The decoder for each place Veylvik reads from (the frame shown,
         // the frames it prepares), each on a thread of its own: one never
         // waits on another's decoding, nor on its reading ahead.
