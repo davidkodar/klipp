@@ -3,14 +3,6 @@ use crate::history::{CommandHistory, EditCommand, HistoryEntry};
 
 /// Of a sequence's stamp and the project's, the history whose step moved
 /// later (#1986).
-fn later(sequence: Option<u64>, project: Option<u64>) -> Option<crate::history::Scope> {
-    match (sequence, project) {
-        (None, None) => None,
-        (Some(_), None) => Some(crate::history::Scope::Sequence),
-        (None, Some(_)) => Some(crate::history::Scope::Project),
-        (Some(s), Some(p)) => Some(if p > s { crate::history::Scope::Project } else { crate::history::Scope::Sequence }),
-    }
-}
 use klipp_core::{AudioParam, ClipId, Fps, MediaId, SequenceId, Timecode, Tool, TrackId, TransitionId, VideoParam, ViewerMode};
 use klipp_engine::PlaybackState;
 
@@ -6000,85 +5992,42 @@ impl AppState {
         }
     }
 
-    /// Read-only access to the active sequence's undo/redo stack. Falls
-    /// back to a pinned default when the map entry hasn't been seeded
-    /// yet (only happens for legacy on-disk projects loaded before the
-    /// per-sequence migration).
-    pub fn active_history(&self) -> &CommandHistory {
-        let id = self.document.sequences[self.active_sequence_idx].id;
-        self.history_for(id)
+    /// The sequence the timeline shows, whose history ctrl+z works in.
+    fn active_sequence_id(&self) -> SequenceId {
+        self.document.sequences[self.active_sequence_idx].id
     }
-    /// Mutable access to the active sequence's undo/redo stack. Lazily
-    /// inserts an empty history sized by `history_max_size` if needed.
+    /// The active sequence's undo/redo stack ([`klipp_document::Document::history_for`]).
+    pub fn active_history(&self) -> &CommandHistory {
+        self.document.history_for(self.active_sequence_id())
+    }
+    /// The active sequence's stack to change, set up if it has none.
     pub fn active_history_mut(&mut self) -> &mut CommandHistory {
-        let id = self.document.sequences[self.active_sequence_idx].id;
+        let id = self.active_sequence_id();
         self.history_for_mut(id)
     }
     pub fn history_for(&self, seq_id: SequenceId) -> &CommandHistory {
-        // The map is seeded eagerly on sequence creation, so a missing
-        // entry indicates a project loaded before the migration —
-        // return a pinned empty history rather than panic on undo.
-        static EMPTY: std::sync::OnceLock<CommandHistory> = std::sync::OnceLock::new();
-        self.document.command_histories
-            .get(&seq_id)
-            .unwrap_or_else(|| EMPTY.get_or_init(CommandHistory::new))
+        self.document.history_for(seq_id)
     }
     pub fn history_for_mut(&mut self, seq_id: SequenceId) -> &mut CommandHistory {
-        let max = self.history_max_size;
-        let shared = std::sync::Arc::clone(&self.control_shared);
-        let h = self.document.command_histories.entry(seq_id).or_insert_with(|| {
-            let mut h = CommandHistory::new();
-            h.set_max_size(max);
-            h
-        });
-        // Every push, undo and redo advances the document revision,
-        // whichever path pushed it. Set here rather than at creation
-        // because the shared counter can arrive after the histories do.
-        if !h.has_revision_shared() {
-            h.set_revision_shared(shared);
-        }
-        if !h.has_clock() {
-            h.set_clock(std::sync::Arc::clone(&self.document.history_clock));
-        }
-        h
+        let (max_size, revision) = (self.history_max_size, std::sync::Arc::clone(&self.control_shared));
+        self.document.history_for_mut(seq_id, &klipp_document::document::HistorySetup { max_size, revision: &revision })
     }
-
-    /// The project's history, set up as the sequences' are: their size,
-    /// the document revision and the shared clock (#1986).
+    /// The project's history (#1986), set up as the sequences' are.
     pub fn project_history_mut(&mut self) -> &mut CommandHistory {
-        let h = &mut self.document.project_history;
-        h.set_max_size(self.history_max_size);
-        if !h.has_revision_shared() {
-            h.set_revision_shared(std::sync::Arc::clone(&self.control_shared));
-        }
-        if !h.has_clock() {
-            h.set_clock(std::sync::Arc::clone(&self.document.history_clock));
-        }
-        h
+        let (max_size, revision) = (self.history_max_size, std::sync::Arc::clone(&self.control_shared));
+        self.document.project_history_mut(&klipp_document::document::HistorySetup { max_size, revision: &revision })
     }
-
-    /// Which history ctrl+z takes the next step back from (#1986): the
-    /// project's or the active sequence's, whichever top step moved last.
+    /// Which history ctrl+z takes the next step back from (#1986).
     pub fn next_undo(&self) -> Option<crate::history::Scope> {
-        later(self.active_history().undo_stamp(), self.document.project_history.undo_stamp())
+        self.document.next_undo(self.active_sequence_id())
     }
-
-    /// The step an undo would take next, from whichever history holds it.
+    /// The step an undo would take next.
     pub fn next_undo_command(&self) -> Option<&EditCommand> {
-        let history = match self.next_undo()? {
-            crate::history::Scope::Project => &self.document.project_history,
-            crate::history::Scope::Sequence => self.active_history(),
-        };
-        history.undo_entries().last().map(|e| &e.command)
+        self.document.next_undo_command(self.active_sequence_id())
     }
-
     /// The step a redo would put back next.
     pub fn next_redo_command(&self) -> Option<&EditCommand> {
-        let history = match self.next_redo()? {
-            crate::history::Scope::Project => &self.document.project_history,
-            crate::history::Scope::Sequence => self.active_history(),
-        };
-        history.redo_entries().last().map(|e| &e.command)
+        self.document.next_redo_command(self.active_sequence_id())
     }
 
     /// A change the Veylvik tab's editor made to composition `id`, which
@@ -6134,26 +6083,9 @@ impl AppState {
         }
     }
 
-    /// Which history redo puts the next step back from: the step taken
-    /// back last, unless an edit made since has made it stale, as an edit
-    /// in its own history would. A sequence's step goes stale with a newer
-    /// project step; a project step with a newer edit in any sequence,
-    /// since putting it back would put back the grades it converted over
-    /// that edit.
+    /// Which history redo puts the next step back from (#1986).
     pub fn next_redo(&self) -> Option<crate::history::Scope> {
-        let (seq, project) = (self.redo_fresh_sequence(), self.redo_fresh_project());
-        later(seq.then(|| self.active_history().redo_stamp()).flatten(), project.then(|| self.document.project_history.redo_stamp()).flatten())
-    }
-
-    /// Whether the active sequence's redo is newer than every project edit.
-    fn redo_fresh_sequence(&self) -> bool {
-        self.active_history().redo_stamp().is_some_and(|s| s > self.document.project_history.last_edit_stamp())
-    }
-
-    /// Whether the project's redo is newer than every sequence's edits.
-    fn redo_fresh_project(&self) -> bool {
-        let last = self.document.command_histories.values().map(|h| h.last_edit_stamp()).max().unwrap_or(0);
-        self.document.project_history.redo_stamp().is_some_and(|s| s > last)
+        self.document.next_redo(self.active_sequence_id())
     }
 
     /// Which history the next undo and redo come from, for the control
@@ -6167,82 +6099,41 @@ impl AppState {
     }
 
     /// What ctrl+z would take back, as the Edit menu and the control
-    /// socket name it: a project step says it is the project's.
+    /// socket name it.
     pub fn undo_label(&self) -> Option<String> {
-        match self.next_undo()? {
-            crate::history::Scope::Project => self.document.project_history.undo_label().map(|l| format!("{l} (project)")),
-            crate::history::Scope::Sequence => self.active_history().undo_label().map(str::to_owned),
-        }
+        self.document.undo_label(self.active_sequence_id())
     }
 
-    /// What redo would put back, named as `undo_label` names it.
+    /// What redo would put back.
     pub fn redo_label(&self) -> Option<String> {
-        match self.next_redo()? {
-            crate::history::Scope::Project => self.document.project_history.redo_label().map(|l| format!("{l} (project)")),
-            crate::history::Scope::Sequence => self.active_history().redo_label().map(str::to_owned),
-        }
+        self.document.redo_label(self.active_sequence_id())
     }
 
-    /// How many steps ctrl+z can take back from here: the active
-    /// sequence's and the project's.
+    /// How many steps ctrl+z can take back from here.
     pub fn undo_depth(&self) -> usize {
-        self.active_history().undo_count() + self.document.project_history.undo_count()
+        self.document.undo_depth(self.active_sequence_id())
     }
 
     /// How many steps redo can put back from here.
     pub fn redo_depth(&self) -> usize {
-        let last_sequence_edit = self.document.command_histories.values().map(|h| h.last_edit_stamp()).max().unwrap_or(0);
-        let project_edit = self.document.project_history.last_edit_stamp();
-        self.active_history().redo_stamped().filter(|(s, _)| *s > project_edit).count()
-            + self.document.project_history.redo_stamped().filter(|(s, _)| *s > last_sequence_edit).count()
+        self.document.redo_depth(self.active_sequence_id())
     }
 
-    /// Drop redo steps an edit has made stale (#1986): they would never be
-    /// offered again, and a project step can hold a whole colour change.
-    /// A stack's steps go stale from the top down, so a stale top means
-    /// all of it.
-    fn prune_stale_redo(&mut self) {
-        if self.document.project_history.redo_stamp().is_some() && !self.redo_fresh_project() {
-            self.document.project_history.clear_redo();
-        }
-        if self.active_history().redo_stamp().is_some() && !self.redo_fresh_sequence() {
-            self.active_history_mut().clear_redo();
-        }
-    }
-
-    /// The steps in reach, as the History panel lists them (#1986): the
-    /// active sequence's and the project's in the order they moved, each
-    /// with its label, the next to undo last; and those redo can put
-    /// back, the next to redo last. A project step's label says so.
+    /// The steps in reach, as the History panel lists them (#1986).
     pub fn history_view(&self) -> (Vec<String>, Vec<String>) {
-        let (seq, project) = (self.active_history(), &self.document.project_history);
-        let label = |e: &HistoryEntry, is_project: bool| if is_project { format!("{} (project)", e.label()) } else { e.label().to_owned() };
-        let mut undo: Vec<(u64, String)> = seq.undo_stamped().map(|(s, e)| (s, label(e, false))).chain(project.undo_stamped().map(|(s, e)| (s, label(e, true)))).collect();
-        undo.sort_by_key(|(s, _)| *s);
-        let last_sequence_edit = self.document.command_histories.values().map(|h| h.last_edit_stamp()).max().unwrap_or(0);
-        let mut redo: Vec<(u64, String)> = seq.redo_stamped().filter(|(s, _)| *s > project.last_edit_stamp()).map(|(s, e)| (s, label(e, false)))
-            .chain(project.redo_stamped().filter(|(s, _)| *s > last_sequence_edit).map(|(s, e)| (s, label(e, true))))
-            .collect();
-        redo.sort_by_key(|(s, _)| *s);
-        (undo.into_iter().map(|(_, l)| l).collect(), redo.into_iter().map(|(_, l)| l).collect())
+        self.document.history_view(self.active_sequence_id())
     }
 
     /// Take the next step back, from whichever history holds it.
     pub fn take_undo(&mut self) -> Option<HistoryEntry> {
-        self.prune_stale_redo();
-        match self.next_undo()? {
-            crate::history::Scope::Project => self.project_history_mut().undo(),
-            crate::history::Scope::Sequence => self.active_history_mut().undo(),
-        }
+        let (active, max_size, revision) = (self.active_sequence_id(), self.history_max_size, std::sync::Arc::clone(&self.control_shared));
+        self.document.take_undo(active, &klipp_document::document::HistorySetup { max_size, revision: &revision })
     }
 
     /// Put the next step back, from whichever history holds it.
     pub fn take_redo(&mut self) -> Option<HistoryEntry> {
-        self.prune_stale_redo();
-        match self.next_redo()? {
-            crate::history::Scope::Project => self.project_history_mut().redo(),
-            crate::history::Scope::Sequence => self.active_history_mut().redo(),
-        }
+        let (active, max_size, revision) = (self.active_sequence_id(), self.history_max_size, std::sync::Arc::clone(&self.control_shared));
+        self.document.take_redo(active, &klipp_document::document::HistorySetup { max_size, revision: &revision })
     }
     /// A clip's input colour space set to `log_format`, as the grade's
     /// Input Colour Space menu sets it (`SetClipLogFormat`), recorded as
@@ -6409,19 +6300,14 @@ impl AppState {
         // The project's steps go to its own history, reachable from any
         // sequence (#1986); inside a batch already open they are one more
         // edit of it, and the batch stays where it is.
-        let project = command.scope() == crate::history::Scope::Project && !self.active_history().is_batching();
-        if project {
+        let (active, max_size, revision) = (self.active_sequence_id(), self.history_max_size, std::sync::Arc::clone(&self.control_shared));
+        let scope = self.document.record(active, &klipp_document::document::HistorySetup { max_size, revision: &revision }, command);
+        if scope == crate::history::Scope::Project {
             // A gesture of the sequence's under way ends here: typing,
-            // a dragged value, a title colour being picked go on as new
-            // steps, not folded into one from before this (#1986).
-            self.active_history_mut().end_burst();
+            // a title colour being picked go on as new steps (#1986).
             self.tracks_undo_gesture = None;
             self.title_colour_edit = None;
-            self.project_history_mut().push(HistoryEntry { command });
-        } else {
-            self.active_history_mut().push(HistoryEntry { command });
         }
-        self.prune_stale_redo();
         self.history_ops_since_save = self.history_ops_since_save.saturating_add(1);
         self.note_recorded_tracks();
     }
@@ -6627,15 +6513,12 @@ impl AppState {
     /// the seed for sequences created later. Call from the prefs-changed path.
     pub fn set_history_max_size(&mut self, max: usize) {
         self.history_max_size = max;
-        for h in self.document.command_histories.values_mut() {
-            h.set_max_size(max);
-        }
-        self.document.project_history.set_max_size(max);
+        self.document.set_history_max_size(max);
     }
     /// Are *any* of the per-sequence histories mid-drag? Used by the
     /// autosave timer to skip while the user is gesturing.
     pub fn any_drag_in_progress(&self) -> bool {
-        self.document.command_histories.values().any(|h| h.is_any_drag_in_progress()) || self.document.project_history.is_any_drag_in_progress()
+        self.document.any_drag_in_progress()
     }
 
     /// Resolve `selected_clip` to its (track_idx, &Clip) location in
