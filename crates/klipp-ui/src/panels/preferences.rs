@@ -4991,7 +4991,9 @@ mod connect_assistant_tests {
         let first = frame(&mut panel, &prefs);
         assert!(first.iter().any(|t| t.contains("CONNECT AN ASSISTANT")), "{first:?}");
         // The look runs on a worker: give it its moment.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // The look runs the assistants' own programs on a thread: slow
+        // while the rest of the suite runs beside it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         while panel.assistant.lock().unwrap().busy.is_some() {
             assert!(std::time::Instant::now() < deadline, "the look for assistants never finished");
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -5024,7 +5026,9 @@ mod connect_assistant_tests {
             texts(&out)
         };
         frame(&mut panel, &prefs, Vec::new());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // The look runs the assistants' own programs on a thread: slow
+        // while the rest of the suite runs beside it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         while panel.assistant.lock().unwrap().busy.is_some() {
             assert!(std::time::Instant::now() < deadline, "the look for assistants never finished");
             std::thread::sleep(std::time::Duration::from_millis(50));

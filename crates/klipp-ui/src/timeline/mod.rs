@@ -1184,7 +1184,9 @@ mod menu_smoke_tests {
         timeline.right_click(at);
         timeline.frame(Vec::new());
         let rows = crate::widgets::menu::row_labels(&timeline.shapes, "Rename Clip\u{2026}");
-        assert!(rows.len() <= 20, "{} top-level rows: {rows:?}", rows.len());
+        // Twenty, and the Veylvik page's submenu beside Colour's, as each
+        // page that works on the clip has one.
+        assert!(rows.len() <= 21, "{} top-level rows: {rows:?}", rows.len());
         assert!(rows.iter().any(|r| r == "Paste at Playhead"), "Paste stays with nothing to paste: {rows:?}");
         let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
         timeline.frame(vec![escape]);
