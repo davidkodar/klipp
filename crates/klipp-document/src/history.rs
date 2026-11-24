@@ -114,6 +114,10 @@ pub struct KeyframeSnapshot {
     pub effect_keyframes: HashMap<String, Vec<Keyframe>>,
     pub audio_effect_keyframes: HashMap<String, Vec<Keyframe>>,
     pub speed_keyframes: Vec<Keyframe>,
+    /// The matte's feather and choke, which are keyed too: left out, an
+    /// undo of a key on them put nothing back.
+    pub matte_feather_keyframes: Vec<Keyframe>,
+    pub matte_choke_keyframes: Vec<Keyframe>,
 }
 
 impl KeyframeSnapshot {
@@ -134,6 +138,8 @@ impl KeyframeSnapshot {
             effect_keyframes: HashMap::new(),
             audio_effect_keyframes: HashMap::new(),
             speed_keyframes: Vec::new(),
+            matte_feather_keyframes: Vec::new(),
+            matte_choke_keyframes: Vec::new(),
         }
     }
 
@@ -154,6 +160,8 @@ impl KeyframeSnapshot {
             effect_keyframes: clip.effect_keyframes().clone(),
             audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
             speed_keyframes: clip.speed_keyframes.clone(),
+            matte_feather_keyframes: clip.matte_feather_keyframes.clone(),
+            matte_choke_keyframes: clip.matte_choke_keyframes.clone(),
         }
     }
 
@@ -173,6 +181,8 @@ impl KeyframeSnapshot {
         clip.restore_effect_keyframes(self.effect_keyframes.clone());
         clip.audio_effect_keyframes = self.audio_effect_keyframes.clone();
         clip.speed_keyframes = self.speed_keyframes.clone();
+        clip.matte_feather_keyframes = self.matte_feather_keyframes.clone();
+        clip.matte_choke_keyframes = self.matte_choke_keyframes.clone();
     }
 }
 

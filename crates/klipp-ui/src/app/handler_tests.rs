@@ -51,3 +51,33 @@ fn renames_are_steps_undo_takes_back() {
     let item = app.state.document.media_pool.get(&id).unwrap();
     assert_eq!((item.filename.as_str(), item.bin.as_deref(), app.state.document.media_pool.bins[0].name.as_str()), ("a.mov", Some("Rushes"), "Rushes"));
 }
+
+/// A key on a clip's matte feather or choke is a step undo takes back,
+/// as a key on its opacity is. The keys' snapshot held every other track
+/// but these two, so undoing one put nothing back.
+#[test]
+fn a_matte_key_is_a_step_undo_takes_back() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), at(0.0), at(4.0), at(0.0), at(4.0));
+    let id = clip.id;
+    let v = app.state.sequence().tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    let active = app.state.active_sequence_idx;
+    app.state.document.sequences[active].tracks[v].clips.push(clip);
+    let keys = |app: &KlippApp| {
+        let c = app.state.sequence().all_clips().find(|c| c.id == id).unwrap();
+        (c.matte_feather_keyframes.len(), c.matte_choke_keyframes.len(), c.opacity_keyframes().len())
+    };
+    for param in [klipp_core::VideoParam::MatteFeather, klipp_core::VideoParam::MatteChoke, klipp_core::VideoParam::Opacity] {
+        app.send_commands(vec![AppCommand::AddVideoKeyframe { clip_id: id, param, time_secs: 1.0, value: 0.5 }]);
+    }
+    assert_eq!(keys(&app), (1, 1, 1));
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(keys(&app), (1, 1, 0), "the opacity key back");
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(keys(&app), (1, 0, 0), "the choke key back");
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(keys(&app), (0, 0, 0), "the feather key back");
+    app.send_commands(vec![AppCommand::Redo, AppCommand::Redo]);
+    assert_eq!(keys(&app), (1, 1, 0));
+}
