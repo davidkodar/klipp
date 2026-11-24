@@ -39,6 +39,17 @@ impl KlippApp {
         tracing::info!("applied \"{label}\": {} edits", edits.len());
     }
 
+    /// Make `edit` as one step: applied to the document, what it asks of
+    /// the app done (the engine synced, a file read again...), recorded,
+    /// and the project marked unsaved. The one way a handler changes the
+    /// project once it is on it (E1 step 3), in place of changing the
+    /// sequence or pool itself and then recording what it did.
+    pub(super) fn commit(&mut self, edit: EditCommand) {
+        self.apply_edit_forward(&edit);
+        self.state.push_history(edit);
+        self.state.dirty = true;
+    }
+
     pub(super) fn apply_undo(&mut self) {
         // The active sequence's step or the project's, whichever is the
         // latest (#1986); another sequence's stack is never reached.
