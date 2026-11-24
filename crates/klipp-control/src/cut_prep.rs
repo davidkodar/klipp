@@ -46,10 +46,7 @@ fn clip_sound_is_heard(
     }) {
         return false;
     }
-    let settings_clip = clip.linked_clip_id.and_then(|id| {
-        sequence.tracks.iter().filter(|lane| lane.kind == TrackKind::Video)
-            .flat_map(|lane| lane.clips.iter()).find(|partner| partner.id == id)
-    }).unwrap_or(clip);
+    let settings_clip = sequence.sound_settings_clip(clip);
     settings_clip.volume > 0.0
 }
 

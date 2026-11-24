@@ -1401,6 +1401,17 @@ impl Sequence {
             .unwrap_or(clip)
     }
 
+    /// The clip whose level, pan, gain and fades `clip`'s sound plays at:
+    /// the picture it is linked to, on a video track, else itself. What the
+    /// inspector edits, what playback plays and what the export mixes, so
+    /// one never reads a clip the others don't. A sound linked to another
+    /// sound keeps its own.
+    pub fn sound_settings_clip<'a>(&'a self, clip: &'a Clip) -> &'a Clip {
+        clip.linked_clip_id
+            .and_then(|lid| self.tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| &t.clips).find(|c| c.id == lid))
+            .unwrap_or(clip)
+    }
+
     /// How many clips the sequence holds, as the status says it and the
     /// Projects card shows it: a gap is a space between clips, not one.
     /// The card counted gaps, and said 11 where the status said 8.
@@ -5929,6 +5940,35 @@ mod close_gap_tests {
         let why = seq.close_gap(v, t(2.0), t(4.0)).unwrap_err();
         assert!(why.contains("in the gap"), "{why}");
         assert_eq!(serde_json::to_value(&seq).unwrap(), before, "nothing moved");
+    }
+}
+
+#[cfg(test)]
+mod sound_settings_tests {
+    use super::*;
+    use klipp_core::{MediaId, RationalTime};
+
+    /// A sound linked to a picture plays at the picture's settings; one
+    /// linked to another sound, or to nothing, at its own.
+    #[test]
+    fn a_sound_plays_at_its_pictures_settings_and_only_a_pictures() {
+        let at = |s: f64| RationalTime::from_secs_f64(s, 24);
+        let mut picture = Clip::media(MediaId::new(), at(0.0), at(2.0), at(0.0), at(2.0));
+        let mut sound = Clip::media(MediaId::new(), at(0.0), at(2.0), at(0.0), at(2.0));
+        let mut left = Clip::media(MediaId::new(), at(2.0), at(4.0), at(0.0), at(2.0));
+        let mut right = Clip::media(MediaId::new(), at(2.0), at(4.0), at(0.0), at(2.0));
+        (picture.linked_clip_id, sound.linked_clip_id) = (Some(sound.id), Some(picture.id));
+        (left.linked_clip_id, right.linked_clip_id) = (Some(right.id), Some(left.id));
+        let (mut v1, mut a1, mut a2) = (Track::new("V1", TrackKind::Video), Track::new("A1", TrackKind::Audio), Track::new("A2", TrackKind::Audio));
+        v1.clips = vec![picture.clone()];
+        a1.clips = vec![sound.clone(), left.clone()];
+        a2.clips = vec![right.clone()];
+        let mut seq = Sequence::new_default();
+        seq.tracks = vec![v1, a1, a2];
+        assert_eq!(seq.sound_settings_clip(&sound).id, picture.id, "the picture's");
+        assert_eq!(seq.sound_settings_clip(&picture).id, picture.id);
+        assert_eq!(seq.sound_settings_clip(&left).id, left.id, "a sound linked to a sound keeps its own");
+        assert_eq!(seq.sound_settings_clip(&right).id, right.id);
     }
 }
 
