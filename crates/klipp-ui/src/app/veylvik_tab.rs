@@ -655,6 +655,7 @@ impl super::KlippApp {
             self.state.composition_clipboard = Some((id, bytes));
             return Ok("Copied the clip's composition; Paste Composition gives a clip a copy".into());
         }
+        let source = paste_source(action, seq, &self.state.compositions, self.state.composition_clipboard.as_ref())?;
         let home = self.compositions_home();
         let mut edits = Vec::new();
         let mut changed = 0;
@@ -665,8 +666,8 @@ impl super::KlippApp {
             let mut new = old.clone();
             match action {
                 A::Copy => unreachable!(),
-                A::Paste => {
-                    let (from, bytes) = self.state.composition_clipboard.clone().ok_or("nothing is copied")?;
+                A::Paste | A::CopyFrom(_) => {
+                    let (from, bytes) = source.clone().expect("a paste has its source");
                     let id = CompositionId::new();
                     if let Err(e) = klipp_project::compositions::copy_composition_assets(&home, from, id) {
                         return Err(format!("the composition's files could not be copied: {e}"));
@@ -723,6 +724,7 @@ impl super::KlippApp {
         }
         let (label, did) = match action {
             A::Paste => ("Veylvik: Paste Composition", "Pasted the composition on"),
+            A::CopyFrom(_) => ("Veylvik: Copy Composition", "Copied the composition to"),
             A::OverBelow => ("Veylvik: Over the Layers Below", "Drew the composition over the layers below on"),
             A::AddMedia(_) => ("Veylvik: Add Media", "Laid the media over the composition of"),
             A::Reset => ("Veylvik: Reset Composition", "Reset the composition of"),
@@ -759,6 +761,28 @@ impl super::KlippApp {
 /// A composition of `clip`'s media alone, at the sequence's size and the
 /// media's rate, and its file's bytes: what a clip's first composition,
 /// and a new version, start as.
+/// What a paste of `action` gives each clip a copy of: the copied
+/// composition for Paste, or the one the named clip shows for CopyFrom,
+/// which leaves what is copied alone; none for the other actions.
+fn paste_source(
+    action: klipp_core::CompositionClipAction,
+    seq: &klipp_timeline::Sequence,
+    compositions: &klipp_project::compositions::Compositions,
+    clipboard: Option<&(CompositionId, Arc<[u8]>)>,
+) -> Result<Option<(CompositionId, Arc<[u8]>)>, String> {
+    use klipp_core::CompositionClipAction as A;
+    match action {
+        A::Paste => clipboard.cloned().map(Some).ok_or_else(|| "nothing is copied".into()),
+        A::CopyFrom(from) => {
+            let (t, c) = seq.find_clip(from).ok_or("the clip to copy from is no longer on the timeline")?;
+            let id = seq.tracks[t].clips[c].composition.ok_or("the clip to copy from has no composition")?;
+            let bytes = compositions.get(&id).cloned().ok_or("the project doesn't hold that clip's composition")?;
+            Ok(Some((id, bytes)))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn fresh_composition(state: &crate::state::AppState, it: &klipp_timeline::Clip) -> Result<(klipp_veylvik::Composition, Arc<[u8]>), String> {
     let seq = state.sequence();
         let media = it.media_id().ok_or("the clip has no media")?;
@@ -961,6 +985,33 @@ mod tests {
         s.selected_clip = None;
         s.playhead = t(5.0);
         assert_eq!(opened(&s), None, "nothing under the playhead");
+    }
+
+    /// Copying a composition from another clip takes that clip's, and
+    /// leaves the person's own copied composition as it was; a paste takes
+    /// what was copied.
+    #[test]
+    fn a_copy_from_a_clip_leaves_what_is_copied_alone() {
+        use klipp_core::CompositionClipAction as A;
+        let mut from = Clip::media(MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        let shown = CompositionId::new();
+        from.composition = Some(shown);
+        let bare = Clip::media(MediaId::new(), t(2.0), t(4.0), t(0.0), t(2.0));
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips = vec![from.clone(), bare.clone()];
+        let mut seq = Sequence::new_default();
+        seq.tracks = vec![v1];
+        let compositions = klipp_project::compositions::Compositions::from([(shown, bytes("from"))]);
+        let copied = (CompositionId::new(), bytes("copied"));
+
+        let (id, got) = paste_source(A::CopyFrom(from.id), &seq, &compositions, Some(&copied)).unwrap().unwrap();
+        assert_eq!((id, &*got), (shown, &b"from"[..]), "the named clip's, not what was copied");
+        let (id, got) = paste_source(A::Paste, &seq, &compositions, Some(&copied)).unwrap().unwrap();
+        assert_eq!((id, &*got), (copied.0, &b"copied"[..]));
+        assert!(paste_source(A::Paste, &seq, &compositions, None).is_err(), "nothing copied");
+        assert!(paste_source(A::CopyFrom(bare.id), &seq, &compositions, None).is_err(), "no composition to copy");
+        assert!(paste_source(A::CopyFrom(klipp_core::ClipId::new()), &seq, &compositions, None).is_err(), "gone");
+        assert_eq!(paste_source(A::Reset, &seq, &compositions, Some(&copied)).unwrap(), None);
     }
 
     fn bytes(text: &str) -> Arc<[u8]> {

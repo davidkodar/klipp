@@ -289,7 +289,8 @@ pub(crate) fn respond(
                 if !has_media {
                     return Err("the clip has no media to compose with: a video or still clip has".into());
                 }
-                send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![from], action: A::Copy }, AppCommand::CompositionClips { clip_ids: vec![id], action: A::Paste }], false)?;
+                // Straight from that clip: the person's own copied composition stays.
+                send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![id], action: A::CopyFrom(from) }], false)?;
             }
             if reset || remove {
                 use klipp_core::CompositionClipAction as A;
