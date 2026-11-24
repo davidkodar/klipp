@@ -38,10 +38,7 @@ fn with_takes() -> (Sequence, TakeId) {
 }
 
 fn project_dir(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("klipp_audition_{}_{}", label, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    klipp_testing::scratch::fresh_dir(&format!("klipp_audition_{}", label))
 }
 
 /// Saved, the project file changed by `edit`, and read back.

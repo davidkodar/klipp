@@ -13,7 +13,7 @@ use std::sync::{
 };
 
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    klipp_testing::ffmpeg::available()
 }
 
 /// Two cues on a subtitle track over four seconds of picture at `fps`.

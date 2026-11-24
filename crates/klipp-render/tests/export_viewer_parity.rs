@@ -144,7 +144,7 @@ fn px(rgb: &[u8], x: u32, y: u32) -> [i32; 3] {
 }
 
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    klipp_testing::ffmpeg::available()
 }
 
 /// Lossless SMPTE HD bars, BT.709 limited, tagged — the reference an

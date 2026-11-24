@@ -135,10 +135,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("klipp-grade-library-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        klipp_testing::scratch::fresh_dir(&format!("klipp-grade-library-{tag}"))
     }
 
     /// A grade saved with its thumbnail comes back with both, by name, in

@@ -19,7 +19,7 @@ const SECS: u32 = 3;
 const FRAMES: u64 = (FPS * SECS) as u64;
 
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    klipp_testing::ffmpeg::available()
 }
 
 /// A `secs` long 1 kHz tone WAV at `rate` with `channels` channels.

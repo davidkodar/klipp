@@ -6,10 +6,7 @@ use klipp_nodes::{Edge, NodeGraph};
 use klipp_timeline::Look;
 
 fn temp(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("klipp-looks-each-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    klipp_testing::scratch::fresh_dir(&format!("klipp-looks-each-{tag}"))
 }
 
 fn look(name: &str, graph: NodeGraph) -> Look {

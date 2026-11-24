@@ -13,10 +13,7 @@ use klipp_project::{load_project, save_project_with_color, ColorSettings};
 use klipp_timeline::{Clip, ClipKind, MagneticAnchor, Sequence, TextBox, TitleAnimationType, TitleData, TitleObjectContent, Track, TrackKind, TrackRole, Transition};
 
 fn project_dir(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("klipp_edits_survive_{}_{}", label, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    klipp_testing::scratch::fresh_dir(&format!("klipp_edits_survive_{}", label))
 }
 
 fn tc(f: i64) -> RationalTime {

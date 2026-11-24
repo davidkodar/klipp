@@ -22,3 +22,6 @@ tracing.workspace = true
 klipp-graph-format = { workspace = true }
 klipp-effects = { path = "../klipp-effects" }
 klipp-nodes = { path = "../klipp-nodes" }
+
+[dev-dependencies]
+klipp-testing = { workspace = true }

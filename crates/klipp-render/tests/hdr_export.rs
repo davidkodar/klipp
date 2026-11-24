@@ -24,7 +24,7 @@ fn tmp(name: &str) -> PathBuf {
 }
 
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    klipp_testing::ffmpeg::available()
 }
 
 /// Whether a 10-bit HEVC file can be made here, which these exports

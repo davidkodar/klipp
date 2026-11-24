@@ -10,10 +10,7 @@ use klipp_project::{load_project, save_project};
 use klipp_timeline::{Clip, Sequence, TrackKind};
 
 fn project_dir(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("klipp_roles_test_{label}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    klipp_testing::scratch::fresh_dir(&format!("klipp_roles_test_{label}"))
 }
 
 fn tc(s: f64) -> RationalTime {

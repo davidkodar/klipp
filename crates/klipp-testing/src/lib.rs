@@ -26,6 +26,7 @@
 
 pub mod diff;
 pub mod encoders;
+pub mod ffmpeg;
 pub mod fixtures;
 pub mod gpu;
 pub mod scratch;
