@@ -44,6 +44,7 @@
 //!   magnetic entry points for any new call.
 
 pub mod audition;
+pub mod invariants;
 mod brief;
 mod clip_anim;
 mod picture_fields;
