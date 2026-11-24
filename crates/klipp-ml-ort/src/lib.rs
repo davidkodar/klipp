@@ -1,6 +1,6 @@
 //! ONNX Runtime backend for klipp-ml.
 //!
-//! This crate hosts the `MaskGenerator` / `ObjectDetector` impls
+//! This crate hosts the `MaskGenerator` impls
 //! whose models ship as ONNX weights and run through the ORT
 //! library (the canonical reference implementation). Coverage is
 //! intentionally broad — it's the one backend that handles every
@@ -56,6 +56,7 @@ pub mod postprocess;
 pub mod ppocr;
 pub mod preprocess;
 pub mod provider;
+pub mod registry;
 pub mod rf_detr_seg;
 pub mod yunet;
 pub mod runtime_resolve;

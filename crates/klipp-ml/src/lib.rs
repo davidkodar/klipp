@@ -43,10 +43,9 @@ pub use manifest::{
     ModelRuntime, PromptKinds, Source, load_effective, user_manifest_path,
 };
 pub use mask_generator::{
-    BBox, ClickPrompt, BoxPrompt, Detection, DevicePreference, InputFrame, MaskBuffer,
+    BBox, ClickPrompt, BoxPrompt, DevicePreference, InputFrame, MaskBuffer,
     MaskCandidate, MaskCapabilities, MaskError, MaskGenerator, MaskPrompts, MaskRequest,
-    MaskResponse, MaskTunables, ObjectDetector, ScribblePrompt, TemporalHint,
-    TrackerCapabilities, VideoTracker,
+    MaskResponse, MaskTunables, ScribblePrompt, TemporalHint,
 };
 pub use registry::{MaskGeneratorFactory, MaskGeneratorGuard, ModelInfo, ModelRegistry};
 pub use stub::{STUB_GENERATOR_ID, StubMaskGenerator};
