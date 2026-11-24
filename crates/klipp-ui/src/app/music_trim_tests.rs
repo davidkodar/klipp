@@ -128,3 +128,21 @@ fn the_note_offers_undo_trim() {
     clicked = clicked.or(run(vec![b(false)]).1);
     assert_eq!(clicked, Some(ToastAction::UndoStep(7)));
 }
+
+/// A song played backward under a 20 s cut keeps the part of itself it
+/// plays first: the last 20 s of its range, not a range before its start.
+#[test]
+fn a_reversed_song_keeps_the_part_it_plays_first() {
+    let (mut state, song) = project(true);
+    let id = drop_song(&mut state, song, 0.0);
+    for t in &mut state.sequences[0].tracks {
+        for c in t.clips.iter_mut().filter(|c| c.id == id) {
+            c.speed = -1.0;
+        }
+    }
+    let edits = trim_edits(state.sequence(), id).expect("trimmed");
+    apply(&mut state, &edits, LABEL);
+    let c = clip(&state, id);
+    assert!((c.source_in.to_secs_f64() - 160.0).abs() < 0.05 && (c.source_out.to_secs_f64() - 180.0).abs() < 0.05, "its last 20 s: {:?}..{:?}", c.source_in, c.source_out);
+    assert!((c.timeline_out.to_secs_f64() - 20.0).abs() < 0.01);
+}

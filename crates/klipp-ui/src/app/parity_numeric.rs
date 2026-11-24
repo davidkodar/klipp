@@ -482,7 +482,7 @@ fn pixel_case(routes: super::parity_pixels::Routes, ty: &EffectType, surface: Su
         // A Speed Ramp's speed retimes the clip, as the effect's update
         // does (`inspector_edit_host`).
         if let BuiltinEffect::SpeedRamp { speed, .. } = test_clip::effects(&c)[index] {
-            c.speed = f64::from(speed).clamp(0.1, 16.0);
+            c.speed = klipp_timeline::clamp_speed(f64::from(speed)).abs();
             let length = klipp_core::RationalTime::from_secs_f64(c.source_duration().to_secs_f64() / c.speed, c.timeline_in.rate);
             c.timeline_out = c.timeline_in + length;
         }

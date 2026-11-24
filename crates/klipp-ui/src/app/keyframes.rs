@@ -337,14 +337,7 @@ impl KlippApp {
     fn handle_speed_keyframe_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
                 AppCommand::SetClipSpeed { clip_id, speed, ripple } => {
-                    // A negative speed plays the clip backward (#617). The
-                    // magnitude is clamped to [0.1, 16.0] — zero would stall
-                    // playback and keeps timeline duration math well-defined.
-                    let speed = if *speed < 0.0 {
-                        -(speed.abs().clamp(0.1, 16.0))
-                    } else {
-                        speed.clamp(0.1, 16.0)
-                    };
+                    let speed = klipp_timeline::clamp_speed(*speed);
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     let Some(clip) = seq.all_clips().find(|c| c.id == *clip_id) else { return true };
                     // Reverse is a media clip's: a compound or a title has
