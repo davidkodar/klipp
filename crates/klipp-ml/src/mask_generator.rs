@@ -344,55 +344,6 @@ pub trait MaskGenerator: Send + Sync {
     fn generate(&mut self, req: MaskRequest<'_>) -> Result<MaskResponse, MaskError>;
 }
 
-// ─── Sister traits (forward-compat scaffolding) ──────────────────
-
-bitflags! {
-    /// Capabilities for video tracking models. Keeps the same flag
-    /// numbering style as `MaskCapabilities` for consistency.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct TrackerCapabilities: u32 {
-        /// Can track from a single annotated frame onwards.
-        const FORWARD_PROPAGATION = 1 << 0;
-        /// Can track backwards from a frame.
-        const BACKWARD_PROPAGATION = 1 << 1;
-        /// Maintains internal memory across frames (SAM2, XMem).
-        const STATEFUL = 1 << 2;
-    }
-}
-
-/// Future home for SAM2 video / XMem / Cutie / RVM. Not implemented
-/// in v1 — sketch only, so the trait family is established before
-/// Phase 4 (`F-97-VIDEOTRACK`) starts.
-pub trait VideoTracker: Send + Sync {
-    fn id(&self) -> &str;
-    fn display_name(&self) -> &str;
-    fn capabilities(&self) -> TrackerCapabilities;
-    /// Track an initial mask across `frames`. Returns one mask per
-    /// frame.
-    fn track(
-        &mut self,
-        initial_mask: &MaskBuffer,
-        frames: &[InputFrame<'_>],
-    ) -> Result<Vec<MaskBuffer>, MaskError>;
-}
-
-/// Future home for object-detection models that don't produce masks
-/// (raw YOLO-Detect, DETR). `MaskGenerator` covers seg variants;
-/// this trait covers detect-only. Phase 5+.
-pub trait ObjectDetector: Send + Sync {
-    fn id(&self) -> &str;
-    fn display_name(&self) -> &str;
-    fn detect(&mut self, frame: InputFrame<'_>) -> Result<Vec<Detection>, MaskError>;
-}
-
-/// Single detection (no mask). Used by `ObjectDetector` trait.
-#[derive(Debug, Clone)]
-pub struct Detection {
-    pub bbox: BBox,
-    pub confidence: f32,
-    pub label: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,17 +360,7 @@ mod tests {
         let _check: fn(&dyn MaskGenerator) = assert_object_safe;
     }
 
-    #[test]
-    fn video_tracker_is_object_safe() {
-        fn assert_object_safe(_: &dyn VideoTracker) {}
-        let _check: fn(&dyn VideoTracker) = assert_object_safe;
-    }
 
-    #[test]
-    fn object_detector_is_object_safe() {
-        fn assert_object_safe(_: &dyn ObjectDetector) {}
-        let _check: fn(&dyn ObjectDetector) = assert_object_safe;
-    }
 
     #[test]
     fn capability_flags_compose_with_or() {
