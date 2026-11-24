@@ -24,9 +24,7 @@ fn waveform_bars_for(peaks: Option<&[f32]>) -> bool {
 /// picture when it has one on a video track, else itself, as the mix reads
 /// a pair's sound settings.
 fn sound_settings_clip<'a>(seq: &'a klipp_timeline::Sequence, clip: &'a Clip) -> &'a Clip {
-    clip.linked_clip_id
-        .and_then(|lid| seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).flat_map(|t| &t.clips).find(|c| c.id == lid))
-        .unwrap_or(clip)
+    seq.sound_settings_clip(clip)
 }
 
 pub fn effects_clip<'a>(seq: &'a klipp_timeline::Sequence, clip: &'a Clip) -> &'a Clip {

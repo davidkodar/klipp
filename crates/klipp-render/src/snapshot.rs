@@ -386,9 +386,7 @@ impl AudioClipShape {
 /// The clip whose sound settings `clip` plays with: its linked video
 /// clip when it has one on the timeline, else itself.
 fn sound_settings_source<'a>(seq: &'a Sequence, clip: &'a klipp_timeline::Clip) -> &'a klipp_timeline::Clip {
-    clip.linked_clip_id
-        .and_then(|lid| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == lid))
-        .unwrap_or(clip)
+    seq.sound_settings_clip(clip)
 }
 
 #[derive(Debug, Clone)]

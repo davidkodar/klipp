@@ -5947,10 +5947,7 @@ fn set_crossfade_envelope(seq: &klipp_timeline::Sequence, fadeable: &FadeableMed
 fn envelope_of(seq: &klipp_timeline::Sequence, sounding: &klipp_timeline::crossfade::Sounding<'_>, tc: Timecode) -> Envelope {
     let e = sounding.extent;
     let clip = sounding.clip;
-    let settings = clip
-        .linked_clip_id
-        .and_then(|lid| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == lid))
-        .unwrap_or(clip);
+    let settings = seq.sound_settings_clip(clip);
     let constant_power = fade_curve_to_u32(klipp_timeline::FadeCurve::ConstantPower);
     let (fade_in, in_curve) = if e.fade_in_secs > 0.0 {
         (e.fade_in_secs, constant_power)
@@ -6030,8 +6027,7 @@ fn clip_sound_at(seq: &klipp_timeline::Sequence, audio_clip: &klipp_timeline::Cl
         }
     };
     // If linked to a video clip, the video clip's audio params.
-    let linked = audio_clip.linked_clip_id.and_then(|id| seq.tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == id));
-    at(linked.unwrap_or(audio_clip))
+    at(seq.sound_settings_clip(audio_clip))
 }
 
 /// Pure helper: hash the audio-relevant fields of a single clip.

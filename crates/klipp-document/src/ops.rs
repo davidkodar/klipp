@@ -5746,9 +5746,7 @@ pub(crate) fn linear_to_db(v: f32) -> f32 {
 /// is linked to when it has one, else itself. Playback and the render
 /// read them there.
 pub(crate) fn sound_settings_clip<'a>(seq: &'a Sequence, clip: &'a Clip) -> &'a Clip {
-    clip.linked_clip_id
-        .and_then(|lid| seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).find(|c| c.id == lid))
-        .unwrap_or(clip)
+    seq.sound_settings_clip(clip)
 }
 
 /// What `clip`'s sound is, by its role: its own when one was set, else
