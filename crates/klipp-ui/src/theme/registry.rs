@@ -104,6 +104,13 @@ impl ThemeRegistry {
     /// `*.toml` files that parse cleanly. Files that fail to parse
     /// are skipped with a warning — the app keeps running on the
     /// built-ins.
+    /// The built-in themes alone, nothing read from disk: for a test.
+    pub fn builtins() -> Self {
+        let mut reg = Self::default();
+        reg.load_builtins();
+        reg
+    }
+
     pub fn load() -> Self {
         let mut reg = Self::default();
         reg.load_builtins();

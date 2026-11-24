@@ -222,6 +222,8 @@ mod edit_helper_commands;
 mod subtitles;
 mod render_script;
 mod batch_rename;
+#[cfg(test)]
+mod handler_tests;
 mod whoosh;
 mod hyperzoom;
 use export::*;
