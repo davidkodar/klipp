@@ -191,6 +191,9 @@ impl Place {
 /// The actions every place reads, a project open or not
 /// (`shortcuts_app`).
 pub const APP_ACTIONS: &[&str] = &["new_project", "open_project", "preferences", "quit"];
+/// The page keys, read on every page but never while a field is typed in
+/// (`shortcuts_app` too): the Veylvik page's, there and back.
+pub const PAGE_ACTIONS: &[&str] = &["toggle_veylvik_page"];
 /// The Ctrl combinations, read while typing and on the canvases too
 /// (`shortcuts_ctrl_global`).
 pub const CTRL_ACTIONS: &[&str] = &[
@@ -216,6 +219,8 @@ pub fn action_places(action: &str) -> &'static [Place] {
     use Place::*;
     if APP_ACTIONS.contains(&action) {
         &[Launch, Typing, PictureCanvas, GradeCanvas, Editor]
+    } else if PAGE_ACTIONS.contains(&action) {
+        &[PictureCanvas, GradeCanvas, Editor]
     } else if CTRL_ACTIONS.contains(&action) {
         &[Typing, PictureCanvas, GradeCanvas, Editor]
     } else if TRANSPORT_ACTIONS.contains(&action) {

@@ -413,6 +413,8 @@ mod tests {
             "skim_transcode_status", "skim_transcode_done_at", "browser_skim_pending", "skim_decode_in_flight", "skim_decode_started_at", "skim_queued_request", "timeline_skim_in_flight", "timeline_skim_queued", "timeline_skim_declined", "timeline_skim_last", "timeline_skim_revision", "skim_last_requested", "browser_skim_active_this_frame", "pending_skim_transcodes",
             "clip_carry", "upper_timeline_split", "magnetic_timeline_enabled", "perf_fps", "perf_video_fps",
             "filmstrip_hover_enabled", "transcript_panel_hovered", "files_hovered", "speed_dialog_ripple", "ripple_enabled", "linked_selection", "drag_drop", "surface_snaps_pending", "consolidate_include_skims", "project_auto_skim",
+            // The inspector's: a composition setting being dragged.
+            "control_drag",
         ];
         let per_timeline = ["drag", "select", "hover", "lane", "zoom", "scroll", "playhead", "range", "trim", "key_selection", "keyframe", "fps", "compound", "timeline_", "ruler_", "skim"];
         let mut missing = Vec::new();

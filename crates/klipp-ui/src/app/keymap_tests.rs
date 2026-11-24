@@ -5,7 +5,7 @@
 //! `keybindings::action_places` says.
 
 use klipp_core::AppCommand;
-use crate::keybindings::{action_places, resolved, shared_place, KeyBindings, KeyCombo, KeymapPreset, Place, APP_ACTIONS, CTRL_ACTIONS, GRADE_ACTIONS, TRANSPORT_ACTIONS};
+use crate::keybindings::{action_places, resolved, shared_place, KeyBindings, KeyCombo, KeymapPreset, Place, APP_ACTIONS, CTRL_ACTIONS, PAGE_ACTIONS, GRADE_ACTIONS, TRANSPORT_ACTIONS};
 
 /// What a US keyboard types for `key` with Shift held or not, when it
 /// types anything.
@@ -118,7 +118,7 @@ fn every_bound_action_is_read_where_its_places_say() {
         got.dedup();
         assert_eq!(got, want, "{function}");
     };
-    same(APP_ACTIONS, "shortcuts_app");
+    same(&[APP_ACTIONS, PAGE_ACTIONS].concat(), "shortcuts_app");
     same(CTRL_ACTIONS, "shortcuts_ctrl_global");
     same(GRADE_ACTIONS, "grade_node_keys");
     let transport = include_str!("../panels/transport.rs");
