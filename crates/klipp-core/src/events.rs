@@ -1357,6 +1357,9 @@ pub enum CompositionClipAction {
     /// This media of the pool laid over each clip's composition (one made
     /// of its media first, for a clip without).
     AddMedia(crate::MediaId),
+    /// The clips on video tracks nested in a precomposition, with a
+    /// composition of their footage on it, each clip an input of its own.
+    FromClips,
 }
 
 #[derive(Debug, Clone)]

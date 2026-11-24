@@ -257,8 +257,11 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::VeylvikComposition { clip_id, make, open, set, version_action, version, name, reset, remove, copy_from, below, add_media } => {
+        ControlCommand::VeylvikComposition { clip_id, make, open, set, version_action, version, name, reset, remove, copy_from, below, add_media, with_clips } => {
             let id = klipp_core::ClipId(parse_uuid(&clip_id, "clip_id")?);
+            if !with_clips.is_empty() {
+                return veylvik_composition_of_clips(ctx, id, &with_clips);
+            }
             let named = |ctx: &ControlContext| -> Result<(Option<klipp_timeline::CompositionId>, bool), String> {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let (t, c) = seq.find_clip(id).ok_or_else(|| format!("no clip {} in the open sequence", id.0))?;
@@ -924,6 +927,35 @@ fn take_differs(c: &klipp_timeline::Clip, slot: &klipp_timeline::Clip) -> Vec<&'
 /// What `klipp_veylvik_composition` answers for clip `clip`: its
 /// composition `id`'s size, rate, length, nodes and folder, as the project
 /// holds it now, or that it has none.
+/// Clip `first` and `others` nested in a precomposition with one Veylvik
+/// composition of their footage on it: the precomposition's reply.
+fn veylvik_composition_of_clips(ctx: &ControlContext, first: klipp_core::ClipId, others: &[String]) -> Result<serde_json::Value, String> {
+    let mut ids = vec![first];
+    for other in others {
+        ids.push(klipp_core::ClipId(parse_uuid(other, "with_clips")?));
+    }
+    let nested = |ctx: &ControlContext| -> Result<Vec<(klipp_core::ClipId, Option<klipp_timeline::CompositionId>)>, String> {
+        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+        Ok(seq.all_clips().filter(|c| matches!(c.kind, klipp_timeline::ClipKind::Precomposition { .. })).map(|c| (c.id, c.composition)).collect())
+    };
+    {
+        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+        for id in &ids {
+            let (t, _) = seq.find_clip(*id).ok_or_else(|| format!("no clip {} in the open sequence", id.0))?;
+            if seq.tracks[t].kind != klipp_timeline::TrackKind::Video {
+                return Err(format!("clip {} isn't on a video track: only pictures are nested", id.0));
+            }
+        }
+    }
+    let before = nested(ctx)?;
+    send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: ids.clone(), action: klipp_core::CompositionClipAction::FromClips }], false)?;
+    let made = nested(ctx)?.into_iter().find(|n| !before.contains(n) && n.1.is_some()).ok_or("the clips weren't nested (the app says why in its message)")?;
+    let mut reply = veylvik_composition_reply(made.0, made.1, true, false);
+    reply["nested"] = json!(ids.iter().map(|i| i.0.to_string()).collect::<Vec<_>>());
+    reply["inputs"] = json!(ids.iter().map(|i| klipp_veylvik::clips::clip_key(*i)).collect::<Vec<_>>());
+    Ok(reply)
+}
+
 fn veylvik_composition_reply(clip: klipp_core::ClipId, id: Option<klipp_timeline::CompositionId>, made: bool, opened: bool) -> serde_json::Value {
     let Some(id) = id else {
         return json!({

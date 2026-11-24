@@ -9205,6 +9205,7 @@ impl TimelinePanel {
                         ui.separator();
                         let over = clip.composition.is_some_and(|id| state.compositions.get(&id).is_some_and(|b| klipp_veylvik::bytes_read_below(b)));
                         item(ui, "Over the Layers Below", "Draw the composition over the tracks under the clip: a \"Layers below\" footage node on the Veylvik page, its picture merged over it", !over, V::OverBelow);
+                        item(ui, "Composition from Clips", "Nest the selected clips in a precomposition with one Veylvik composition of them: each clip a footage node of its own, its timing kept in the precomposition", targets.len() > 1, V::FromClips);
                     });
                 }
 
