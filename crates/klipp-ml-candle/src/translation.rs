@@ -339,19 +339,19 @@ pub const MAX_INPUT_TOKENS: usize = 500;
 /// translation runs at a time.
 pub fn start(id: String, source: &str, target: &str, lines: Vec<String>) -> Result<std::sync::mpsc::Receiver<Result<Vec<Line>, String>>, String> {
     let pair = pair(source, target).ok_or_else(|| format!("no translation from {} to {}", language_name(source), language_name(target)))?;
-    if let Some(running) = jobs::running() {
-        return Err(format!("a translation into {} is running already ({:.0}%); wait for it, or cancel it", running.language, running.progress * 100.0));
+    if let Some(running) = JOBS.running() {
+        return Err(format!("a translation into {} is running already ({:.0}%); wait for it, or cancel it", running.about, running.progress * 100.0));
     }
-    let cancel = jobs::begin(&id, language_name(target), lines.len());
+    let cancel = JOBS.begin(&id, language_name(target), lines.len());
     let (tx, rx) = std::sync::mpsc::channel();
     let job = id.clone();
     let spawned = std::thread::Builder::new().name("klipp-translate".into()).spawn(move || {
         let out = run(&job, &pair, &lines, &cancel);
         match &out {
-            Err(why) if why == CANCELLED => jobs::cancelled(&job),
-            Err(why) => jobs::finish(&job, Err(why.clone())),
+            Err(why) if why == CANCELLED => JOBS.cancelled(&job),
+            Err(why) => JOBS.finish(&job, Err(why.clone())),
             // Done when the caller has put the translation in place.
-            Ok(_) => jobs::update(&job, |j| {
+            Ok(_) => JOBS.update(&job, |j| {
                 j.phase = "applying";
                 j.progress = 1.0;
             }),
@@ -359,7 +359,7 @@ pub fn start(id: String, source: &str, target: &str, lines: Vec<String>) -> Resu
         let _ = tx.send(out);
     });
     if let Err(e) = spawned {
-        jobs::finish(&id, Err(format!("could not start: {e}")));
+        JOBS.finish(&id, Err(format!("could not start: {e}")));
         return Err(format!("could not start the translation: {e}"));
     }
     Ok(rx)
@@ -406,7 +406,7 @@ fn run(id: &str, pair: &Pair, lines: &[String], cancel: &std::sync::atomic::Atom
         pair,
         true,
         &mut |p| {
-            jobs::update(id, |j| {
+            JOBS.update(id, |j| {
                 j.phase = "downloading";
                 j.progress = p;
             })
@@ -415,7 +415,7 @@ fn run(id: &str, pair: &Pair, lines: &[String], cancel: &std::sync::atomic::Atom
     )?;
     #[cfg(feature = "candle")]
     {
-        jobs::update(id, |j| {
+        JOBS.update(id, |j| {
             j.phase = "loading";
             j.progress = 0.0;
         });
@@ -426,7 +426,7 @@ fn run(id: &str, pair: &Pair, lines: &[String], cancel: &std::sync::atomic::Atom
                 return Err(CANCELLED.into());
             }
             out.push(translate_line(&mut t, line)?);
-            jobs::update(id, |j| {
+            JOBS.update(id, |j| {
                 j.phase = "translating";
                 j.done = i + 1;
                 j.progress = (i + 1) as f32 / lines.len().max(1) as f32;
@@ -442,148 +442,9 @@ fn run(id: &str, pair: &Pair, lines: &[String], cancel: &std::sync::atomic::Atom
 }
 
 /// The translations running and done this session, for the app's status
-/// and for agents (`job_status`, `cancel_job`).
-pub mod jobs {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-
-    /// Where a translation stands.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum State {
-        Running,
-        Done,
-        Failed,
-        Cancelled,
-    }
-
-    /// A translation job as last told.
-    #[derive(Debug, Clone, PartialEq)]
-    pub struct Job {
-        pub id: String,
-        pub language: String,
-        pub state: State,
-        /// downloading, loading, translating, applying, or how it ended.
-        pub phase: &'static str,
-        /// The phase's share done, 0 to 1.
-        pub progress: f32,
-        /// Lines translated, of `total`.
-        pub done: usize,
-        pub total: usize,
-        pub error: Option<String>,
-        /// What was made, once done.
-        pub result: Option<String>,
-    }
-
-    struct Entry {
-        job: Job,
-        cancel: Arc<AtomicBool>,
-    }
-
-    /// Finished jobs kept, newest last, for a reader that comes late.
-    const KEPT: usize = 32;
-
-    fn all_entries() -> MutexGuard<'static, Vec<Entry>> {
-        static JOBS: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
-        JOBS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Job `id` begun, translating `total` lines into `language`: its
-    /// cancel flag.
-    pub(super) fn begin(id: &str, language: &str, total: usize) -> Arc<AtomicBool> {
-        let cancel = Arc::new(AtomicBool::new(false));
-        let mut jobs = all_entries();
-        jobs.retain(|e| e.job.id != id);
-        let finished = jobs.iter().filter(|e| e.job.state != State::Running).count();
-        let mut drop = finished.saturating_sub(KEPT - 1);
-        jobs.retain(|e| {
-            let gone = drop > 0 && e.job.state != State::Running;
-            drop -= usize::from(gone);
-            !gone
-        });
-        jobs.push(Entry {
-            job: Job { id: id.into(), language: language.into(), state: State::Running, phase: "starting", progress: 0.0, done: 0, total, error: None, result: None },
-            cancel: cancel.clone(),
-        });
-        cancel
-    }
-
-    /// Job `id` changed by `f`, while it runs.
-    pub(super) fn update(id: &str, f: impl FnOnce(&mut Job)) {
-        if let Some(e) = all_entries().iter_mut().find(|e| e.job.id == id && e.job.state == State::Running) {
-            f(&mut e.job);
-        }
-    }
-
-    /// Job `id` stopped by a cancel, nothing made.
-    pub fn cancelled(id: &str) {
-        update(id, |j| {
-            j.state = State::Cancelled;
-            j.phase = "cancelled";
-        });
-    }
-
-    /// Job `id` ended: what it made, or why it made nothing.
-    pub fn finish(id: &str, result: Result<String, String>) {
-        update(id, |j| match result {
-            Ok(made) => {
-                j.state = State::Done;
-                j.phase = "done";
-                j.progress = 1.0;
-                j.result = Some(made);
-            }
-            Err(why) => {
-                j.state = State::Failed;
-                j.phase = "failed";
-                j.error = Some(why);
-            }
-        });
-    }
-
-    /// Job `id` refused before it could start, into `language`: kept as
-    /// failed with `why`, so a reader given its id learns what happened
-    /// rather than that there is no such job. One that did start is
-    /// ended with `why` instead.
-    pub fn refused(id: &str, language: &str, why: &str) {
-        if get(id).is_some() {
-            finish(id, Err(why.to_string()));
-            return;
-        }
-        begin(id, language, 0);
-        finish(id, Err(why.to_string()));
-    }
-
-    /// Whether job `id` was asked to stop: a translation back from its
-    /// worker is then not put in place.
-    pub fn cancel_requested(id: &str) -> bool {
-        all_entries().iter().any(|e| e.job.id == id && e.cancel.load(Ordering::Relaxed))
-    }
-
-    /// Every job kept, oldest first.
-    pub fn all() -> Vec<Job> {
-        all_entries().iter().map(|e| e.job.clone()).collect()
-    }
-
-    pub fn get(id: &str) -> Option<Job> {
-        all_entries().iter().find(|e| e.job.id == id).map(|e| e.job.clone())
-    }
-
-    /// The translation running now, if one is.
-    pub fn running() -> Option<Job> {
-        all_entries().iter().find(|e| e.job.state == State::Running).map(|e| e.job.clone())
-    }
-
-    /// Job `id` asked to stop: it does between two lines, or within the
-    /// download. An error when it is not running.
-    pub fn cancel(id: &str) -> Result<(), String> {
-        let jobs = all_entries();
-        let e = jobs.iter().find(|e| e.job.id == id).ok_or_else(|| format!("no translation job {id}"))?;
-        if e.job.state != State::Running {
-            return Err(format!("translation {id} has ended already ({}); nothing cancelled", e.job.phase));
-        }
-        e.cancel.store(true, Ordering::Relaxed);
-        Ok(())
-    }
-}
+/// and for agents (`job_status`, `cancel_job`): each job's `about` is the
+/// language it translates into.
+pub static JOBS: klipp_jobs::Tracker = klipp_jobs::Tracker::new("translation", 32);
 
 /// The longest translation of a line of `source_tokens` tokens: three
 /// times as long and ten more, never past 256. A sentence's translation
@@ -879,33 +740,33 @@ mod tests {
         let id = format!("test-{}", std::process::id());
         // Refused before it started: kept as failed, with why.
         let refused = format!("{id}-refused");
-        jobs::refused(&refused, "German", "no captions");
-        let j = jobs::get(&refused).unwrap();
-        assert_eq!((j.state, j.error.as_deref()), (jobs::State::Failed, Some("no captions")));
-        let cancel = jobs::begin(&id, "German", 4);
-        assert_eq!(jobs::running().map(|j| j.id), Some(id.clone()));
-        jobs::update(&id, |j| {
+        JOBS.refused(&refused, "German", "no captions");
+        let j = JOBS.get(&refused).unwrap();
+        assert_eq!((j.state, j.error.as_deref()), (klipp_jobs::JobState::Failed, Some("no captions")));
+        let cancel = JOBS.begin(&id, "German", 4);
+        assert_eq!(JOBS.running().map(|j| j.id), Some(id.clone()));
+        JOBS.update(&id, |j| {
             j.phase = "translating";
             j.done = 2;
             j.progress = 0.5;
         });
-        let j = jobs::get(&id).unwrap();
-        assert_eq!((j.phase, j.done, j.total, j.state), ("translating", 2, 4, jobs::State::Running));
-        assert!(!jobs::cancel_requested(&id));
-        jobs::cancel(&id).unwrap();
+        let j = JOBS.get(&id).unwrap();
+        assert_eq!((j.phase, j.done, j.total, j.state), ("translating", 2, 4, klipp_jobs::JobState::Running));
+        assert!(!JOBS.cancel_requested(&id));
+        JOBS.cancel(&id).unwrap();
         assert!(cancel.load(std::sync::atomic::Ordering::Relaxed), "the worker sees it");
-        assert!(jobs::cancel_requested(&id), "and so does whoever would put it in place");
-        jobs::cancelled(&id);
-        assert_eq!(jobs::get(&id).unwrap().state, jobs::State::Cancelled);
-        assert!(jobs::cancel(&id).is_err(), "an ended job is not cancelled again");
-        assert!(jobs::running().is_none());
+        assert!(JOBS.cancel_requested(&id), "and so does whoever would put it in place");
+        JOBS.cancelled(&id);
+        assert_eq!(JOBS.get(&id).unwrap().state, klipp_jobs::JobState::Cancelled);
+        assert!(JOBS.cancel(&id).is_err(), "an ended job is not cancelled again");
+        assert!(JOBS.running().is_none());
         // A finished one keeps what it made.
         let done = format!("{id}-done");
-        jobs::begin(&done, "French", 1);
-        jobs::finish(&done, Ok("1 caption".into()));
-        let j = jobs::get(&done).unwrap();
-        assert_eq!((j.state, j.result.as_deref()), (jobs::State::Done, Some("1 caption")));
-        assert!(jobs::cancel("no-such-job").is_err());
+        JOBS.begin(&done, "French", 1);
+        JOBS.finish(&done, Ok("1 caption".into()));
+        let j = JOBS.get(&done).unwrap();
+        assert_eq!((j.state, j.result.as_deref()), (klipp_jobs::JobState::Done, Some("1 caption")));
+        assert!(JOBS.cancel("no-such-job").is_err());
     }
 
     #[test]

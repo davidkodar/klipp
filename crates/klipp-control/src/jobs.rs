@@ -286,16 +286,9 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
         })
     }));
     // Caption translations (#2213), run by the app as its menu runs them.
-    jobs.extend(klipp_ml_candle::translation::jobs::all().into_iter().map(|t| {
-        use klipp_ml_candle::translation::jobs::State;
-        let state = match t.state {
-            State::Running => "running",
-            State::Done => "completed",
-            State::Failed => "failed",
-            State::Cancelled => "cancelled",
-        };
+    jobs.extend(klipp_ml_candle::translation::JOBS.all().into_iter().map(|t| {
         json!({
-            "job_id": t.id, "kind": "translation", "state": state,
+            "job_id": t.id, "kind": "translation", "state": t.state.word(),
             "phase": t.phase, "progress": t.progress,
             "completed_units": t.done, "total_units": t.total,
             "unit": "sentences", "eta_secs": null,

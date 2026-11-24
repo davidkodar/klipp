@@ -585,8 +585,8 @@ pub(crate) fn respond(
             if !download_models {
                 tr::ensure_pair(&pair, false).map_err(|e| format!("{e}; send download_models true to fetch it (about 300 MB, CC BY 4.0, Helsinki-NLP OPUS-MT)"))?;
             }
-            if let Some(running) = tr::jobs::running() {
-                return Err(format!("translation {} into {} is running already; follow it with job_status, or cancel_job it", running.id, running.language));
+            if let Some(running) = tr::JOBS.running() {
+                return Err(format!("translation {} into {} is running already; follow it with job_status, or cancel_job it", running.id, running.about));
             }
             // The app runs it, as its menu does: a job with progress and
             // cancel, the track added when it is done.

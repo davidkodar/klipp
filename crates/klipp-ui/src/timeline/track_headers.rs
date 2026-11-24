@@ -733,10 +733,10 @@ pub fn show(
             // offered where there are captions to translate.
             if matches!(track_kind, TrackKind::Subtitle | TrackKind::Text) && !klipp_document::caption_translation::captions(state.sequence(), track_idx).is_empty() {
                 use klipp_ml_candle::translation as tr;
-                match tr::jobs::running() {
+                match tr::JOBS.running() {
                     Some(job) => {
-                        if ui.button(format!("Cancel Translation into {} ({:.0}%)", job.language, job.progress * 100.0)).clicked() {
-                            let _ = tr::jobs::cancel(&job.id);
+                        if ui.button(format!("Cancel Translation into {} ({:.0}%)", job.about, job.progress * 100.0)).clicked() {
+                            let _ = tr::JOBS.cancel(&job.id);
                             ui.close_kind(egui::UiKind::Menu);
                         }
                     }
