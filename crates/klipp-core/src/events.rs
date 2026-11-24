@@ -1344,6 +1344,9 @@ pub enum CompositionClipAction {
     Copy,
     /// A copy of the one copied, for each clip, its files too.
     Paste,
+    /// A copy of this clip's composition, for each clip, its files too,
+    /// as Paste does, without touching what is copied.
+    CopyFrom(crate::ClipId),
     /// Each clip's back to its media alone.
     Reset,
     /// Each clip shows its media as it is again.
