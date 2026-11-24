@@ -52,6 +52,7 @@ const KNOWN: &[(&str, fn(&Broken, &str) -> bool)] = &[
 const SYNC: &str = "linked pairs in sync";
 const GAPLESS: &str = "primary gapless";
 const SAVED: &str = "save and load";
+const HOLDS: &str = "every clip holds to the invariants";
 
 /// The known entry `broken` is, from the step it broke at in `steps`.
 /// `KLIPP_RANDOM_EDITS_UNKNOWN=R8,R14` treats those as not known, so
@@ -449,6 +450,9 @@ impl Run {
 
     /// The five invariants on the sequence as it is now.
     fn check(&self) -> Result<(), Fail> {
+        if let Some(p) = klipp_timeline::invariants::problems(&self.seq).into_iter().next() {
+            return Err((HOLDS, p, f64::INFINITY));
+        }
         for c in self.seq.all_clips() {
             let Some(p) = c.linked_clip_id else { continue };
             let Some(partner) = self.seq.all_clips().find(|x| x.id == p) else {

@@ -932,6 +932,14 @@ fn load_sequence_from_json(
                 })
             }).collect();
             track.clips = t.clips.iter().map(|c| load_clip(c, project_dir, &effects_by_clip, rewritten)).collect();
+            // A clip the file got wrong (by hand, or damaged) is put right
+            // rather than played with a time that has no rate.
+            for c in &mut track.clips {
+                let changed = klipp_timeline::invariants::repair(c);
+                if !changed.is_empty() {
+                    tracing::warn!(clip = %c.id.0, "loaded a clip that {}: put right", changed.join(", "));
+                }
+            }
             track
         }).collect(),
         in_point: seq_json.in_point.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
