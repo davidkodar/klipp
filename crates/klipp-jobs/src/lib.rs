@@ -27,6 +27,7 @@ mod scheduler;
 mod slots;
 mod subprocess;
 mod thread_job;
+pub mod tracker;
 
 pub use child::ends_with_app;
 pub use foreground::ForegroundActivity;
@@ -36,3 +37,4 @@ pub use scheduler::{JobScheduler, SchedulerPolicy};
 pub use slots::{SlotGuard, Slots};
 pub use subprocess::SubprocessJob;
 pub use thread_job::{lower_current_thread_priority, ThreadJob};
+pub use tracker::{JobRecord, JobState, Tracker};

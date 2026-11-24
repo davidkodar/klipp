@@ -19,6 +19,7 @@ candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"]
 cuda = ["candle", "candle-core?/cuda", "candle-nn?/cuda"]
 
 [dependencies]
+klipp-jobs = { path = "../klipp-jobs" }
 klipp-ml    = { workspace = true }
 bitflags    = { workspace = true }
 thiserror   = { workspace = true }

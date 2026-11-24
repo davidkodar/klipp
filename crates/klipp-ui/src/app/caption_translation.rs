@@ -62,7 +62,7 @@ impl KlippApp {
         // Refused before it starts, the job is still kept, failed with
         // why: an agent was given its id.
         let refuse = |this: &mut Self, why: &str| {
-            tr::jobs::refused(job_id, &language, why);
+            tr::JOBS.refused(job_id, &language, why);
             this.state.toast.show(format!("No translation: {why}"));
         };
         let seq = self.state.sequence();
@@ -164,7 +164,7 @@ impl KlippApp {
         let answer = match pending.rx.try_recv() {
             Ok(answer) => answer,
             Err(std::sync::mpsc::TryRecvError::Empty) => {
-                self.state.status_translation = tr::jobs::get(&pending.job_id).map(|j| status_line(&j));
+                self.state.status_translation = tr::JOBS.get(&pending.job_id).map(|j| status_line(&j));
                 ctx.request_repaint_after(std::time::Duration::from_millis(250));
                 return;
             }
@@ -181,15 +181,15 @@ impl KlippApp {
             Err(why) => {
                 // The worker ends its own job; one that stopped without an
                 // answer (a panic) is ended here, so the next can start.
-                tr::jobs::finish(&pending.job_id, Err(why.clone()));
+                tr::JOBS.finish(&pending.job_id, Err(why.clone()));
                 self.state.toast.show(format!("No translation: {why}"));
                 return;
             }
         };
         // Cancelled while its translation was on the way back: not put in
         // place, as the cancel said.
-        if tr::jobs::cancel_requested(&pending.job_id) {
-            tr::jobs::cancelled(&pending.job_id);
+        if tr::JOBS.cancel_requested(&pending.job_id) {
+            tr::JOBS.cancelled(&pending.job_id);
             self.state.toast.show("Translation cancelled");
             return;
         }
@@ -207,7 +207,7 @@ impl KlippApp {
         let cut = ct::cut_captions(&pending.sentences, &cuts[..n]);
         let seq = self.state.sequence();
         let Some(index) = seq.tracks.iter().position(|t| t.id == pending.track_id) else {
-            tr::jobs::finish(&pending.job_id, Err("the caption track went while it was translated".into()));
+            tr::JOBS.finish(&pending.job_id, Err("the caption track went while it was translated".into()));
             self.state.toast.show("The caption track is gone");
             return;
         };
@@ -217,7 +217,7 @@ impl KlippApp {
                 let tc = self.state.timecode_display();
                 let flagged: Vec<String> = out.flagged.iter().map(|f| format!("{} {}", tc.position_secs(f.at_secs), f.why)).collect();
                 let made = format!("{} captions in {} on track {}, hidden so the two languages don't overlap (set_track visible shows it); {} to check{}", translations.len(), pending.language, out.track_index, flagged.len(), if flagged.is_empty() { String::new() } else { format!(": {}", flagged.join("; ")) });
-                tr::jobs::finish(&pending.job_id, Ok(made));
+                tr::JOBS.finish(&pending.job_id, Ok(made));
                 if flagged.is_empty() {
                     self.state.toast.show(format!("Captions translated into {} on a hidden track; its eye shows it", pending.language));
                 } else {
@@ -225,7 +225,7 @@ impl KlippApp {
                 }
             }
             Err(why) => {
-                tr::jobs::finish(&pending.job_id, Err(why.clone()));
+                tr::JOBS.finish(&pending.job_id, Err(why.clone()));
                 self.state.toast.show(format!("No translation: {why}"));
             }
         }
@@ -233,12 +233,12 @@ impl KlippApp {
 }
 
 /// The status bar's line for job `j`.
-fn status_line(j: &tr::jobs::Job) -> String {
+fn status_line(j: &klipp_jobs::JobRecord) -> String {
     let pct = (j.progress * 100.0).round() as u32;
     match j.phase {
-        "downloading" => format!("Downloading the {} translation model {pct}%", j.language),
-        "translating" => format!("Translating into {} {}/{}", j.language, j.done, j.total),
-        _ => format!("Translating into {}…", j.language),
+        "downloading" => format!("Downloading the {} translation model {pct}%", j.about),
+        "translating" => format!("Translating into {} {}/{}", j.about, j.done, j.total),
+        _ => format!("Translating into {}…", j.about),
     }
 }
 

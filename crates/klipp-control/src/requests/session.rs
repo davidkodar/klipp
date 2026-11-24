@@ -84,8 +84,8 @@ pub(crate) fn respond(
                     "next":"Read job_status until it reports a terminal state; proxies already made are kept." }));
             }
             // A caption translation (#2213): stopped between two lines.
-            if klipp_ml_candle::translation::jobs::get(&job_id).is_some() {
-                klipp_ml_candle::translation::jobs::cancel(&job_id)?;
+            if klipp_ml_candle::translation::JOBS.get(&job_id).is_some() {
+                klipp_ml_candle::translation::JOBS.cancel(&job_id)?;
                 return Ok(json!({ "job_id":job_id, "kind":"translation", "cancel_requested":true,
                     "next":"Read job_status until it reports cancelled; nothing is added." }));
             }
