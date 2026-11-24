@@ -3,8 +3,9 @@
 //! defaults, ranges, units and whether they can be keyframed (#1003,
 //! #1009).
 //!
-//! Nothing reads it yet. `tests/registry_coverage.rs` checks each
-//! description against the code: every kind is described, every
+//! The node inspector, the control socket, graph-lift, the timeline and
+//! the project read it. `tests/registry_coverage.rs` checks each description against
+//! the code: every kind is described, every
 //! parameter is a field of [`NodeParams`](crate::NodeParams), the
 //! keyframable ones are exactly the names
 //! [`NodeParams::apply_override`](crate::NodeParams::apply_override)
