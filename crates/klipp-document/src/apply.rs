@@ -320,6 +320,9 @@ impl DocumentView<'_> {
             }
             EditCommand::SetMarkers { old, .. } => {
                 self.sequences[self.active].markers = old.clone();
+                // The shared sequence too: the control socket reads its
+                // markers from there.
+                effects.sync_sequence = true;
             }
             EditCommand::SetTracks { old, .. } => {
                 self.sequences[self.active].tracks = old.clone();
@@ -1090,6 +1093,7 @@ impl DocumentView<'_> {
             }
             EditCommand::SetMarkers { new, .. } => {
                 self.sequences[self.active].markers = new.clone();
+                effects.sync_sequence = true;
             }
             EditCommand::SetTracks { new, .. } => {
                 self.sequences[self.active].tracks = new.clone();

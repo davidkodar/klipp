@@ -6,76 +6,39 @@ impl KlippApp {
     pub(super) fn handle_marker_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::AddMarkerWith { marker_id, position, duration, label, comment, color, kind } => {
-                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                seq.markers.push(Marker { review: None,
-                    id: *marker_id,
-                    position: *position,
-                    label: label.clone(),
-                    color: *color,
-                    duration: *duration,
-                    comment: comment.clone(),
-                    kind: *kind,
+                let marker = Marker { review: None, id: *marker_id, position: *position, label: label.clone(), color: *color, duration: *duration, comment: comment.clone(), kind: *kind };
+                self.edit_markers(|m| {
+                    m.push(marker);
+                    sort_by_position(m);
                 });
-                seq.markers.sort_by(|a, b| a.position.to_secs_f64().partial_cmp(&b.position.to_secs_f64()).unwrap_or(std::cmp::Ordering::Equal));
-                self.state.dirty = true;
-                self.sync_sequence_to_engine();
                 true
             }
             AppCommand::AddMarker { position, label, color } => {
-                self.state.document.sequences[self.state.active_sequence_idx].markers.push(Marker { review: None,
-                    id: MarkerId::new(),
-                    position: *position,
-                    label: label.clone(),
-                    color: *color,
-                    duration: None,
-                    comment: String::new(),
-                    kind: klipp_core::MarkerKind::None,
+                let marker = Marker { review: None, id: MarkerId::new(), position: *position, label: label.clone(), color: *color, duration: None, comment: String::new(), kind: klipp_core::MarkerKind::None };
+                self.edit_markers(|m| {
+                    m.push(marker);
+                    sort_by_position(m);
                 });
-                self.state.document.sequences[self.state.active_sequence_idx].markers.sort_by(|a, b| {
-                    a.position.to_secs_f64().partial_cmp(&b.position.to_secs_f64()).unwrap_or(std::cmp::Ordering::Equal)
-                });
-                self.state.dirty = true;
-                // The shared sequence too: the control socket reads its
-                // markers from there, and missed any made here.
-                self.sync_sequence_to_engine();
                 true
             }
             AppCommand::RemoveMarker { marker_id } => {
-                self.state.document.sequences[self.state.active_sequence_idx].markers.retain(|m| m.id != *marker_id);
-                self.state.dirty = true;
-                self.sync_sequence_to_engine();
+                self.edit_markers(|m| m.retain(|m| m.id != *marker_id));
                 true
             }
             AppCommand::UpdateMarkerLabel { marker_id, label } => {
-                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
-                    m.label = label.clone();
-                }
-                self.state.dirty = true;
-                self.sync_sequence_to_engine();
+                self.edit_markers(|m| m.iter_mut().filter(|m| m.id == *marker_id).for_each(|m| m.label = label.clone()));
                 true
             }
             AppCommand::UpdateMarkerColor { marker_id, color } => {
-                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
-                    m.color = *color;
-                }
-                self.state.dirty = true;
-                self.sync_sequence_to_engine();
+                self.edit_markers(|m| m.iter_mut().filter(|m| m.id == *marker_id).for_each(|m| m.color = *color));
                 true
             }
             AppCommand::UpdateMarkerComment { marker_id, comment } => {
-                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
-                    m.comment = comment.clone();
-                }
-                self.state.dirty = true;
-                self.sync_sequence_to_engine();
+                self.edit_markers(|m| m.iter_mut().filter(|m| m.id == *marker_id).for_each(|m| m.comment = comment.clone()));
                 true
             }
             AppCommand::SetReviewStatus { marker_id, status } => {
-                if let Some(r) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id).and_then(|m| m.review.as_mut()) {
-                    r.status = *status;
-                }
-                self.state.dirty = true;
-                self.sync_sequence_to_engine();
+                self.edit_markers(|m| m.iter_mut().filter(|m| m.id == *marker_id).filter_map(|m| m.review.as_mut()).for_each(|r| r.status = *status));
                 true
             }
             AppCommand::ImportReviewComments { path } => {
@@ -98,15 +61,10 @@ impl KlippApp {
                             self.state.toast.show(format!("All {} comments are already here", comments.len()));
                             return true;
                         }
-                        let old = seq.markers.clone();
-                        let mut new = old.clone();
-                        new.extend(added.iter().cloned());
-                        new.sort_by_key(|m| m.position);
-                        let idx = self.state.active_sequence_idx;
-                        self.state.document.sequences[idx].markers = new.clone();
-                        self.state.push_history(klipp_document::history::EditCommand::SetMarkers { old, new });
-                        self.state.dirty = true;
-                        self.sync_sequence_to_engine();
+                        self.edit_markers(|m| {
+                            m.extend(added.iter().cloned());
+                            m.sort_by_key(|m| m.position);
+                        });
                         self.state.show_markers_panel = true;
                         self.state.toast.show(format!("{} review comment{} added for round {round}{}", added.len(), if added.len() == 1 { "" } else { "s" },
                             if skipped > 0 { format!(", {skipped} already here") } else { String::new() }));
@@ -124,27 +82,15 @@ impl KlippApp {
                 true
             }
             AppCommand::UpdateMarkerKind { marker_id, kind } => {
-                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
-                    m.kind = *kind;
-                }
-                self.state.dirty = true;
-                self.sync_sequence_to_engine();
+                self.edit_markers(|m| m.iter_mut().filter(|m| m.id == *marker_id).for_each(|m| m.kind = *kind));
                 true
             }
             AppCommand::SetMarkerDuration { marker_id, duration } => {
-                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
-                    m.duration = *duration;
-                }
-                self.state.dirty = true;
-                self.sync_sequence_to_engine();
+                self.edit_markers(|m| m.iter_mut().filter(|m| m.id == *marker_id).for_each(|m| m.duration = *duration));
                 true
             }
             AppCommand::MoveMarker { marker_id, position } => {
-                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
-                    m.position = *position;
-                }
-                self.state.dirty = true;
-                self.sync_sequence_to_engine();
+                self.edit_markers(|m| m.iter_mut().filter(|m| m.id == *marker_id).for_each(|m| m.position = *position));
                 true
             }
             AppCommand::JumpToMarker { marker_id } => {
@@ -188,4 +134,20 @@ impl KlippApp {
             _ => false,
         }
     }
+
+    /// The active sequence's markers changed by `f`, as one step through
+    /// [`Self::commit`]; nothing when `f` changes nothing.
+    fn edit_markers(&mut self, f: impl FnOnce(&mut Vec<Marker>)) {
+        let old = self.state.sequence().markers.clone();
+        let mut new = old.clone();
+        f(&mut new);
+        if new != old {
+            self.commit(EditCommand::SetMarkers { old, new });
+        }
+    }
+}
+
+/// Markers in time order, as the timeline keeps them.
+fn sort_by_position(markers: &mut [Marker]) {
+    markers.sort_by(|a, b| a.position.to_secs_f64().partial_cmp(&b.position.to_secs_f64()).unwrap_or(std::cmp::Ordering::Equal));
 }
