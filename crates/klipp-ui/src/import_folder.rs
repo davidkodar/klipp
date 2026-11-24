@@ -216,10 +216,7 @@ mod tests {
 
     /// A fresh folder of the test's own under the temp dir.
     fn scratch(test: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("klipp-import-folder-{test}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        root
+        klipp_testing::scratch::fresh_dir(&format!("klipp-import-folder-{test}"))
     }
 
     /// The last import's folder is where the next picker opens; with none

@@ -6,10 +6,7 @@ use klipp_project::{load_grade_stills, load_looks, save_grade_stills, save_looks
 use klipp_timeline::Look;
 
 fn scratch(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("klipp-side-rev2-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    klipp_testing::scratch::fresh_dir(&format!("klipp-side-rev2-{tag}"))
 }
 
 fn look(name: &str) -> Look {

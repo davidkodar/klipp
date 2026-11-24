@@ -26,10 +26,7 @@ fn project_text(dir: &Path) -> String {
 }
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("klipp_picture_truth_{name}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    klipp_testing::scratch::fresh_dir(&format!("klipp_picture_truth_{name}"))
 }
 
 /// A media clip with a blur and a vignette, its grade's qualifier published

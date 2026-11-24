@@ -23,12 +23,12 @@ type Px = [f32; 4];
 
 /// sRGB encode, as the shaders' `linear_to_srgb_component`.
 pub(crate) fn encode(c: f32) -> f32 {
-    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    crate::srgb::encode(c)
 }
 
 /// sRGB decode, as the shaders' `srgb_to_linear_component`.
 pub(crate) fn decode(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    crate::srgb::decode(c)
 }
 
 /// The picture's brightness, by the *working space's* luminance weights.

@@ -417,7 +417,7 @@ pub fn titles_to_read(seq: &Sequence, pool: &MediaPool, limit: usize) -> Vec<Tit
 fn luminance(rgb: [u8; 3]) -> f32 {
     let lin = |v: u8| {
         let c = v as f32 / 255.0;
-        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        klipp_core::srgb::decode(c)
     };
     0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2])
 }

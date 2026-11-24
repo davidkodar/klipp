@@ -192,7 +192,7 @@ impl TitleMaterial {
     /// as the eye sees it under the default studio, a little darker than
     /// its highlights.
     pub fn fallback_color(&self) -> [u8; 4] {
-        let encode = |x: f32| if x <= 0.003_130_8 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+        let encode = |x: f32| crate::srgb::encode(x);
         let c = |v: f32| (encode((v * 0.8).clamp(0.0, 1.0)) * 255.0).round() as u8;
         [c(self.tint[0]), c(self.tint[1]), c(self.tint[2]), 255]
     }

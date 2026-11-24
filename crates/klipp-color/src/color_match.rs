@@ -130,7 +130,7 @@ fn lab_stats(samples: impl Iterator<Item = [f32; 3]>) -> LabStats {
 }
 
 fn srgb_decode(v: f32) -> f32 {
-    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    klipp_core::srgb::decode(v)
 }
 
 /// sRGB → CIE XYZ (D65) → CIE Lab
@@ -264,7 +264,7 @@ mod tests {
         let m = crate::white_balance::white_balance_matrix(30.0, -10.0, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
         let grey = srgb_decode(120.0 / 255.0);
         let enc = |v: f32| {
-            let e = if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+            let e = klipp_core::srgb::encode(v);
             (e.clamp(0.0, 1.0) * 255.0).round() as u8
         };
         let shifted = m.map(|row| enc((row[0] + row[1] + row[2]) * grey));
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn a_reference_s_cast_is_not_counted_as_saturation() {
         let m = crate::white_balance::white_balance_matrix(60.0, 0.0, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
-        let enc = |v: f32| ((if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }).clamp(0.0, 1.0) * 255.0).round() as u8;
+        let enc = |v: f32| ((klipp_core::srgb::encode(v)).clamp(0.0, 1.0) * 255.0).round() as u8;
         // Five, as every 4th pixel is read: four would read as one.
         let colours = [[110u8, 122, 116], [122, 110, 116], [116, 116, 128], [116, 122, 108], [120, 120, 112]];
         let source: Vec<u8> = colours.iter().cycle().take(800).flat_map(|c| [c[0], c[1], c[2], 255]).collect();

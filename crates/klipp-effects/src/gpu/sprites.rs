@@ -350,7 +350,7 @@ impl GpuEffectsPipeline {
         }
         let srgb = |v: u8| {
             let c = v as f32 / 255.0;
-            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+            crate::srgb::decode(c)
         };
         let under = under.map(|c| [srgb(c[0]), srgb(c[1]), srgb(c[2]), c[3] as f32 / 255.0]).unwrap_or([0.0; 4]);
         let pos = self.resident_sprite(id, texels);

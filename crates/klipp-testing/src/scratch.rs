@@ -48,7 +48,9 @@ pub fn scratch_root() -> PathBuf {
     choose_root(
         std::env::var_os("TMPDIR").map(PathBuf::from),
         std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from),
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").as_path(),
+        // Canonical: a path with `..` in it names the same folder as the
+        // canonical path a test then compares it with, but isn't equal.
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")),
     )
 }
 
@@ -59,6 +61,16 @@ fn choose_root(tmpdir: Option<PathBuf>, target: Option<PathBuf>, workspace: &Pat
     // Cargo runs tests from the package directory, not the workspace
     // where a relative target directory was selected.
     if root.is_absolute() { root } else { workspace.join(root) }
+}
+
+/// An empty directory for one test, `tag`: [`scratch_dir`]'s, so it is
+/// under the scratch root and swept once this run is done, emptied of
+/// what an earlier test of the same tag in this run left.
+pub fn fresh_dir(tag: &str) -> PathBuf {
+    let dir = scratch_dir(tag);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("cannot create fixture dir {}: {e}", dir.display()));
+    dir
 }
 
 /// [`scratch_dir`] and a file inside it.

@@ -3511,7 +3511,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                 let mut rate = (clip.speed.abs() * 100.0) as f32;
                 let r_rate = param_row(ui, theme, "Rate", &mut rate, 10.0..=1600.0, 100.0, 0.5, 0, " %", None);
                 if r_rate.changed {
-                    let new_speed = (rate as f64 / 100.0).clamp(0.1, 16.0) * sign;
+                    let new_speed = klipp_timeline::clamp_speed(rate as f64 / 100.0 * sign);
                     cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed, ripple: true });
                 }
 

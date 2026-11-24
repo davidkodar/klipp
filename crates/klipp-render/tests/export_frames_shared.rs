@@ -20,7 +20,7 @@ fn tmp(name: &str) -> PathBuf {
 }
 
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    klipp_testing::ffmpeg::available()
 }
 
 /// A W×H, 25 fps timeline of one graded, moving generator clip: a frame

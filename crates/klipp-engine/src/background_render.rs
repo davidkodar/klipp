@@ -337,10 +337,7 @@ mod tests {
 
     /// A fresh fake `/sys/class/power_supply` named `name`.
     fn supplies(name: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!("klipp-power-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        root
+        klipp_testing::scratch::fresh_dir(&format!("klipp-power-{name}"))
     }
 
     #[test]

@@ -17,7 +17,7 @@ const FPS: u32 = 30;
 const FRAMES: u64 = 45;
 
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    klipp_testing::ffmpeg::available()
 }
 
 /// The "A Little Space" background: dark teal, a dozen code values across

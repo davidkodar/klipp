@@ -131,12 +131,12 @@ pub fn mix_linear(a: [u8; 4], b: [u8; 4], f: f32) -> [u8; 4] {
 
 fn to_linear(v: u8) -> f32 {
     let c = v as f32 / 255.0;
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    crate::srgb::decode(c)
 }
 
 fn to_srgb(c: f32) -> f32 {
     let c = c.clamp(0.0, 1.0);
-    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    crate::srgb::encode(c)
 }
 
 #[cfg(test)]

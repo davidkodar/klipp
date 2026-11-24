@@ -103,7 +103,7 @@ impl Chroma {
 fn lab(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
     let lin = |v: u8| {
         let c = v as f32 / 255.0;
-        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        klipp_core::srgb::decode(c)
     };
     let (r, g, b) = (lin(r), lin(g), lin(b));
     let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
@@ -133,8 +133,8 @@ mod tests {
     /// The same scene shot darker, warmer and more saturated: as the
     /// warm-dark shot of the check was.
     fn source() -> Vec<u8> {
-        let lin = |v: u8| { let c = v as f32 / 255.0; if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) } };
-        let enc = |c: f32| { let c = c.clamp(0.0, 1.0); ((if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }) * 255.0).round() as u8 };
+        let lin = |v: u8| { let c = v as f32 / 255.0; klipp_core::srgb::decode(c) };
+        let enc = |c: f32| { let c = c.clamp(0.0, 1.0); ((klipp_core::srgb::encode(c)) * 255.0).round() as u8 };
         reference().chunks_exact(4).flat_map(|p| {
             let c = [lin(p[0]) * 0.6 * 1.18, lin(p[1]) * 0.6, lin(p[2]) * 0.6 * 0.82];
             let y = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];

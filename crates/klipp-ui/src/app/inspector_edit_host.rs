@@ -958,7 +958,7 @@ fn follow_ramp(clip: &mut klipp_timeline::Clip, edits: &[klipp_timeline::EffectE
         _ => None,
     });
     let speed = match set {
-        Some(speed) => speed.clamp(0.1, 16.0),
+        Some(speed) => klipp_timeline::clamp_speed(speed).abs(),
         None if !clip.builtin_effects().iter().any(is_ramp) => 1.0,
         None => return,
     };

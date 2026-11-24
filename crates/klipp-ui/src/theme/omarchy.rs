@@ -280,7 +280,7 @@ pub(crate) fn veil(c: Color32, alpha: f32) -> Color32 {
 pub(crate) fn rel_luminance(c: Color32) -> f32 {
     let lin = |v: u8| {
         let v = v as f32 / 255.0;
-        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        klipp_core::srgb::decode(v)
     };
     0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
 }

@@ -137,10 +137,7 @@ fn a_side_store_keeps_everything_outside_its_pictures() {
 }
 
 fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("klipp-rev2-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    klipp_testing::scratch::fresh_dir(&format!("klipp-rev2-{tag}"))
 }
 
 /// Today's build reads a revision-2 Look as nothing, and its save (which
