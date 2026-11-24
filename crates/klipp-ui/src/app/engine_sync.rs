@@ -257,20 +257,7 @@ impl KlippApp {
                 if matches!(&cmd, AppCommand::SetNodeParam { .. }) {
                     node_param_scrub = true;
                 }
-                // Timeline markers are edited outside the document's own
-                // ops, so their handlers record nothing: a marker added,
-                // changed or removed (by hand or by an agent) is one undo step
-                // here, the whole list either side.
-                let markers_before = self.state.document.sequences.get(self.state.active_sequence_idx).map(|s| s.markers.clone());
-                if self.handle_marker_commands(&cmd, &mut needs_refresh) {
-                    if let Some(old) = markers_before {
-                        let new = self.state.document.sequences[self.state.active_sequence_idx].markers.clone();
-                        if old != new {
-                            self.state.push_history(EditCommand::SetMarkers { old, new });
-                        }
-                    }
-                    break 'dispatch;
-                }
+                if self.handle_marker_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_storyline_commands(&cmd) { break 'dispatch; }
                 if self.handle_frame_glide_commands(&cmd) { break 'dispatch; }
                 if self.handle_track_subject_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
