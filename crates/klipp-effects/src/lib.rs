@@ -32,6 +32,7 @@
 //! and export. Analyse went from 10–15 min to ~18 s on 4K through the
 //! decoder optimisation.
 
+pub mod srgb;
 pub mod residency;
 pub mod gpu_memory;
 pub mod animate;
@@ -1278,13 +1279,13 @@ impl BuiltinEffect {
 /// the engine.
 #[inline]
 fn srgb_to_linear_scalar(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    crate::srgb::decode(c)
 }
 
 /// Linear-light → sRGB (IEC 61966-2-1). See [`srgb_to_linear_scalar`].
 #[inline]
 fn linear_to_srgb_scalar(c: f32) -> f32 {
-    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    crate::srgb::encode(c)
 }
 
 /// Bulk sRGB u8 RGBA → linear f32 RGBA decode. Alpha stays linear per

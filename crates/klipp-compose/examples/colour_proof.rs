@@ -67,7 +67,7 @@ fn chart() -> Vec<f32> {
 }
 
 fn srgb8(v: f32) -> u8 {
-    let e = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.max(0.0).powf(1.0 / 2.4) - 0.055 };
+    let e = klipp_core::srgb::encode(v);
     (e.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 

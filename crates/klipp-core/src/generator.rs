@@ -354,7 +354,7 @@ fn grain_at(x: u32, y: u32, frame: u32) -> f32 {
 /// float way lands on the values the u8 way would have decoded to.
 #[inline]
 fn srgb_to_linear(v: f32) -> f32 {
-    if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    crate::srgb::decode(v)
 }
 
 /// Eight-bit sRGB RGBA widened to linear-light f32 RGBA — what the

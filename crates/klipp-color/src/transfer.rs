@@ -14,21 +14,13 @@
 /// sRGB EOTF — decode a gamma-encoded sRGB sample to linear light.
 #[inline]
 pub fn srgb_to_linear(v: f32) -> f32 {
-    if v <= 0.040_45 {
-        v / 12.92
-    } else {
-        ((v + 0.055) / 1.055).powf(2.4)
-    }
+    klipp_core::srgb::decode(v)
 }
 
 /// sRGB OETF — encode a linear-light sample to gamma-encoded sRGB.
 #[inline]
 pub fn linear_to_srgb(v: f32) -> f32 {
-    if v <= 0.003_130_8 {
-        v * 12.92
-    } else {
-        1.055 * v.powf(1.0 / 2.4) - 0.055
-    }
+    klipp_core::srgb::encode(v)
 }
 
 /// Convenience: sRGB u8 pixel → linear f32 pixel. Alpha stays linear

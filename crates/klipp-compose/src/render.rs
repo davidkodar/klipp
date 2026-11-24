@@ -8073,7 +8073,7 @@ fn soften_title_layer(stack: &mut [f32], width: u32, height: u32, blur: f32, foc
     let linear = klipp_effects::apply_effects_with_luma(&fx, srgb_stack_to_linear(stack), width, height, luma);
     let encode = |c: f32| {
         let c = c.max(0.0);
-        255.0 * if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+        255.0 * klipp_core::srgb::encode(c)
     };
     for (out, p) in stack.chunks_exact_mut(4).zip(linear.chunks_exact(4)) {
         out.copy_from_slice(&[encode(p[0]), encode(p[1]), encode(p[2]), p[3].clamp(0.0, 1.0) * 255.0]);
@@ -8086,7 +8086,7 @@ fn srgb_stack_to_linear(stack: &[f32]) -> Vec<f32> {
     use rayon::prelude::*;
     let decode = |v: f32| {
         let c = (v / 255.0).max(0.0);
-        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        klipp_core::srgb::decode(c)
     };
     stack.par_chunks(4).flat_map_iter(|p| [decode(p[0]), decode(p[1]), decode(p[2]), (p[3] / 255.0).clamp(0.0, 1.0)]).collect()
 }
@@ -8455,7 +8455,7 @@ fn title_fill(source:&klipp_title::GlyphSource,scale:f32)->Option<klipp_effects:
 /// colours to linear light, the bevel to frame pixels of a text
 /// `font_px` tall.
 pub(crate) fn title_metal(m:&klipp_core::title_material::TitleMaterial,font_px:f32,scale:f32)->klipp_effects::gpu::TitleMetal {
-    let linear=|c:[u8;3]|c.map(|v|{let x=v as f32/255.0;if x<=0.04045 {x/12.92} else {((x+0.055)/1.055).powf(2.4)}});
+    let linear=|c:[u8;3]|c.map(|v|{let x=v as f32/255.0;klipp_core::srgb::decode(x)});
     let light=|l:&klipp_core::title_material::MetalLight|(l.direction(),l.strength,linear(l.color));
     let off=([0.0,0.0,-1.0],0.0,[0.0;3]);
     let share=(m.environment.studio+m.environment.sky+m.environment.shot).max(1.0);
