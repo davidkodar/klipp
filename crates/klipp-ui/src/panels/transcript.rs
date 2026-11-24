@@ -431,7 +431,7 @@ fn correction_for(state: &AppState, word: &HeardWord, text: &str) -> Option<AppC
     let clip = &seq.tracks[ti].clips[ci];
     let media_id = clip.media_id()?;
     let mid = (word.start + word.end) / 2.0;
-    let source_secs = clip.source_in.to_secs_f64() + (mid - clip.timeline_in.to_secs_f64()) * clip.speed.abs();
+    let source_secs = clip.source_secs_at(mid - clip.timeline_in.to_secs_f64(), seq.fps.as_f64());
     Some(AppCommand::CorrectTranscriptWord { media_id, source_secs, text: text.trim().to_string() })
 }
 

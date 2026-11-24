@@ -38,7 +38,7 @@ pub(crate) fn trim_edits(seq: &Sequence, clip: ClipId) -> Option<Vec<EditCommand
         return None;
     }
     let kept = end_secs - start;
-    let new_source_out = Timecode::from_secs_f64(c.source_in.to_secs_f64() + kept * c.speed, c.source_out.rate);
+    let ((new_source_in, new_source_out), _) = c.source_split(Timecode::from_secs_f64(kept, c.timeline_in.rate));
     let fade = FADE_OUT_SECS.min((kept / 2.0) as f32);
     Some(vec![
         EditCommand::LegacyTrimClip {
@@ -47,7 +47,7 @@ pub(crate) fn trim_edits(seq: &Sequence, clip: ClipId) -> Option<Vec<EditCommand
             old_source_out: c.source_out,
             old_timeline_in: c.timeline_in,
             old_timeline_out: c.timeline_out,
-            new_source_in: c.source_in,
+            new_source_in,
             new_source_out,
             new_timeline_in: c.timeline_in,
             new_timeline_out: end,
