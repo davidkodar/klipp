@@ -14,69 +14,25 @@ use crate::audio_decoder::{AudioConsumer, AudioProducer};
 const SAMPLE_RATE: u32 = 48000;
 const CHANNELS: usize = 2;
 
-/// Minimum fade duration (seconds) applied at clip boundaries to prevent click/pop artifacts.
-/// Configurable via preferences (default 2.0ms). Set via `set_anti_click_fade_ms()`.
-static ANTI_CLICK_FADE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
-    (2.0f64).to_bits()
-);
-
-/// Set the anti-click fade duration from preferences.
+/// Set the anti-click ramp's length from the preferences: the export's
+/// too ([`klipp_core::clip_fade`]).
 pub fn set_anti_click_fade_ms(ms: f64) {
-    ANTI_CLICK_FADE_MS.store(ms.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    klipp_core::clip_fade::set_anti_click_ms(ms);
 }
 
-fn anti_click_fade_secs() -> f64 {
-    f64::from_bits(ANTI_CLICK_FADE_MS.load(std::sync::atomic::Ordering::Relaxed)) / 1000.0
-}
-
-/// Apply a curve shape to a linear 0..1 value.
-///
-/// The shapes live on [`klipp_core::FadeCurve`] so this and the export
-/// mixdown cannot disagree; both used to carry their own `match`.
-fn apply_curve(t: f64, curve: u8) -> f64 {
-    klipp_core::FadeCurve::from_index(curve as u32).gain(t)
-}
-
-/// Compute fade envelope multiplier (0.0..1.0) for a given position in the source.
-/// Always applies a minimum 2ms linear ramp at clip start/end to prevent click artifacts,
-/// even when no explicit fade is configured.
+/// The fade gain at `pos_secs` in the source of a clip from `source_in`,
+/// `clip_dur` long: [`klipp_core::clip_fade::gain`], with the anti-click
+/// ramp unless it is off.
+#[allow(clippy::too_many_arguments)]
 fn fade_envelope(
     pos_secs: f64, source_in: f64, clip_dur: f64,
     fade_in: f64, fade_out: f64,
     fade_in_curve: u8, fade_out_curve: u8,
     anti_click: bool,
 ) -> f32 {
-    let clip_pos = pos_secs - source_in;
-    let clip_end = clip_dur;
-
-    let mut gain = 1.0;
-
-    // Effective fade durations: at least ANTI_CLICK_FADE_SECS when anti-click is enabled
-    let min_fade = if anti_click { anti_click_fade_secs() } else { 0.0 };
-    let eff_fade_in = fade_in.max(min_fade);
-    let eff_fade_out = fade_out.max(min_fade);
-
-    // Fade in: ramp 0→1 over fade_in seconds from clip start
-    if clip_pos < eff_fade_in {
-        let t = (clip_pos / eff_fade_in).clamp(0.0, 1.0);
-        // Use configured curve for explicit fades, linear for anti-click
-        let curve = if fade_in > 0.001 { fade_in_curve } else { 0 };
-        gain = apply_curve(t, curve);
-    }
-
-    // Fade out: ramp 1→0 over fade_out seconds to clip end
-    // Only apply fade-out when there's an explicit fade_out configured.
-    // For anti-click only (no explicit fade), don't fade to silence at clip_end —
-    // contiguous clips need audio to continue seamlessly past the boundary.
-    // The anti-click fade-out is only needed at the ACTUAL end of playback,
-    // which is handled by the audio source stopping.
-    if fade_out > 0.001 && clip_pos > clip_end - eff_fade_out {
-        let remaining = clip_end - clip_pos;
-        let t = (remaining / eff_fade_out).clamp(0.0, 1.0);
-        gain *= apply_curve(t, fade_out_curve);
-    }
-
-    gain as f32
+    let fades = klipp_core::clip_fade::ClipFades { fade_in, fade_out, in_curve: fade_in_curve, out_curve: fade_out_curve };
+    let ramp = if anti_click { klipp_core::clip_fade::anti_click_secs() } else { 0.0 };
+    klipp_core::clip_fade::gain(pos_secs - source_in, clip_dur, &fades, ramp)
 }
 
 /// Commands for the PCM feeder thread.
