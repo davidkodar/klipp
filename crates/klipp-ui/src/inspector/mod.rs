@@ -141,12 +141,12 @@ impl NewInspectorPanel {
         let clip_changed = self.last_synthetic_clip != selected_clip_id;
         self.last_synthetic_clip = selected_clip_id;
         let media = clip_info
-            .and_then(|(_, c)| c.media_id().and_then(|mid| state.media_pool.get(&mid)));
+            .and_then(|(_, c)| c.media_id().and_then(|mid| state.document.media_pool.get(&mid)));
 
         // Fallback: if no timeline clip selected, check media browser selection
         let bin_media = if clip_info.is_none() {
             state.selected_media_ids.iter().next()
-                .and_then(|mid| state.media_pool.get(mid))
+                .and_then(|mid| state.document.media_pool.get(mid))
         } else {
             None
         };
@@ -233,7 +233,7 @@ impl NewInspectorPanel {
                 let bar_rect = egui::Rect::from_min_size(
                     banner_rect.min, egui::vec2(4.0, banner_h),
                 );
-                let role_color = theme.role_color(&state.media_pool.roles, clip.role.as_ref());
+                let role_color = theme.role_color(&state.document.media_pool.roles, clip.role.as_ref());
                 ui.painter().rect_filled(bar_rect, 0.0, role_color);
 
                 // Text — dark colors for readability on amber background
@@ -344,7 +344,7 @@ impl NewInspectorPanel {
         let is_generator_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Generator(_)));
         // A sound has no picture: its sound and what it is, no Transform
         // or Colour (#3128).
-        let is_sound_clip = clip_info.as_ref().is_some_and(|(_, c)| crate::selection::is_sound_only(state.sequence(), &state.media_pool, c.id));
+        let is_sound_clip = clip_info.as_ref().is_some_and(|(_, c)| crate::selection::is_sound_only(state.sequence(), &state.document.media_pool, c.id));
         let tabs: Vec<(InspectorTab, &str, &str)> = if is_sound_clip {
             vec![
                 (InspectorTab::Audio, "AUDIO", "AUD"),
@@ -470,12 +470,12 @@ impl NewInspectorPanel {
                     if let Some((track_idx, clip)) = clip_info {
                         let peak = audio_tab::find_clip_peak_levels(clip, track_idx, state);
                         let media_peaks: Option<Vec<f32>> = clip.media_id()
-                            .and_then(|mid| state.media_pool.get(&mid))
+                            .and_then(|mid| state.document.media_pool.get(&mid))
                             .and_then(|item| item.audio_cache.as_ref())
                             .map(|cache| cache.peaks.iter().map(|(lo, hi)| lo.abs().max(hi.abs())).collect());
                         let peaks_slice = media_peaks.as_deref();
                         let source_channels = clip.media_id()
-                            .and_then(|mid| state.media_pool.get(&mid))
+                            .and_then(|mid| state.document.media_pool.get(&mid))
                             .and_then(|item| item.audio_channels);
                         let clip_time_secs = keyframe_selection::clip_time(state, clip);
                         let track_infos: Vec<audio_tab::TrackInfo> = audio_tab::TrackInfo::of(state.sequence());
@@ -4976,7 +4976,7 @@ fn show_title_editor(
         if let Some(asset) = state.title_assets.get(&asset_id) {
             // Count linked instances across all sequences.
             let mut instance_count = 0usize;
-            for seq in &state.sequences {
+            for seq in &state.document.sequences {
                 for track in &seq.tracks {
                     for c in &track.clips {
                         if c.linked_title_asset_id == Some(asset_id) {
@@ -8059,7 +8059,7 @@ fn show_transition_inspector(
             let clip_a = &seq.tracks[ti_a].clips[ci_a];
             let clip_b = &seq.tracks[ti_b].clips[ci_b];
             let ha = klipp_validation::handles::compute_handle_availability(
-                transition, clip_a, clip_b, &state.media_pool,
+                transition, clip_a, clip_b, &state.document.media_pool,
             );
             let warn_color = theme.marker_error;
             let amber_color = theme.accent;
@@ -9425,9 +9425,9 @@ mod fits_its_column_tests {
     /// [`rightmost`], with the Keyframes column switched on or off (#2305).
     fn rightmost_with(width: f32, clip: klipp_timeline::Clip, tab: InspectorTab, keys: bool) -> (f32, f32, Vec<String>) {
         let mut state = AppState::default();
-        let v = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let v = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         state.selected_clip = Some(clip.id);
-        state.sequences[0].tracks[v].clips.push(clip);
+        state.document.sequences[0].tracks[v].clips.push(clip);
         let prefs = crate::prefs::Preferences::default();
         let ctx = egui::Context::default();
         // Only what Klipp draws: egui 0.34's debug builds outline a widget
@@ -9473,7 +9473,7 @@ mod fits_its_column_tests {
         let mut state = AppState::default();
         let mut text = klipp_timeline::Track::new("T1", klipp_timeline::TrackKind::Text);
         text.clips.push(title.clone());
-        state.sequences[0].tracks.insert(0, text);
+        state.document.sequences[0].tracks.insert(0, text);
         state.selected_clip = Some(title.id);
         let prefs = crate::prefs::Preferences::default();
         let ctx = egui::Context::default();

@@ -69,7 +69,7 @@ fn media_at_playhead(state: &AppState) -> Option<(klipp_core::MediaId, String, s
         .filter(|t| !t.muted)
         .find_map(|t| t.clip_at_timecode(tc).map(|(_, c)| c))?;
     let id = clip.media_id()?;
-    let item = state.media_pool.get(&id)?;
+    let item = state.document.media_pool.get(&id)?;
     item.has_audio.then(|| (id, item.filename.clone(), item.path.clone()))
 }
 

@@ -43,7 +43,7 @@ impl KlippApp {
             return;
         }
         // The kit's files are imported first; the parts wait for them.
-        let paths: Vec<std::path::PathBuf> = kit_files(&found, parts).into_iter().filter(|p| self.state.media_pool.find_by_path(p).is_none()).collect();
+        let paths: Vec<std::path::PathBuf> = kit_files(&found, parts).into_iter().filter(|p| self.state.document.media_pool.find_by_path(p).is_none()).collect();
         let imports: Vec<AppCommand> = paths.into_iter().map(|path| AppCommand::ImportMedia { path }).collect();
         self.send_commands(imports);
         self.state.pending_brand_kit = Some(PendingBrandKit { found, parts, sequence: self.state.sequence().id, until: std::time::Instant::now() + IMPORT_WAIT });
@@ -60,7 +60,7 @@ impl KlippApp {
             self.state.pending_brand_kit = None;
             return;
         }
-        let ready = kit_files(&pending.found, pending.parts).iter().all(|p| self.state.media_pool.find_by_path(p).is_some_and(|m| m.resolution.width > 0));
+        let ready = kit_files(&pending.found, pending.parts).iter().all(|p| self.state.document.media_pool.find_by_path(p).is_some_and(|m| m.resolution.width > 0));
         if !ready {
             if std::time::Instant::now() > pending.until {
                 self.state.pending_brand_kit = None;
@@ -83,7 +83,7 @@ fn brand_kit_ops(state: &crate::state::AppState, pending: &PendingBrandKit) -> R
     use klipp_document::ops::{Op, PlacedComposition};
     let (kit, parts) = (&pending.found.kit, pending.parts);
     let store = &state.composition_templates;
-    let pool = &state.media_pool;
+    let pool = &state.document.media_pool;
     let file = |name: &str| pending.found.dir.as_ref().map(|d| d.join(name)).ok_or_else(|| format!("its {name} has no folder to come from"));
     let bookend = |b: &klipp_project::brand_kit::Bookend| -> Result<(Bookend, f64), String> {
         match (&b.template, &b.file) {
@@ -120,7 +120,7 @@ fn brand_kit_ops(state: &crate::state::AppState, pending: &PendingBrandKit) -> R
     for op in &mut ops {
         if let Op::Template { name, composition, .. } = op {
             let t = store.find(name, None).ok_or_else(|| format!("there is no composition template \"{name}\""))?;
-            let missing = klipp_timeline::composition_template::missing_sequences(t, &state.sequences);
+            let missing = klipp_timeline::composition_template::missing_sequences(t, &state.document.sequences);
             *composition = Some(Box::new(PlacedComposition { template: t.clone(), missing }));
         }
     }
@@ -164,9 +164,9 @@ mod tests {
         let mut logo = klipp_media::MediaItem::new_synthetic_title(klipp_core::MediaId::new(), "mark.png".into(), klipp_core::Timecode::from_secs_f64(5.0, 24), klipp_core::Fps::new(24, 1));
         logo.path = dir.join("mark.png");
         logo.resolution = klipp_core::Resolution { width: 200, height: 100 };
-        let logo_id = state.media_pool.add(logo);
+        let logo_id = state.document.media_pool.add(logo);
         let clip = klipp_timeline::test_clip::TestClip::media(8.0).build();
-        state.sequences[state.active_sequence_idx].tracks[0].clips.push(clip);
+        state.document.sequences[state.active_sequence_idx].tracks[0].clips.push(clip);
         let pending = PendingBrandKit { found, parts, sequence: state.sequence().id, until: std::time::Instant::now() };
         let ops: Vec<serde_json::Value> = brand_kit_ops(&state, &pending).unwrap().iter().map(|o| serde_json::to_value(o).unwrap()).collect();
         assert_eq!(ops.len(), 3, "{ops:?}");

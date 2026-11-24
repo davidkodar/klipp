@@ -66,7 +66,7 @@ pub fn draw(ui: &egui::Ui, state: &AppState, theme: &crate::theme::KlippTheme, r
     if state.playback == klipp_engine::PlaybackState::Playing {
         return false;
     }
-    let (out, inc) = sides(state.sequence(), edit, |m| state.media_pool.get(&m).map(|i| (i.duration.to_secs_f64(), i.filename.clone())));
+    let (out, inc) = sides(state.sequence(), edit, |m| state.document.media_pool.get(&m).map(|i| (i.duration.to_secs_f64(), i.filename.clone())));
     let painter = ui.painter().with_clip_rect(rect);
     painter.rect_filled(rect, 0.0, egui::Color32::BLACK);
     let gap = 8.0;

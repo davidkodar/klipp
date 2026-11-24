@@ -19,7 +19,7 @@ impl KlippApp {
         let mut target_timeline_end = 0.0_f64;
         let mut target_clip_dur_secs = 0.0_f64;
         {
-            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            let seq = &self.state.document.sequences[self.state.active_sequence_idx];
             if let Some(c) = seq.all_clips().find(|c| c.id == *target_clip_id) {
                 old_state = Some(KeyframeSnapshot::from_clip(c));
                 target_timeline_start = c.timeline_in.to_secs_f64();
@@ -35,13 +35,13 @@ impl KlippApp {
         // measured against that voice's own level, the stretches joined.
         let mut all_regions: Vec<(f64, f64)> = Vec::new();
         for track_idx in sidechain_tracks {
-            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            let seq = &self.state.document.sequences[self.state.active_sequence_idx];
             let Some(track) = seq.tracks.get(*track_idx) else { continue };
             let sounds: Vec<(f64, f64, f64, Option<(Vec<f32>, u32, u16)>)> = track
                 .clips
                 .iter()
                 .map(|c| {
-                    let cached = c.media_id().and_then(|mid| self.state.media_pool.get(&mid)).and_then(|item| item.audio_cache.as_ref()).and_then(|cache| {
+                    let cached = c.media_id().and_then(|mid| self.state.document.media_pool.get(&mid)).and_then(|item| item.audio_cache.as_ref()).and_then(|cache| {
                         let bytes = std::fs::read(&cache.pcm_path).ok()?;
                         let samples: Vec<f32> = bytes.chunks_exact(std::mem::size_of::<f32>()).map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]])).collect();
                         Some((samples, cache.sample_rate, cache.channels))
@@ -66,7 +66,7 @@ impl KlippApp {
         let keyframes = crate::auto_duck::duck_keys(&active_regions, target_timeline_start, target_clip_dur_secs, *attack_secs as f64, *release_secs as f64, *duck_level);
 
         // 4. Apply keyframes to the target clip
-        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+        for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
             if let Some(clip) = track.find_clip_mut(*target_clip_id) {
                 clip.volume_keyframes = keyframes;
                 break;
@@ -75,7 +75,7 @@ impl KlippApp {
 
         // 5. Push undo history
         if let Some(old_snap) = old_state {
-            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            let seq = &self.state.document.sequences[self.state.active_sequence_idx];
             let new_state = seq.all_clips().find(|c| c.id == *target_clip_id).map(KeyframeSnapshot::from_clip);
             if let Some(new_snap) = new_state {
                 self.state.push_history(EditCommand::EditKeyframes {
@@ -112,7 +112,7 @@ impl KlippApp {
                     let mut old_linked_state = None;
                     // Capture old state for linked partner before main clip mutation
                     {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         if let Some(c) = seq.all_clips().find(|c| c.id == *clip_id) {
                             linked_partner_id = c.linked_clip_id;
                             old_state = Some(KeyframeSnapshot::from_clip(c));
@@ -126,7 +126,7 @@ impl KlippApp {
                     // The partner's keys on its own clock (a J cut's
                     // picture starts after its sound).
                     let shift = linked_partner_id.map_or(0.0, |pid| super::linked_audio::linked_key_shift(self.state.sequence(), *clip_id, pid));
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             let keyframes = match param {
                                 klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
@@ -139,7 +139,7 @@ impl KlippApp {
                     }
                     // Also add to linked partner clip
                     if let Some(partner_id) = linked_partner_id {
-                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                             if let Some(partner) = track.find_clip_mut(partner_id) {
                                 let keyframes = match param {
                                     klipp_core::AudioParam::Volume => &mut partner.volume_keyframes,
@@ -153,7 +153,7 @@ impl KlippApp {
                     }
                     // Capture new state and push history
                     if let Some(old_snap) = old_state {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         let new_state = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         let new_linked_state = linked_partner_id.and_then(|pid| seq.all_clips().find(|c| c.id == pid).map(KeyframeSnapshot::from_clip));
                         if let Some(new_snap) = new_state {
@@ -178,7 +178,7 @@ impl KlippApp {
                     let mut old_state = None;
                     let mut old_linked_state = None;
                     {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         if let Some(c) = seq.all_clips().find(|c| c.id == *clip_id) {
                             linked_partner_id = c.linked_clip_id;
                             old_state = Some(KeyframeSnapshot::from_clip(c));
@@ -192,7 +192,7 @@ impl KlippApp {
                     // The partner's keys on its own clock (a J cut's
                     // picture starts after its sound).
                     let shift = linked_partner_id.map_or(0.0, |pid| super::linked_audio::linked_key_shift(self.state.sequence(), *clip_id, pid));
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             let keyframes = match param {
                                 klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
@@ -204,7 +204,7 @@ impl KlippApp {
                         }
                     }
                     if let Some(partner_id) = linked_partner_id {
-                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                             if let Some(partner) = track.find_clip_mut(partner_id) {
                                 let keyframes = match param {
                                     klipp_core::AudioParam::Volume => &mut partner.volume_keyframes,
@@ -217,7 +217,7 @@ impl KlippApp {
                         }
                     }
                     if let Some(old_snap) = old_state {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         let new_state = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         let new_linked_state = linked_partner_id.and_then(|pid| seq.all_clips().find(|c| c.id == pid).map(KeyframeSnapshot::from_clip));
                         if let Some(new_snap) = new_state {
@@ -242,7 +242,7 @@ impl KlippApp {
                     let mut old_state = None;
                     let mut old_linked_state = None;
                     {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         if let Some(c) = seq.all_clips().find(|c| c.id == *clip_id) {
                             linked_partner_id = c.linked_clip_id;
                             old_state = Some(KeyframeSnapshot::from_clip(c));
@@ -266,7 +266,7 @@ impl KlippApp {
                     let span = self.state.sequence().all_clips().find(|c| c.id == *clip_id).map_or(0.0, |c| c.duration().to_secs_f64());
                     for target_id in &all_ids {
                         let s = if target_id == clip_id { 0.0 } else { shift };
-                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                             if let Some(clip) = track.find_clip_mut(*target_id) {
                                 let keyframes = match param {
                                     klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
@@ -287,7 +287,7 @@ impl KlippApp {
                         }
                     }
                     if let Some(old_snap) = old_state {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         let new_state = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         let new_linked_state = linked_partner_id.and_then(|pid| seq.all_clips().find(|c| c.id == pid).map(KeyframeSnapshot::from_clip));
                         if let Some(new_snap) = new_state {
@@ -312,7 +312,7 @@ impl KlippApp {
                     let mut old_state = None;
                     let mut old_linked_state = None;
                     {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         if let Some(c) = seq.all_clips().find(|c| c.id == *clip_id) {
                             linked_partner_id = c.linked_clip_id;
                             old_state = Some(KeyframeSnapshot::from_clip(c));
@@ -341,7 +341,7 @@ impl KlippApp {
                     let span = self.state.sequence().all_clips().find(|c| c.id == *clip_id).map_or(0.0, |c| c.duration().to_secs_f64());
                     for target_id in &all_ids {
                         let s = if target_id == clip_id { 0.0 } else { shift };
-                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                             if let Some(clip) = track.find_clip_mut(*target_id) {
                                 let keyframes = match param {
                                     klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
@@ -366,7 +366,7 @@ impl KlippApp {
                         }
                     }
                     if let Some(old_snap) = old_state {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         let new_state = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         let new_linked_state = linked_partner_id.and_then(|pid| seq.all_clips().find(|c| c.id == pid).map(KeyframeSnapshot::from_clip));
                         if let Some(new_snap) = new_state {
@@ -387,7 +387,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::CopyAudioKeyframes { clip_id, param } => {
-                    if let Some(clip) = self.state.sequences[self.state.active_sequence_idx]
+                    if let Some(clip) = self.state.document.sequences[self.state.active_sequence_idx]
                         .all_clips().find(|c| c.id == *clip_id)
                     {
                         let kfs = match param {
@@ -404,7 +404,7 @@ impl KlippApp {
                 }
                 AppCommand::PasteAudioKeyframes { clip_id, param } => {
                     if let Some(ref cb) = self.state.keyframe_clipboard.clone() {
-                        let target_dur = self.state.sequences[self.state.active_sequence_idx]
+                        let target_dur = self.state.document.sequences[self.state.active_sequence_idx]
                             .all_clips().find(|c| c.id == *clip_id).map(|c| c.duration().to_secs_f64());
                         if let Some(target_dur) = target_dur {
                             let scale = if cb.source_duration_secs > 0.0 { target_dur / cb.source_duration_secs } else { 1.0 };
@@ -416,7 +416,7 @@ impl KlippApp {
                             new_kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
                             // On its linked partner too, where a pair's
                             // level is read.
-                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                            let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                             if let Some(edit) = super::linked_audio::set_audio_keys_with_partner(seq, *clip_id, *param, new_kfs, "Paste Audio Keyframes") {
                                 self.state.push_history(edit);
                             }
@@ -428,7 +428,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::ReverseAudioKeyframes { clip_id, param } => {
-                    let reversed = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).map(|clip| {
+                    let reversed = self.state.document.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).map(|clip| {
                         super::linked_audio::reversed_keys(match param {
                             klipp_core::AudioParam::Volume => &clip.volume_keyframes,
                             klipp_core::AudioParam::Pan => &clip.pan_keyframes,
@@ -437,7 +437,7 @@ impl KlippApp {
                     });
                     // On its linked partner too, where a pair's level is read.
                     if let Some(reversed) = reversed {
-                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                         if let Some(edit) = super::linked_audio::set_audio_keys_with_partner(seq, *clip_id, *param, reversed, "Reverse Audio Keyframes") {
                             self.state.push_history(edit);
                         }
@@ -452,7 +452,7 @@ impl KlippApp {
                     // picture starts after its sound).
                     let shift = self.state.sequence().all_clips().find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id).map_or(0.0, |pid| super::linked_audio::linked_key_shift(self.state.sequence(), *clip_id, pid));
                     let mut linked_partner_id = None;
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             linked_partner_id = clip.linked_clip_id;
                             let keyframes = match param {
@@ -470,7 +470,7 @@ impl KlippApp {
                     }
                     // Also move on linked partner clip
                     if let Some(partner_id) = linked_partner_id {
-                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                             if let Some(partner) = track.find_clip_mut(partner_id) {
                                 let keyframes = match param {
                                     klipp_core::AudioParam::Volume => &mut partner.volume_keyframes,
@@ -497,7 +497,7 @@ impl KlippApp {
                     let mut old_state = None;
                     let mut old_linked_state = None;
                     {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         if let Some(c) = seq.all_clips().find(|c| c.id == *clip_id) {
                             linked_partner_id_interp = c.linked_clip_id;
                             old_state = Some(KeyframeSnapshot::from_clip(c));
@@ -517,7 +517,7 @@ impl KlippApp {
                         ids
                     };
                     for target_id in &target_ids {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*target_id) {
                             let keyframes = match param {
                                 klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
@@ -530,7 +530,7 @@ impl KlippApp {
                     }
                     } // end for target_id
                     if let Some(old_snap) = old_state {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         let new_state = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         let new_linked_state = linked_partner_id_interp.and_then(|pid| seq.all_clips().find(|c| c.id == pid).map(KeyframeSnapshot::from_clip));
                         if let Some(new_snap) = new_state {
@@ -552,7 +552,7 @@ impl KlippApp {
                 }
                 AppCommand::SetAudioKeyframeTangent { clip_id, param, keyframe_index, tangent_in, tangent_out, handles } => {
                     let mut linked_partner_id = None;
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             linked_partner_id = clip.linked_clip_id;
                             let keyframes = match param {
@@ -566,7 +566,7 @@ impl KlippApp {
                     }
                     // Also set tangent on linked partner clip
                     if let Some(partner_id) = linked_partner_id {
-                        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                             if let Some(partner) = track.find_clip_mut(partner_id) {
                                 let keyframes = match param {
                                     klipp_core::AudioParam::Volume => &mut partner.volume_keyframes,
@@ -606,7 +606,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::OpenShortsDialog { media_id } => {
-                    match self.state.media_pool.get(media_id) {
+                    match self.state.document.media_pool.get(media_id) {
                         Some(item) => self.state.shorts_dialog = Some(crate::shorts_dialog::ShortsDialog::new(*media_id, item.filename.clone())),
                         None => self.state.toast.show("That media is no longer in the pool"),
                     }
@@ -634,7 +634,7 @@ impl KlippApp {
                 }
                 AppCommand::ApplyMusicFit { clip_id, segments } => {
                     let seq = self.state.sequence();
-                    match crate::music_fit_dialog::fitted_edit(seq, &self.state.media_pool, *clip_id, segments) {
+                    match crate::music_fit_dialog::fitted_edit(seq, &self.state.document.media_pool, *clip_id, segments) {
                         Ok(edits) => self.apply_edits_as_one(&edits, "Fit Music to Length"),
                         Err(why) => self.state.toast.show(format!("Fit unchanged: {why}")),
                     }
@@ -683,8 +683,8 @@ impl KlippApp {
         }
         self.prefs.audio.normalize = settings;
         self.prefs.save().ok();
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
-        let (clips, skipped) = klipp_render::normalize::clip_sounds(seq, &self.state.media_pool, clip_ids);
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
+        let (clips, skipped) = klipp_render::normalize::clip_sounds(seq, &self.state.document.media_pool, clip_ids);
         if clips.is_empty() {
             self.state.toast.show("None of the selected clips has sound to normalize");
             return;
@@ -716,12 +716,12 @@ impl KlippApp {
     /// first opened; or, when one cannot be built, none of them and why.
     fn make_shorts(&mut self, media_id: klipp_core::MediaId, fps: klipp_core::Fps, shorts: &[klipp_core::ShortAsk]) {
         self.transcript_source.sync(self.state.analysis_generation);
-        let taken: Vec<String> = self.state.sequences.iter().map(|s| s.name.clone()).collect();
-        let audio = self.state.media_pool.get(&media_id).and_then(|m| klipp_analysis::report::MediaAnalysis::load(&m.path).audio);
+        let taken: Vec<String> = self.state.document.sequences.iter().map(|s| s.name.clone()).collect();
+        let audio = self.state.document.media_pool.get(&media_id).and_then(|m| klipp_analysis::report::MediaAnalysis::load(&m.path).audio);
         let gain = audio.and_then(|a| Some((-14.0 - a.integrated_lufs?).min(-1.0 - a.true_peak_dbtp.unwrap_or(-1.0)))).map(|db| 10f32.powf(db / 20.0));
-        match crate::shorts_dialog::shorts_edit(&taken, fps, media_id, shorts, &self.state.media_pool, &self.transcript_source, gain) {
+        match crate::shorts_dialog::shorts_edit(&taken, fps, media_id, shorts, &self.state.document.media_pool, &self.transcript_source, gain) {
             Ok(sequences) => {
-                let first = self.state.sequences.len();
+                let first = self.state.document.sequences.len();
                 self.apply_edits_as_one(&[klipp_document::history::EditCommand::AddSequences { sequences }], "Make Shorts");
                 self.send_commands(vec![AppCommand::SetActiveSequence { sequence_idx: first }]);
             }
@@ -733,7 +733,7 @@ impl KlippApp {
     /// the clip's own source in-point (#2210).
     fn plan_music_fit(&mut self, clip_id: klipp_core::ClipId, target_secs: f64, skip_intro: bool) {
         let found = self.state.sequence().all_clips().find(|c| c.id == clip_id).and_then(|clip| {
-            let item = clip.media_id().and_then(|m| self.state.media_pool.get(&m))?;
+            let item = clip.media_id().and_then(|m| self.state.document.media_pool.get(&m))?;
             Some((item.path.clone(), item.duration.to_secs_f64(), clip.source_in.to_secs_f64()))
         });
         let Some((path, duration, start)) = found else {
@@ -760,7 +760,7 @@ impl KlippApp {
         match cmd {
                 AppCommand::BeginAudioDrag { ref key, clip_id, old_gain, old_volume, old_pan, old_fade_in, old_fade_out } => {
                     // Look up current channel_config from the clip (drag commands don't carry it)
-                    let cc = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                    let cc = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                         .find(|c| c.id == *clip_id)
                         .map(|c| c.channel_config)
                         .unwrap_or_default();
@@ -788,7 +788,7 @@ impl KlippApp {
                 }
                 AppCommand::EndAudioDrag { ref key, clip_id, new_gain, new_volume, new_pan, new_fade_in, new_fade_out } => {
                     let _ = key;
-                    let cc = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                    let cc = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                         .find(|c| c.id == *clip_id)
                         .map(|c| c.channel_config)
                         .unwrap_or_default();
@@ -803,7 +803,7 @@ impl KlippApp {
                     // Its linked partner, moved with it as the drag went,
                     // in the same step: a pair is kept at one level, so it
                     // started where the clip did.
-                    let partner = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id);
+                    let partner = self.state.document.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id);
                     let edit_of = |id: klipp_core::ClipId| EditCommand::EditClipAudio {
                         clip_id: id,
                         old_gain: og,
@@ -868,11 +868,11 @@ impl KlippApp {
     pub(super) fn measure_stale_normalizes(&mut self) {
         let seq_idx = self.state.active_sequence_idx;
         let mut stale = Vec::new();
-        for clip in self.state.sequences[seq_idx].all_clips() {
+        for clip in self.state.document.sequences[seq_idx].all_clips() {
             if !clip.audio_effects.iter().any(klipp_render::normalize::is_clip_normalize) {
                 continue;
             }
-            let Some(media) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).filter(|m| m.has_audio) else { continue };
+            let Some(media) = clip.media_id().and_then(|m| self.state.document.media_pool.get(&m)).filter(|m| m.has_audio) else { continue };
             let (from, to) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
             for (idx, key) in klipp_render::normalize::stale_normalizes(&media.path, from, to, &clip.audio_effects, &clip.audio_effect_keyframes) {
                 stale.push((clip.id, idx, key, media.path.clone(), from, to, clip.audio_effects.clone(), clip.audio_effect_keyframes.clone()));
@@ -881,7 +881,7 @@ impl KlippApp {
         let mut cleared = false;
         for (clip_id, idx, key, path, from, to, effects, keyframes) in stale {
             // An old measurement no longer fits: unity until the new one.
-            if let Some(inst) = self.state.sequences[seq_idx].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).and_then(|c| c.audio_effects.get_mut(idx)) {
+            if let Some(inst) = self.state.document.sequences[seq_idx].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).and_then(|c| c.audio_effects.get_mut(idx)) {
                 let before = inst.params.len();
                 inst.params.retain(|(k, _)| !k.starts_with("measured_"));
                 cleared |= inst.params.len() != before;
@@ -908,8 +908,8 @@ impl KlippApp {
     pub(super) fn normalize_measured(&mut self, clip_id: klipp_core::ClipId, effect_index: usize, key: u64, lufs: Option<f32>) {
         self.normalize_measuring.remove(&(clip_id, effect_index, key));
         let seq_idx = self.state.active_sequence_idx;
-        let pool = &self.state.media_pool;
-        let Some(clip) = self.state.sequences[seq_idx].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return };
+        let pool = &self.state.document.media_pool;
+        let Some(clip) = self.state.document.sequences[seq_idx].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return };
         let Some(media) = clip.media_id().and_then(|m| pool.get(&m)) else { return };
         let (from, to) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
         if !klipp_render::normalize::stale_normalizes(&media.path, from, to, &clip.audio_effects, &clip.audio_effect_keyframes).contains(&(effect_index, key)) {
@@ -930,7 +930,7 @@ impl KlippApp {
         effect_index: usize,
         at_clip_secs: Option<f64>,
     ) {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return };
         let window_secs = clip
             .audio_effects
@@ -943,7 +943,7 @@ impl KlippApp {
         let source_out = clip.source_out.to_secs_f64().max(source_in);
         let pcm_path = clip
             .media_id()
-            .and_then(|id| self.state.media_pool.get(&id))
+            .and_then(|id| self.state.document.media_pool.get(&id))
             .and_then(|m| m.audio_cache.as_ref())
             .map(|c| c.pcm_path.clone());
         let Some(pcm_path) = pcm_path else {
@@ -1009,7 +1009,7 @@ impl KlippApp {
         old_state: Option<crate::history::AudioChainSnapshot>,
     ) {
         let Some(old_state) = old_state else { return };
-        let Some(new_state) = self.state.sequences[self.state.active_sequence_idx]
+        let Some(new_state) = self.state.document.sequences[self.state.active_sequence_idx]
             .all_clips()
             .find(|c| c.id == clip_id)
             .map(crate::history::AudioChainSnapshot::from_clip)
@@ -1081,9 +1081,9 @@ impl crate::state::AppState {
     pub(crate) fn set_audio_effect_params(&mut self, clip_id: klipp_core::ClipId, effect_index: usize, params: &[(String, f32)], description: &'static str) -> bool {
         self.close_path_drag_before_edit();
         let seq = self.active_sequence_idx;
-        let Some(old_state) = self.sequences[seq].all_clips().find(|c| c.id == clip_id).map(crate::history::AudioChainSnapshot::from_clip) else { return false };
+        let Some(old_state) = self.document.sequences[seq].all_clips().find(|c| c.id == clip_id).map(crate::history::AudioChainSnapshot::from_clip) else { return false };
         let mut applied = false;
-        for track in &mut self.sequences[seq].tracks {
+        for track in &mut self.document.sequences[seq].tracks {
             if let Some(clip) = track.find_clip_mut(clip_id) {
                 if let Some(inst) = clip.audio_effects.get_mut(effect_index) {
                     for (name, value) in params {
@@ -1101,7 +1101,7 @@ impl crate::state::AppState {
         if !applied {
             return false;
         }
-        let Some(new_state) = self.sequences[seq].all_clips().find(|c| c.id == clip_id).map(crate::history::AudioChainSnapshot::from_clip) else { return false };
+        let Some(new_state) = self.document.sequences[seq].all_clips().find(|c| c.id == clip_id).map(crate::history::AudioChainSnapshot::from_clip) else { return false };
         self.push_history(EditCommand::EditAudioChain { clip_id, description, old_state, new_state });
         true
     }

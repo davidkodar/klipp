@@ -102,7 +102,7 @@ pub fn show(
 fn insertion_unavailable(state: &AppState, template: &klipp_timeline::composition_template::CompositionTemplate) -> Option<&'static str> {
     // The project's copy when it has one, else the one the template carries.
     let Some(sequence) = state
-        .sequences
+        .document.sequences
         .iter()
         .find(|sequence| sequence.id.0 == template.composition_id)
         .or_else(|| template.composition())

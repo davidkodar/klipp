@@ -18,11 +18,11 @@ impl KlippApp {
         }
 
         let active_idx = self.state.active_sequence_idx;
-        let fps = self.state.sequences[active_idx].fps;
-        let res = self.state.sequences[active_idx].resolution;
+        let fps = self.state.document.sequences[active_idx].fps;
+        let res = self.state.document.sequences[active_idx].resolution;
 
         // Collect the clips and find the time range
-        let seq = &self.state.sequences[active_idx];
+        let seq = &self.state.document.sequences[active_idx];
         let mut collected: Vec<(usize, usize, klipp_timeline::Clip)> = Vec::new();
         for (ti, track) in seq.tracks.iter().enumerate() {
             for (ci, clip) in track.clips.iter().enumerate() {
@@ -66,7 +66,7 @@ impl KlippApp {
         };
 
         // Reproduce track structure and move clips (offset to start at 0)
-        let parent_seq = &self.state.sequences[active_idx];
+        let parent_seq = &self.state.document.sequences[active_idx];
         for (ti, track) in parent_seq.tracks.iter().enumerate() {
             let mut new_track = klipp_timeline::Track::new(&track.name, track.kind);
             for (_, _, clip) in collected.iter().filter(|(t, _, _)| *t == ti) {
@@ -82,14 +82,14 @@ impl KlippApp {
         }
 
         let nested_seq_id = nested_seq.id;
-        let parent_seq_id = self.state.sequences[active_idx].id;
-        self.state.sequences.push(nested_seq);
+        let parent_seq_id = self.state.document.sequences[active_idx].id;
+        self.state.document.sequences.push(nested_seq);
 
         // Refuse to create a circular reference: if the new nested sequence
         // (which contains the moved clips, possibly including other compound
         // clips) transitively references the parent, abort and roll back.
-        if would_create_cycle(nested_seq_id, parent_seq_id, &self.state.sequences) {
-            self.state.sequences.pop();
+        if would_create_cycle(nested_seq_id, parent_seq_id, &self.state.document.sequences) {
+            self.state.document.sequences.pop();
             self.state
                 .toast
                 .show("Cannot create compound clip: this would create a circular reference.");
@@ -97,7 +97,7 @@ impl KlippApp {
         }
 
         // Remove original clips from parent and insert compound clip
-        let parent_seq = &mut self.state.sequences[active_idx];
+        let parent_seq = &mut self.state.document.sequences[active_idx];
         // Find the first track that had selected clips
         let first_track_idx = collected.first().map(|(ti, _, _)| *ti).unwrap_or(0);
         for (ti, _, clip) in &collected {
@@ -187,7 +187,7 @@ impl KlippApp {
             truth_source: Option<klipp_timeline::Clip>,
         }
         let snap: CompoundSnapshot = {
-            let parent = &self.state.sequences[active_idx];
+            let parent = &self.state.document.sequences[active_idx];
             let mut found: Option<CompoundSnapshot> = None;
             'outer: for (ti, track) in parent.tracks.iter().enumerate() {
                 for (ci, c) in track.clips.iter().enumerate() {
@@ -238,7 +238,7 @@ impl KlippApp {
         // 2. Snapshot the inner sequence's clips before any mutation.
         let inner_idx = match self
             .state
-            .sequences
+            .document.sequences
             .iter()
             .position(|s| s.id == snap.inner_seq_id)
         {
@@ -255,7 +255,7 @@ impl KlippApp {
             klipp_timeline::TrackKind,
             String,
             Vec<klipp_timeline::Clip>,
-        )> = self.state.sequences[inner_idx]
+        )> = self.state.document.sequences[inner_idx]
             .tracks
             .iter()
             .map(|t| (t.kind, t.name.clone(), t.clips.clone()))
@@ -263,7 +263,7 @@ impl KlippApp {
 
         // 3. Remove the compound clip from the parent in place (no ripple).
         {
-            let parent = &mut self.state.sequences[active_idx];
+            let parent = &mut self.state.document.sequences[active_idx];
             if let Some(track) = parent.tracks.get_mut(snap.parent_track_idx) {
                 if snap.parent_clip_idx < track.clips.len()
                     && track.clips[snap.parent_clip_idx].id == clip_id
@@ -313,7 +313,7 @@ impl KlippApp {
 
             // Find an existing parent track of matching kind with room (no
             // clip overlapping the sliced block); otherwise create a new one.
-            let parent = &self.state.sequences[active_idx];
+            let parent = &self.state.document.sequences[active_idx];
             let target_track_idx = parent
                 .tracks
                 .iter()
@@ -331,7 +331,7 @@ impl KlippApp {
             let target_track_idx = match target_track_idx {
                 Some(i) => i,
                 None => {
-                    let parent = &mut self.state.sequences[active_idx];
+                    let parent = &mut self.state.document.sequences[active_idx];
                     let new_track = klipp_timeline::Track::new(&src_name, kind);
                     match kind {
                         klipp_timeline::TrackKind::Video => {
@@ -352,7 +352,7 @@ impl KlippApp {
                 }
             };
 
-            let parent = &mut self.state.sequences[active_idx];
+            let parent = &mut self.state.document.sequences[active_idx];
             if let Some(track) = parent.tracks.get_mut(target_track_idx) {
                 for clip in sliced {
                     track.clips.push(clip);
@@ -419,7 +419,7 @@ impl KlippApp {
             // it AFTER (above) the restored inner clips. If the existing top
             // video track has room at the adjustment range, reuse it;
             // otherwise insert a new "Decomposed Adjustments" track at idx 0.
-            let parent = &mut self.state.sequences[active_idx];
+            let parent = &mut self.state.document.sequences[active_idx];
             let topmost_has_room = parent
                 .tracks
                 .first()
@@ -475,7 +475,7 @@ impl KlippApp {
 
         // 7. Delete the now-orphaned inner sequence (no other compound
         //    references it). Skip if it's the project's last sequence.
-        let still_referenced = self.state.sequences.iter().enumerate().any(|(i, seq)| {
+        let still_referenced = self.state.document.sequences.iter().enumerate().any(|(i, seq)| {
             i != inner_idx
                 && seq.tracks.iter().any(|t| {
                     t.clips.iter().any(|c| {
@@ -485,14 +485,14 @@ impl KlippApp {
                     })
                 })
         });
-        if !still_referenced && self.state.sequences.len() > 1 {
+        if !still_referenced && self.state.document.sequences.len() > 1 {
             if let Some(inner_idx) = self
                 .state
-                .sequences
+                .document.sequences
                 .iter()
                 .position(|s| s.id == snap.inner_seq_id)
             {
-                self.state.sequences.remove(inner_idx);
+                self.state.document.sequences.remove(inner_idx);
                 self.state
                     .compound_clip_stack
                     .retain(|(idx, _)| *idx != inner_idx);
@@ -501,12 +501,12 @@ impl KlippApp {
                         entry.0 -= 1;
                     }
                 }
-                if self.state.active_sequence_idx >= self.state.sequences.len() {
-                    self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                if self.state.active_sequence_idx >= self.state.document.sequences.len() {
+                    self.state.active_sequence_idx = self.state.document.sequences.len() - 1;
                 } else if self.state.active_sequence_idx > inner_idx {
                     self.state.active_sequence_idx -= 1;
                 }
-                self.state.fps = self.state.sequences[self.state.active_sequence_idx].fps;
+                self.state.fps = self.state.document.sequences[self.state.active_sequence_idx].fps;
             }
         }
 

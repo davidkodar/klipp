@@ -47,9 +47,9 @@ fn the_viewer_turns_a_drag_into_a_stroke() {
     let mut item = klipp_media::MediaItem::synthetic_for_test(std::env::temp_dir().join("klipp-stroke.mov"), None);
     item.duration = rt(48);
     item.resolution = klipp_core::Resolution { width: 64, height: 36 };
-    let media = state.media_pool.add(item);
-    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-    state.sequences[0].tracks[v1].clips = vec![klipp_timeline::Clip::media(media, rt(0), rt(48), rt(0), rt(48))];
+    let media = state.document.media_pool.add(item);
+    let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    state.document.sequences[0].tracks[v1].clips = vec![klipp_timeline::Clip::media(media, rt(0), rt(48), rt(0), rt(48))];
     state.eyedropper_mode = crate::state::EyedropperMode::QualifierStroke;
     state.qualifier_stroke_pick = Some((klipp_core::ClipId::new(), uuid::Uuid::new_v4(), false));
     let ctx = egui::Context::default();

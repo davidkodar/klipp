@@ -53,7 +53,7 @@ impl KlippApp {
                     let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
                     let is_dragging = self.state.active_history().is_dragging(&drag_key);
                     let old_state = if !is_dragging {
-                        self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                             .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip)
                     } else {
                         None
@@ -65,7 +65,7 @@ impl KlippApp {
                     } else {
                         klipp_core::Interpolation::Linear
                     };
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             let keyframes = clip.audio_effect_keyframes.entry(key.clone()).or_default();
                             klipp_core::keyframe::upsert_keyframe_with_interpolation(keyframes, *time_secs, *value, default_interp);
@@ -74,7 +74,7 @@ impl KlippApp {
                     }
                     if !is_dragging {
                         if let Some(old_snap) = old_state {
-                            let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                                 .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                             if let Some(new_snap) = new_snap {
                                 self.state.push_history(EditCommand::EditKeyframes {
@@ -106,12 +106,12 @@ impl KlippApp {
                     let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
                     let is_dragging = self.state.active_history().is_dragging(&drag_key);
                     let old_state = if !is_dragging {
-                        self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                             .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip)
                     } else {
                         None
                     };
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
                                 klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
@@ -124,7 +124,7 @@ impl KlippApp {
                     }
                     if !is_dragging {
                         if let Some(old_snap) = old_state {
-                            let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                                 .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                             if let Some(new_snap) = new_snap {
                                 self.state.push_history(EditCommand::EditKeyframes {
@@ -153,9 +153,9 @@ impl KlippApp {
                 }
                 AppCommand::SetAudioEffectKeyframeInterpolation { clip_id, effect_index, param_name, keyframe_index, interpolation } => {
                     let key = format!("{}:{}", effect_index, param_name);
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                    let old_state = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
                                 klipp_core::keyframe::set_interpolation_at(keyframes, *keyframe_index, *interpolation);
@@ -164,7 +164,7 @@ impl KlippApp {
                         }
                     }
                     if let Some(old_snap) = old_state {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                             .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         if let Some(new_snap) = new_snap {
                             self.state.push_history(EditCommand::EditKeyframes {
@@ -195,7 +195,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::CopyAudioEffectKeyframes { clip_id, effect_index, param_name } => {
-                    if let Some(clip) = self.state.sequences[self.state.active_sequence_idx]
+                    if let Some(clip) = self.state.document.sequences[self.state.active_sequence_idx]
                         .all_clips().find(|c| c.id == *clip_id)
                     {
                         let key = format!("{effect_index}:{param_name}");
@@ -209,10 +209,10 @@ impl KlippApp {
                 }
                 AppCommand::PasteAudioEffectKeyframes { clip_id, effect_index, param_name } => {
                     if let Some(ref cb) = self.state.keyframe_clipboard.clone() {
-                        let old_state = self.state.sequences[self.state.active_sequence_idx]
+                        let old_state = self.state.document.sequences[self.state.active_sequence_idx]
                             .all_clips().find(|c| c.id == *clip_id)
                             .map(crate::history::AudioChainSnapshot::from_clip);
-                        let target_dur = self.state.sequences[self.state.active_sequence_idx]
+                        let target_dur = self.state.document.sequences[self.state.active_sequence_idx]
                             .all_clips().find(|c| c.id == *clip_id).map(|c| c.duration().to_secs_f64());
                         if let Some(target_dur) = target_dur {
                             let scale = if cb.source_duration_secs > 0.0 { target_dur / cb.source_duration_secs } else { 1.0 };
@@ -223,7 +223,7 @@ impl KlippApp {
                             }).collect();
                             new_kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
                             let key = format!("{effect_index}:{param_name}");
-                            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                            for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                                 if let Some(clip) = track.find_clip_mut(*clip_id) {
                                     clip.audio_effect_keyframes.insert(key.clone(), new_kfs);
                                     break;
@@ -238,11 +238,11 @@ impl KlippApp {
                     true
                 }
                 AppCommand::ReverseAudioEffectKeyframes { clip_id, effect_index, param_name } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx]
+                    let old_state = self.state.document.sequences[self.state.active_sequence_idx]
                         .all_clips().find(|c| c.id == *clip_id)
                         .map(crate::history::AudioChainSnapshot::from_clip);
                     let key = format!("{effect_index}:{param_name}");
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
                                 if keyframes.len() >= 2 {
@@ -268,11 +268,11 @@ impl KlippApp {
                     true
                 }
                 AppCommand::ScaleAudioEffectKeyframeTiming { clip_id, effect_index, param_name, factor } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx]
+                    let old_state = self.state.document.sequences[self.state.active_sequence_idx]
                         .all_clips().find(|c| c.id == *clip_id)
                         .map(crate::history::AudioChainSnapshot::from_clip);
                     let key = format!("{effect_index}:{param_name}");
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             let clip_dur = clip.duration().to_secs_f64();
                             if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
@@ -294,7 +294,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::InsertAudioEffectKeyframeBump { clip_id, effect_index, param_name, center_time, bump_value, base_value, duration_secs, ramp_secs } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx]
+                    let old_state = self.state.document.sequences[self.state.active_sequence_idx]
                         .all_clips().find(|c| c.id == *clip_id)
                         .map(crate::history::AudioChainSnapshot::from_clip);
                     let key = format!("{effect_index}:{param_name}");
@@ -304,7 +304,7 @@ impl KlippApp {
                         (center_time + duration_secs / 2.0, *bump_value),
                         (center_time + duration_secs / 2.0 + ramp_secs, *base_value),
                     ];
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             let clip_dur = clip.duration().to_secs_f64();
                             let keyframes = clip.audio_effect_keyframes.entry(key.clone()).or_default();
@@ -338,7 +338,7 @@ impl KlippApp {
         match cmd {
                 AppCommand::SetClipSpeed { clip_id, speed, ripple } => {
                     let speed = klipp_timeline::clamp_speed(*speed);
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     let Some(clip) = seq.all_clips().find(|c| c.id == *clip_id) else { return true };
                     // Reverse is a media clip's: a compound or a title has
                     // no file of its own to read backward.
@@ -349,7 +349,7 @@ impl KlippApp {
                     // As the retime op does it: the linked sound with it, and
                     // the clips after them rippled, or a refusal rather than
                     // a clip laid over the next one (#639).
-                    match klipp_document::ops::retime_at(seq, &self.state.media_pool, *clip_id, speed, *ripple) {
+                    match klipp_document::ops::retime_at(seq, &self.state.document.media_pool, *clip_id, speed, *ripple) {
                         Ok((what, edit)) => {
                             tracing::info!("{what}");
                             self.apply_edits_as_one(&[edit], "Clip Speed");
@@ -360,8 +360,8 @@ impl KlippApp {
                 }
                 AppCommand::FreezeFrame { clip_id, at_secs, secs } => {
                     use klipp_document::ops::{Anchor, ClipRef, Op};
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    match klipp_document::ops::resolve(seq, &self.state.media_pool, &[Op::Freeze { clip_id: ClipRef::Id(*clip_id), at: Anchor::Secs(*at_secs), secs: *secs }]) {
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
+                    match klipp_document::ops::resolve(seq, &self.state.document.media_pool, &[Op::Freeze { clip_id: ClipRef::Id(*clip_id), at: Anchor::Secs(*at_secs), secs: *secs }]) {
                         Ok(plan) => {
                             let edits: Vec<_> = plan.steps.into_iter().map(|s| s.edit).collect();
                             self.apply_edits_as_one(&edits, "Freeze Frame");
@@ -371,8 +371,8 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetClipInterpolation { clip_id, interpolation } => {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    match klipp_document::ops::interpolation_at(seq, &self.state.media_pool, *clip_id, interpolation) {
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
+                    match klipp_document::ops::interpolation_at(seq, &self.state.document.media_pool, *clip_id, interpolation) {
                         Ok(Some((what, edit))) => {
                             tracing::info!("{what}");
                             self.apply_edits_as_one(&[edit], "In-between Frames");
@@ -455,7 +455,7 @@ impl KlippApp {
     /// holds them a key that has no room stays where it last had it, and the
     /// step is made when the drag ends.
     fn set_speed_keys(&mut self, clip_id: ClipId, keys: Vec<klipp_core::Keyframe>) {
-        match klipp_document::ops::speed_keys_at(self.state.sequence(), &self.state.media_pool, clip_id, keys) {
+        match klipp_document::ops::speed_keys_at(self.state.sequence(), &self.state.document.media_pool, clip_id, keys) {
             Ok((what, edit)) if self.speed_key_drag.is_some() => {
                 tracing::debug!("{what}");
                 self.apply_edit_forward(&edit);
@@ -487,7 +487,7 @@ pub(super) fn audio_effect_key_write(state: &mut crate::state::AppState, cmd: &A
         _ => return false,
     };
     let key = format!("{}:{}", effect_index, param_name);
-    for track in &mut state.sequences[state.active_sequence_idx].tracks {
+    for track in &mut state.document.sequences[state.active_sequence_idx].tracks {
         if let Some(clip) = track.find_clip_mut(*clip_id) {
             if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
                 match cmd {

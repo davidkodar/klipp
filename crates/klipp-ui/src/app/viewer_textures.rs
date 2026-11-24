@@ -7,7 +7,7 @@ impl KlippApp {
     /// Show nearest filmstrip thumbnail as instant viewer preview while full-res decodes.
     pub(super) fn show_filmstrip_preview(&mut self, ctx: &egui::Context) {
         let playhead_secs = self.state.playhead.to_secs_f64();
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
 
         // Find the clip at the playhead
         let media_id = seq.tracks.iter()

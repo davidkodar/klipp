@@ -114,7 +114,7 @@ pub fn before(state: &AppState, cmd: &AppCommand) -> Option<Before> {
     };
     let mut before = before_labelled(state, label)?;
     if let Some(i) = scope {
-        let seq = state.sequences.get(state.active_sequence_idx)?;
+        let seq = state.document.sequences.get(state.active_sequence_idx)?;
         before.tracks = vec![seq.tracks.get(i)?.clone()];
         before.scope = Some(i);
     }
@@ -124,7 +124,7 @@ pub fn before(state: &AppState, cmd: &AppCommand) -> Option<Before> {
 /// The tracks before an edit made outside a command (a track added from
 /// a header's menu, a track removed with its clips from the dialog).
 pub fn before_labelled(state: &AppState, label: &'static str) -> Option<Before> {
-    let seq = state.sequences.get(state.active_sequence_idx)?;
+    let seq = state.document.sequences.get(state.active_sequence_idx)?;
     Some(Before { label, sequence: seq.id, tracks: seq.tracks.clone(), scope: None, recorded: history_size(state) })
 }
 
@@ -132,7 +132,7 @@ pub fn before_labelled(state: &AppState, label: &'static str) -> Option<Before> 
 /// tracks: a refused edit, or one that changed nothing, records nothing.
 /// A dragged value's changes in quick succession stay one step.
 pub fn record(state: &mut AppState, before: Before) {
-    let Some(seq) = state.sequences.get(state.active_sequence_idx) else { return };
+    let Some(seq) = state.document.sequences.get(state.active_sequence_idx) else { return };
     if seq.id != before.sequence || history_size(state) != before.recorded {
         return;
     }
@@ -172,7 +172,7 @@ pub fn record(state: &mut AppState, before: Before) {
 /// Extract, which use them up. Left set after a cut in the middle, they
 /// marked whatever now followed it, and the export defaulted to that.
 fn with_marks_used_up(state: &mut AppState, label: &'static str, edit: EditCommand) -> EditCommand {
-    let seq = &mut state.sequences[state.active_sequence_idx];
+    let seq = &mut state.document.sequences[state.active_sequence_idx];
     if !matches!(label, "Lift" | "Extract") || (seq.in_point.is_none() && seq.out_point.is_none()) {
         return edit;
     }
@@ -238,8 +238,8 @@ mod tests {
     fn state_with_a_clip() -> AppState {
         let mut state = AppState::default();
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        state.sequences[0].tracks[v1].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0)));
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.document.sequences[0].tracks[v1].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0)));
         state
     }
 
@@ -252,10 +252,10 @@ mod tests {
     #[test]
     fn hiding_a_track_is_one_named_undo_step() {
         let mut state = state_with_a_clip();
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         for (visible, name) in [(false, "Hide Track"), (true, "Show Track")] {
             let before = before(&state, &AppCommand::SetTrackVisibility { track_index: v1, visible }).expect("recorded here");
-            state.sequences[0].tracks[v1].visible = visible;
+            state.document.sequences[0].tracks[v1].visible = visible;
             record(&mut state, before);
             assert_eq!(top_label(&mut state).as_deref(), Some(name));
         }
@@ -264,10 +264,10 @@ mod tests {
     #[test]
     fn an_edit_made_in_place_is_one_named_undo_step() {
         let mut state = state_with_a_clip();
-        let clip = state.sequences[0].all_clips().next().unwrap().id;
+        let clip = state.document.sequences[0].all_clips().next().unwrap().id;
         let cmd = AppCommand::SetClipEnabled { clip_id: clip, enabled: false };
         let before = before(&state, &cmd).expect("recorded here");
-        state.sequences[0].all_clips_mut().next().unwrap().enabled = false;
+        state.document.sequences[0].all_clips_mut().next().unwrap().enabled = false;
         record(&mut state, before);
         assert_eq!(top_label(&mut state).as_deref(), Some("Disable Clip"));
         let count = state.active_history_mut().undo_count();
@@ -283,26 +283,26 @@ mod tests {
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
         let media = klipp_core::MediaId::new();
         let (v1, a1) = (
-            state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap(),
-            state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap(),
+            state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap(),
+            state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap(),
         );
         let (mut picture, mut sound) = (klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0)), klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0)));
         picture.linked_clip_id = Some(sound.id);
         sound.linked_clip_id = Some(picture.id);
         let p = picture.id;
-        state.sequences[0].tracks[v1].clips.push(picture);
-        state.sequences[0].tracks[a1].clips.push(sound);
+        state.document.sequences[0].tracks[v1].clips.push(picture);
+        state.document.sequences[0].tracks[a1].clips.push(sound);
         let cmd = AppCommand::UnlinkClip { clip_id: p };
         let before = before(&state, &cmd).expect("recorded here");
-        state.sequences[0].unlink(p);
+        state.document.sequences[0].unlink(p);
         record(&mut state, before);
         assert_eq!(top_label(&mut state).as_deref(), Some("Unlink"));
-        let picture = |state: &AppState| state.sequences[0].all_clips().find(|c| c.id == p).cloned().unwrap();
+        let picture = |state: &AppState| state.document.sequences[0].all_clips().find(|c| c.id == p).cloned().unwrap();
         assert!(picture(&state).sound_apart && picture(&state).linked_clip_id.is_none());
         let entry = state.take_undo().expect("the unlink");
-        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+        klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
         assert!(!picture(&state).sound_apart && picture(&state).linked_clip_id.is_some(), "undone: linked, its sound not apart");
-        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&entry.command);
+        klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(&entry.command);
         assert!(picture(&state).sound_apart && picture(&state).linked_clip_id.is_none(), "redone: unlinked, its sound apart");
     }
 
@@ -317,10 +317,10 @@ mod tests {
     #[test]
     fn a_dragged_value_is_one_step_and_a_separate_change_another() {
         let mut state = state_with_a_clip();
-        let v1 = state.sequences[0].tracks.iter().position(|t| !t.clips.is_empty()).unwrap();
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| !t.clips.is_empty()).unwrap();
         let change = |state: &mut AppState, speed: f64, label: &'static str| {
             let before = before_labelled(state, label).unwrap();
-            state.sequences[0].tracks[v1].clips[0].speed = speed;
+            state.document.sequences[0].tracks[v1].clips[0].speed = speed;
             record(state, before);
         };
         change(&mut state, 1.1, "Transition Settings");
@@ -335,25 +335,25 @@ mod tests {
     #[test]
     fn each_edit_records_only_what_it_changed() {
         let mut state = state_with_a_clip();
-        let v1 = state.sequences[0].tracks.iter().position(|t| !t.clips.is_empty()).unwrap();
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| !t.clips.is_empty()).unwrap();
         let top = |state: &mut AppState| state.active_history_mut().undo_entries().last().map(|e| e.command.clone());
 
         // A clip changed: that track's clips, so undoing it leaves the
         // track's mute, height or lock, changed since, alone.
         let before = before_labelled(&state, "Disable Clip").unwrap();
-        state.sequences[0].tracks[v1].clips[0].enabled = false;
+        state.document.sequences[0].tracks[v1].clips[0].enabled = false;
         record(&mut state, before);
         assert!(matches!(top(&mut state), Some(EditCommand::SetTrackContents { track_index, .. }) if track_index == v1));
 
         // A track locked: that track.
         let before = before_labelled(&state, "Lock Track").unwrap();
-        state.sequences[0].tracks[0].locked = true;
+        state.document.sequences[0].tracks[0].locked = true;
         record(&mut state, before);
         assert!(matches!(top(&mut state), Some(EditCommand::SetTrack { track_index: 0, .. })));
 
         // A track added: the list.
         let before = before_labelled(&state, "Add Track").unwrap();
-        state.sequences[0].tracks.push(klipp_timeline::Track::new("Video 9", klipp_timeline::TrackKind::Video));
+        state.document.sequences[0].tracks.push(klipp_timeline::Track::new("Video 9", klipp_timeline::TrackKind::Video));
         record(&mut state, before);
         assert!(matches!(top(&mut state), Some(EditCommand::SetTracks { .. })));
     }
@@ -361,11 +361,11 @@ mod tests {
     #[test]
     fn a_handler_that_recorded_its_own_step_is_not_recorded_twice() {
         let mut state = state_with_a_clip();
-        let v1 = state.sequences[0].tracks.iter().position(|t| !t.clips.is_empty()).unwrap();
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| !t.clips.is_empty()).unwrap();
         let before = before_labelled(&state, "Close Gap").unwrap();
-        let old = state.sequences[0].tracks[v1].clips[0].clone();
-        state.sequences[0].tracks[v1].clips[0].enabled = false;
-        let new = state.sequences[0].tracks[v1].clips[0].clone();
+        let old = state.document.sequences[0].tracks[v1].clips[0].clone();
+        state.document.sequences[0].tracks[v1].clips[0].enabled = false;
+        let new = state.document.sequences[0].tracks[v1].clips[0].clone();
         state.push_history(EditCommand::ReplaceClip { description: "Its own", old: Box::new(old), new: Box::new(new) });
         record(&mut state, before);
         assert_eq!(state.active_history_mut().undo_count(), 1, "only the handler's own step");
@@ -384,12 +384,12 @@ mod tests {
         let mut s = AppState::default();
         let p = s.sequence().primary_track_index().unwrap();
         let idx = s.active_sequence_idx;
-        s.sequences[idx].tracks[p].clips = vec![
+        s.document.sequences[idx].tracks[p].clips = vec![
             klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(10.0), t(0.0), t(10.0)),
             klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(10.0), t(20.0), t(0.0), t(10.0)),
         ];
-        s.sequences[idx].in_point = Some(t(8.0));
-        s.sequences[idx].out_point = Some(t(18.0));
+        s.document.sequences[idx].in_point = Some(t(8.0));
+        s.document.sequences[idx].out_point = Some(t(18.0));
         s.note_timeline_length();
         s
     }
@@ -400,7 +400,7 @@ mod tests {
         let end = klipp_core::RationalTime::from_secs_f64(secs, 24);
         let idx = s.active_sequence_idx;
         let p = s.sequence().primary_track_index().unwrap();
-        let clips = &mut s.sequences[idx].tracks[p].clips;
+        let clips = &mut s.document.sequences[idx].tracks[p].clips;
         clips.retain(|c| c.timeline_in < end);
         if let Some(last) = clips.last_mut() {
             last.timeline_out = end;
@@ -415,7 +415,7 @@ mod tests {
     fn apply(s: &mut AppState, undo: bool) {
         let entry = if undo { s.take_undo() } else { s.take_redo() }.expect("a step");
         let active = s.active_sequence_idx;
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut s.sequences, active, media_pool: &mut s.media_pool, fps: &mut s.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut s.document.sequences, active, media_pool: &mut s.document.media_pool, fps: &mut s.fps };
         if undo {
             view.apply_inverse(&entry.command);
         } else {
@@ -459,7 +459,7 @@ mod tests {
     fn marks_past_an_end_nothing_shortened_stay() {
         let mut s = marked_state();
         let idx = s.active_sequence_idx;
-        s.sequences[idx].out_point = Some(klipp_core::RationalTime::from_secs_f64(30.0, 24));
+        s.document.sequences[idx].out_point = Some(klipp_core::RationalTime::from_secs_f64(30.0, 24));
         cut_to(&mut s, 20.0);
         s.mark_range(Some(Some(klipp_core::RationalTime::from_secs_f64(25.0, 24))), None);
         assert_eq!(marks(&s), (Some(25.0), Some(30.0)), "marked past the end on purpose");
@@ -488,7 +488,7 @@ mod tests {
             let was = before(&s, &cmd).expect("recorded");
             let idx = s.active_sequence_idx;
             let p = s.sequence().primary_track_index().unwrap();
-            s.sequences[idx].tracks[p].clips.remove(1);
+            s.document.sequences[idx].tracks[p].clips.remove(1);
             record(&mut s, was);
             assert_eq!(marks(&s), (None, None), "{name}");
             assert_eq!(s.active_history().undo_count(), steps + 1, "{name}: one step");

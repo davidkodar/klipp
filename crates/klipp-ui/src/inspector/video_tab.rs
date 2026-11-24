@@ -254,7 +254,7 @@ fn show_clip_video(
     let pad = 14.0;
 
     // ── ROLE ──
-    show_role_section(ui, theme, &state.media_pool.roles, clip, cmds);
+    show_role_section(ui, theme, &state.document.media_pool.roles, clip, cmds);
 
     ui.add_space(8.0);
 
@@ -1373,7 +1373,7 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
                 // perspective, for a picture to be pinned to.
                 let footage = clip
                     .media_id()
-                    .and_then(|m| state.media_pool.get(&m))
+                    .and_then(|m| state.document.media_pool.get(&m))
                     .is_some_and(|m| !m.is_still);
                 let busy = state.tracking_in_progress.contains(&clip_id);
                 let open = state.surface_tool.as_ref().is_some_and(|t| t.clip_id == clip_id);
@@ -1780,7 +1780,7 @@ fn show_compositing_section(
                 // Detail rows only meaningful when a binding exists.
                 if let Some(binding) = clip.matte_source.clone() {
                     let source_id = binding.source_clip_id;
-                    let source_present = state.sequences.get(active_idx)
+                    let source_present = state.document.sequences.get(active_idx)
                         .map(|seq| seq.tracks.iter().any(|t| t.clips.iter().any(|c| c.id == source_id)))
                         .unwrap_or(false);
                     if !source_present {
@@ -1962,7 +1962,7 @@ fn show_compositing_section(
                     });
 
                     // ── Hide source from composite ──
-                    let source_consumed = state.sequences.get(active_idx)
+                    let source_consumed = state.document.sequences.get(active_idx)
                         .and_then(|seq| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == source_id))
                         .map(|c| c.consumed_as_matte)
                         .unwrap_or(false);
@@ -2090,7 +2090,7 @@ fn show_transform_link_section(
                     // `Clip(...)` we look up the clip-candidates
                     // list; for `Tracker { ... }` we enumerate
                     // tracker targets and find the matching one.
-                    let tracker_candidates = state.sequences.get(active_idx)
+                    let tracker_candidates = state.document.sequences.get(active_idx)
                         .map(|seq| crate::inspector::tracker_picker::enumerate_tracker_targets(seq, &|c| clip_name(state, c)))
                         .unwrap_or_default();
                     let current_label = match clip.transform_link.as_ref() {
@@ -2169,7 +2169,7 @@ fn show_transform_link_section(
                             // point" surface via tracker_picker.
                             if !tracker_candidates.is_empty() {
                                 ui.label(egui::RichText::new("── Trackers ──").size(10.0).color(theme.text_dim));
-                                if let Some(seq) = state.sequences.get(active_idx) {
+                                if let Some(seq) = state.document.sequences.get(active_idx) {
                                     let cur = clip.transform_link.clone();
                                     let mode_flags = match cur.as_ref() {
                                         Some(tl) => (
@@ -2221,7 +2221,7 @@ fn show_transform_link_section(
                 // Detail rows only meaningful when a binding exists.
                 if let Some(link) = clip.transform_link.clone() {
                     let target_id = link.target.referenced_clip_id();
-                    let target_present = state.sequences.get(active_idx)
+                    let target_present = state.document.sequences.get(active_idx)
                         .map(|seq| seq.tracks.iter().any(|t| t.clips.iter().any(|c| c.id == target_id)))
                         .unwrap_or(false);
                     if !target_present {
@@ -2451,7 +2451,7 @@ fn show_hyperzoom_section(
                 );
                 let tracker_label = match tracker_target {
                     None => "(static focal — no tracker)".to_string(),
-                    Some((hid, pi)) => state.sequences.get(state.active_sequence_idx)
+                    Some((hid, pi)) => state.document.sequences.get(state.active_sequence_idx)
                         .and_then(|seq| crate::inspector::tracker_picker::enumerate_tracker_targets(seq, &|c| clip_name(state, c))
                             .into_iter().find(|(c, p, _)| *c == hid && *p == pi)
                             .map(|(_, _, l)| l))
@@ -2470,7 +2470,7 @@ fn show_hyperzoom_section(
                                 && !off_selected {
                                     ui.ctx().data_mut(|d| d.insert_temp::<Option<(klipp_core::ClipId, u32)>>(tracker_focal_id, None));
                                 }
-                            if let Some(seq) = state.sequences.get(state.active_sequence_idx) {
+                            if let Some(seq) = state.document.sequences.get(state.active_sequence_idx) {
                                 let trackers = crate::inspector::tracker_picker::enumerate_tracker_targets(seq, &|c| clip_name(state, c));
                                 if !trackers.is_empty() {
                                     ui.label(egui::RichText::new("── Trackers ──").size(10.0).color(theme.text_dim));
@@ -3317,7 +3317,7 @@ fn matte_channel_to_u8(ch: klipp_nodes::params::MatteChannel) -> u8 {
 /// A clip as the timeline names it: its own name, else its media's file
 /// name, else a title's text.
 fn clip_name(state: &AppState, c: &klipp_timeline::Clip) -> String {
-    let media = c.media_id().and_then(|m| state.media_pool.get(&m)).map(|m| m.filename.clone());
+    let media = c.media_id().and_then(|m| state.document.media_pool.get(&m)).map(|m| m.filename.clone());
     let fallback = match &c.kind {
         klipp_timeline::ClipKind::Title(td) => format!("Title: {}", crate::ui_util::elide(&td.text(), 24)),
         _ => media.unwrap_or_else(|| "Clip".to_owned()),
@@ -3684,7 +3684,7 @@ mod clip_choice_tests {
         let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/logo.png".into(), None);
         item.filename = "logo.png".into();
-        let media = state.media_pool.add(item);
+        let media = state.document.media_pool.add(item);
         let me = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
         let logo = klipp_timeline::Clip::media(media, t(0.0), t(2.0), t(0.0), t(2.0));
         let (a, b) = (klipp_timeline::Clip::media(media, t(4.0), t(5.0), t(0.0), t(1.0)), klipp_timeline::Clip::media(media, t(6.0), t(7.0), t(0.0), t(1.0)));
@@ -3696,9 +3696,9 @@ mod clip_choice_tests {
         let mut v4 = klipp_timeline::Track::new("Video 4", klipp_timeline::TrackKind::Video);
         v4.clips = vec![a, b, named];
         let me_id = me.id;
-        state.sequences[0].tracks[0].clips = vec![me];
-        state.sequences[0].tracks.push(v3);
-        state.sequences[0].tracks.push(v4);
+        state.document.sequences[0].tracks[0].clips = vec![me];
+        state.document.sequences[0].tracks.push(v3);
+        state.document.sequences[0].tracks.push(v4);
         let choices = clip_choices(&state, me_id, |_, _| true);
         let label = |id| choices.iter().find(|(c, _)| *c == id).map(|(_, l)| l.clone()).unwrap();
         assert!(choices.iter().all(|(c, _)| *c != me_id), "not the clip itself");
@@ -4186,7 +4186,7 @@ mod frame_glide_section_tests {
     /// the commands pushed and the texts drawn.
     fn frame(ctx: &egui::Context, clip: &Clip, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<(String, egui::Pos2)>) {
         let mut state = AppState::default();
-        state.sequences[0].tracks[0].clips = vec![clip.clone()];
+        state.document.sequences[0].tracks[0].clips = vec![clip.clone()];
         let mut cmds = Vec::new();
         let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 9000.0))), events, ..Default::default() }, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| show(ui, &KlippTheme::default(), &state, Some((clip, 0.0, true)), None, &mut cmds));

@@ -262,7 +262,7 @@ pub fn cut_frames(state: &crate::state::AppState, current: Option<&str>) -> Resu
     let Some(edit) = state.selected_edits.first() else {
         return Err("select an edit point between two clips (U, or click a cut)".into());
     };
-    let (out, inc) = crate::trim_view::sides(state.sequence(), edit, |m| state.media_pool.get(&m).map(|i| (i.duration.to_secs_f64(), i.filename.clone())));
+    let (out, inc) = crate::trim_view::sides(state.sequence(), edit, |m| state.document.media_pool.get(&m).map(|i| (i.duration.to_secs_f64(), i.filename.clone())));
     let (Some(out), Some(inc)) = (out, inc) else {
         return Err("the selected edit has a gap on one side".into());
     };

@@ -32,7 +32,7 @@ fn viewer_placed(tag: &str, transform: Option<klipp_effects::BuiltinEffect>) -> 
     let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte(tag).expect("the matte"), matte, (100.0, 100.0), Some(blur)).expect("its ops");
     clip.apply_picture_ops(&ops).expect("added");
     let id = clip.id;
-    let track = v.state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    let track = v.state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
     track.clips.push(clip);
     v.state.selected_clip = Some(id);
     v.state.active_tool = Tool::Select;
@@ -54,7 +54,7 @@ fn apply(v: &mut Viewer, from: usize) -> Vec<AppCommand> {
 
 /// The matte's first shape, as its node holds it.
 fn shape(v: &Viewer, clip: klipp_core::ClipId, matte: &NodePath) -> MaskShape {
-    let c = v.state.sequences[0].all_clips().find(|c| c.id == clip).unwrap();
+    let c = v.state.document.sequences[0].all_clips().find(|c| c.id == clip).unwrap();
     let picture = c.picture_v2().unwrap();
     let node = picture.picture.graph.nodes.iter().find(|n| Some(&n.id) == matte.nodes.first()).expect("the matte");
     let run = klipp_timeline::grade_node_for_run(node).expect("a grade node");
@@ -81,7 +81,7 @@ fn drag(v: &mut Viewer, from: egui::Pos2, to: egui::Pos2) {
 fn undo(v: &mut Viewer) {
     v.state.before_dispatch(&AppCommand::Undo);
     let entry = v.state.take_undo().expect("a step to undo");
-    let mut doc = klipp_document::apply::DocumentView { sequences: &mut v.state.sequences, active: v.state.active_sequence_idx, media_pool: &mut v.state.media_pool, fps: &mut v.state.fps };
+    let mut doc = klipp_document::apply::DocumentView { sequences: &mut v.state.document.sequences, active: v.state.active_sequence_idx, media_pool: &mut v.state.document.media_pool, fps: &mut v.state.fps };
     doc.apply_inverse(&entry.command);
 }
 
@@ -101,13 +101,13 @@ fn a_picked_windows_centre_drags_by_its_path() {
         let (mut v, clip, matte, blur) = viewer("matte.window");
         // A window of the grade's own too, elsewhere: left alone.
         let corner = klipp_core::Mask { shape: MaskShape::Circle { center_x: 0.2, center_y: 0.2, radius: 0.1 }, ..Default::default() };
-        v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().edit_grade(|g| {
+        v.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().edit_grade(|g| {
             let id = g.ensure_corrector_window();
             g.nodes.iter_mut().find(|n| n.id == id).unwrap().params.masks = Some(klipp_core::MaskStack { masks: vec![corner] });
         });
         v.state.selected_node_addr = Some(if picked_blur { blur.clone() } else { matte.clone() });
         v.frame(Vec::new());
-        let grade = v.state.sequences[0].all_clips().find(|c| c.id == clip).unwrap().grade().clone();
+        let grade = v.state.document.sequences[0].all_clips().find(|c| c.id == clip).unwrap().grade().clone();
         let steps = v.state.active_history().undo_count();
         let from = v.sent.len();
         let (start, end) = (at(&v, 0.5, 0.5), at(&v, 0.6, 0.5));
@@ -118,7 +118,7 @@ fn a_picked_windows_centre_drags_by_its_path() {
         assert!(sent.iter().any(|c| matches!(c, AppCommand::SetParamAt { addr, .. } if *addr == matte)), "written by its path: {sent:?}");
         assert!(!sent.iter().any(|c| matches!(c, AppCommand::SetNodeMasks { .. })), "nothing for the grade: {sent:?}");
         assert_eq!(v.state.active_history().undo_count(), steps + 1, "one step");
-        let after = v.state.sequences[0].all_clips().find(|c| c.id == clip).unwrap();
+        let after = v.state.document.sequences[0].all_clips().find(|c| c.id == clip).unwrap();
         assert_eq!(after.grade(), &grade, "the grade as it was");
         assert!(!sent.iter().any(|c| matches!(c, AppCommand::SetParamAt { key, .. } if key.as_str() == "pos_x")), "the clip not moved: {sent:?}");
         undo(&mut v);
@@ -184,7 +184,7 @@ fn a_placed_clips_roto_point_drags_on_its_picture() {
     v.state.active_tool = Tool::Mask;
     v.frame(Vec::new());
     v.frame(Vec::new());
-    let view = crate::panels::viewer::title_view_of(&v.state, v.state.sequences[0].all_clips().find(|c| c.id == clip).unwrap(), v.image_rect()).expect("a placement");
+    let view = crate::panels::viewer::title_view_of(&v.state, v.state.document.sequences[0].all_clips().find(|c| c.id == clip).unwrap(), v.image_rect()).expect("a placement");
     assert!(view.placement.is_some(), "the clip is placed");
     let start = view.to_screen(0.7, 0.5);
     let end = start + egui::vec2(0.0, 30.0);

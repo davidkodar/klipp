@@ -185,7 +185,7 @@ pub fn run_command(state: &mut crate::state::AppState, cmd: &klipp_core::events:
             let paths: Vec<PathBuf> = match cmd {
                 AppCommand::AddMediaToSharedLibrary { media_ids, .. } => media_ids
                     .iter()
-                    .filter_map(|id| state.media_pool.get(id))
+                    .filter_map(|id| state.document.media_pool.get(id))
                     .filter(|m| m.kind == klipp_media::MediaItemKind::File && !m.path.as_os_str().is_empty())
                     .map(|m| m.path.clone())
                     .collect(),
@@ -333,7 +333,7 @@ mod tests {
         file.kind = klipp_media::MediaItemKind::File;
         file.path = clip.clone();
         let title = klipp_media::MediaItem::new_synthetic_title(klipp_core::MediaId::new(), "Lower third".into(), klipp_core::Timecode::from_secs_f64(10.0, 25), fps);
-        let ids = [state.media_pool.add(file), state.media_pool.add(title)];
+        let ids = [state.document.media_pool.add(file), state.document.media_pool.add(title)];
 
         assert!(run_command(&mut state, &AppCommand::AddMediaToSharedLibrary { media_ids: ids.to_vec(), collection: String::new() }));
         let on_disk = SharedLibrary::load(&root.join("library"));
@@ -353,7 +353,7 @@ mod tests {
         run_command(&mut state, &AppCommand::DeleteSharedCollection { name: "Client B".into() });
         let on_disk = SharedLibrary::load(&root.join("library"));
         assert!(on_disk.collection("Client B").is_none() && on_disk.collection(DEFAULT_COLLECTION).unwrap().items.is_empty());
-        assert!(state.media_pool.get(&ids[0]).is_some() && clip.exists(), "the project's media and the file stay");
+        assert!(state.document.media_pool.get(&ids[0]).is_some() && clip.exists(), "the project's media and the file stay");
         assert!(!run_command(&mut state, &AppCommand::Undo), "not one of its commands");
         let _ = std::fs::remove_dir_all(root);
     }

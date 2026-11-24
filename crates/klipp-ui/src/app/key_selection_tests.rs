@@ -25,7 +25,7 @@ fn state() -> (AppState, ClipId, klipp_nodes::NodeId) {
     let t = |s| RationalTime::from_secs_f64(s, 24);
     let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/keys.mov".into(), None);
     item.duration = t(60.0);
-    let media = state.media_pool.add(item);
+    let media = state.document.media_pool.add(item);
     let mut clip = klipp_timeline::Clip::media(media, t(0.0), t(4.0), t(0.0), t(4.0));
     let mut face = Mask { shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 }, name: "Face".into(), ..Mask::default() };
     face.keyframes.radius = vec![key(0.5, 0.2), key(1.5, 0.3), key(3.0, 0.25)];
@@ -36,14 +36,14 @@ fn state() -> (AppState, ClipId, klipp_nodes::NodeId) {
     });
     let clip = TestClip::of(clip).lane("pos_x", 1.0, 10.0).lane("pos_x", 2.0, 20.0).lane("opacity", 3.0, 0.5).build();
     let id = clip.id;
-    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-    state.sequences[0].tracks[v1].clips.push(clip);
+    let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+    state.document.sequences[0].tracks[v1].clips.push(clip);
     state.selected_clip = Some(id);
     (state, id, node)
 }
 
 fn clip(state: &AppState, id: ClipId) -> klipp_timeline::Clip {
-    state.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone()
+    state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone()
 }
 
 /// A track's keys as `(time, value)`.
@@ -100,7 +100,7 @@ fn apply(state: &mut AppState, cmds: &[AppCommand]) -> Vec<String> {
 /// Undo, as the app's document path applies it.
 fn undo(state: &mut AppState) {
     let entry = state.active_history_mut().undo().expect("a step to undo");
-    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
     view.apply_inverse(&entry.command);
 }
 
@@ -249,7 +249,7 @@ fn a_plain_click_or_another_clip_starts_afresh() {
     let t = |s| RationalTime::from_secs_f64(s, 24);
     (other.timeline_in, other.timeline_out) = (t(5.0), t(9.0));
     let other_id = other.id;
-    state.sequences[0].tracks.iter_mut().find(|t| t.kind == TrackKind::Video).unwrap().clips.push(other);
+    state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == TrackKind::Video).unwrap().clips.push(other);
     let x = KeyframeParamKind::Video(VideoParam::PositionX);
     let c = clip(&state, id);
     crate::key_selection::click(&mut state, &c, &x, 0, false);
@@ -422,7 +422,7 @@ fn the_menu_and_delete_act_on_every_selected_key() {
 fn sound_keys_move_inside_a_keyframe_drag() {
     let (mut state, id, _) = state();
     let v = KeyframeParamKind::Audio(klipp_core::AudioParam::Volume);
-    for track in &mut state.sequences[0].tracks {
+    for track in &mut state.document.sequences[0].tracks {
         if let Some(c) = track.find_clip_mut(id) {
             c.volume_keyframes = vec![key(1.0, 0.5), key(2.0, 1.0)];
         }
@@ -449,13 +449,13 @@ fn fx_state() -> (AppState, ClipId, klipp_nodes::NodeId) {
     let t = |s| RationalTime::from_secs_f64(s, 24);
     let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/fx.wav".into(), None);
     item.duration = t(60.0);
-    let media = state.media_pool.add(item);
+    let media = state.document.media_pool.add(item);
     let mut clip = klipp_timeline::Clip::media(media, t(0.0), t(4.0), t(0.0), t(4.0));
     clip.audio_effects = vec![klipp_core::AudioEffectInstance { effect_type: "gain".into(), enabled: true, wet_dry: 1.0, params: vec![("gain_db".into(), 0.0)] }];
     clip.audio_effect_keyframes.insert("0:gain_db".into(), vec![key(1.0, 0.0), key(2.0, 6.0)]);
     let id = clip.id;
-    let a1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
-    state.sequences[0].tracks[a1].clips.push(clip);
+    let a1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+    state.document.sequences[0].tracks[a1].clips.push(clip);
     state.selected_clip = Some(id);
     state.rubber_band_param = crate::state::RubberBandParam::EffectParam { effect_index: 0, param_name: "gain_db".into() };
     (state, id, node)
@@ -553,7 +553,7 @@ fn a_sound_key_drag_leaves_the_clip_where_it_is() {
         let (mut state, id, _) = fx_state();
         if !effect {
             state.rubber_band_param = crate::state::RubberBandParam::ClipParam(klipp_core::AudioParam::Volume);
-            for track in &mut state.sequences[0].tracks {
+            for track in &mut state.document.sequences[0].tracks {
                 if let Some(c) = track.find_clip_mut(id) {
                     c.volume_keyframes = vec![key(1.0, 0.5), key(2.0, 1.0)];
                 }
@@ -759,12 +759,12 @@ fn the_curve_editor_and_the_parameter_in_focus_follow_each_other() {
 /// Sheet lists it.
 fn blur_state() -> (AppState, ClipId, crate::panels::dope_sheet::Row) {
     let (mut state, id, _) = state();
-    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-    let at = state.sequences[0].tracks[v1].clips.iter().position(|c| c.id == id).unwrap();
-    let clip = state.sequences[0].tracks[v1].clips[at].clone();
+    let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+    let at = state.document.sequences[0].tracks[v1].clips.iter().position(|c| c.id == id).unwrap();
+    let clip = state.document.sequences[0].tracks[v1].clips[at].clone();
     let clip = TestClip::of(clip).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }).key(0, "radius", 1.0, 2.0).key(0, "radius", 3.0, 12.0).build();
     let row = crate::panels::dope_sheet::rows(&clip).into_iter().find(|r| matches!(r.kind, KeyframeParamKind::Node { .. })).expect("the blur's radius is a row");
-    state.sequences[0].tracks[v1].clips[at] = clip;
+    state.document.sequences[0].tracks[v1].clips[at] = clip;
     (state, id, row)
 }
 
@@ -871,7 +871,7 @@ fn a_j_cuts_sound_draws_its_pictures_keys_where_they_are_heard() {
     let t = |s| RationalTime::from_secs_f64(s, 24);
     let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/jcut.mov".into(), None);
     (item.duration, item.has_audio) = (t(60.0), true);
-    let media = state.media_pool.add(item);
+    let media = state.document.media_pool.add(item);
     let mut picture = klipp_timeline::Clip::media(media, t(1.0), t(5.0), t(1.0), t(5.0));
     let mut sound = klipp_timeline::Clip::media(media, t(0.5), t(5.0), t(0.5), t(5.0));
     (picture.linked_clip_id, sound.linked_clip_id) = (Some(sound.id), Some(picture.id));
@@ -879,14 +879,14 @@ fn a_j_cuts_sound_draws_its_pictures_keys_where_they_are_heard() {
     sound.volume_keyframes = vec![key(0.5, 0.1), key(2.5, 1.0)];
     let mut alone = klipp_timeline::Clip::media(media, t(0.5), t(5.0), t(0.5), t(5.0));
     alone.volume_keyframes = vec![key(0.5, 0.1), key(2.5, 1.0)];
-    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-    state.sequences[0].tracks[v1].clips.push(picture);
-    if state.sequences[0].tracks.iter().filter(|t| t.kind == TrackKind::Audio).count() < 2 {
-        state.sequences[0].tracks.push(klipp_timeline::Track::new("A2", TrackKind::Audio));
+    let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+    state.document.sequences[0].tracks[v1].clips.push(picture);
+    if state.document.sequences[0].tracks.iter().filter(|t| t.kind == TrackKind::Audio).count() < 2 {
+        state.document.sequences[0].tracks.push(klipp_timeline::Track::new("A2", TrackKind::Audio));
     }
-    let audio: Vec<usize> = state.sequences[0].tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Audio).map(|(i, _)| i).collect();
-    state.sequences[0].tracks[audio[0]].clips.push(sound);
-    state.sequences[0].tracks[audio[1]].clips.push(alone);
+    let audio: Vec<usize> = state.document.sequences[0].tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Audio).map(|(i, _)| i).collect();
+    state.document.sequences[0].tracks[audio[0]].clips.push(sound);
+    state.document.sequences[0].tracks[audio[1]].clips.push(alone);
     state.audio_show_rubber_band = true;
     state.rubber_band_param = crate::state::RubberBandParam::ClipParam(klipp_core::AudioParam::Volume);
     let mut tl = Timeline::new(state);
@@ -918,7 +918,7 @@ fn a_mask_key_lands_on_a_picture_graph_window() {
     let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, []);
     let window = klipp_nodes::NodeId::new_v4();
     let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), None).unwrap();
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
     let feather_keys = |state: &AppState| {
         let lifted = clip(state, id).picture_v2().unwrap();
         let node = lifted.picture.graph.nodes.iter().find(|n| n.id == window).unwrap().clone();
@@ -950,7 +950,7 @@ fn a_typed_mask_value_on_a_picture_window_is_one_step() {
     let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, []);
     let window = klipp_nodes::NodeId::new_v4();
     let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), None).unwrap();
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
     let add = |t: f64, v: f32| AppCommand::AddMaskKeyframe { clip_id: id, node_id: window, mask_index: 0, param: "feather".into(), time_secs: t, value: v };
     assert!(matches!(super::colour::mask_key_edit(&mut state, &add(0.0, 0.05), true), Some(Ok(()))));
     let feather = |state: &AppState| {
@@ -989,11 +989,11 @@ fn a_picture_graph_window_is_read_and_keyed_for_tracking() {
     let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, []);
     let window = klipp_nodes::NodeId::new_v4();
     let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), None).unwrap();
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
     let c = clip(&state, id);
     assert!(super::colour::clip_mask(&c, window, 0).is_some(), "the window read beside the chain");
     let key = |t: f64, v: f32| Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
-    let clip_mut = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+    let clip_mut = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
     let edit = super::colour::edit_clip_masks(clip_mut, window, "Track Window", |masks| {
         masks.masks[0].keyframes.track_x = vec![key(0.0, 0.0), key(1.0, 0.1)];
     })
@@ -1001,7 +1001,7 @@ fn a_picture_graph_window_is_read_and_keyed_for_tracking() {
     assert!(matches!(edit, crate::history::EditCommand::PictureEdit { .. }), "{edit:?}");
     let c = clip(&state, id);
     assert_eq!(super::colour::clip_mask(&c, window, 0).unwrap().keyframes.track_x.len(), 2, "the track keys on the window");
-    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps };
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
     view.apply_inverse(&edit);
     assert!(super::colour::clip_mask(&clip(&state, id), window, 0).unwrap().keyframes.track_x.is_empty(), "the step undoes them");
 }
@@ -1019,14 +1019,14 @@ fn a_tracked_picture_window_moves_as_a_grade_window_does() {
     let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, []);
     let window = klipp_nodes::NodeId::new_v4();
     let ops = crate::picture_mattes::add_ops(&graph, &level, crate::picture_mattes::matte("matte.window").unwrap(), window, (0.0, 0.0), None).unwrap();
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().apply_picture_ops(&ops).unwrap();
     let key = |t: f64, v: f32| Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     let track = |ms: &mut klipp_core::MaskStack| {
         ms.masks[0].keyframes.track_x = vec![key(0.0, 0.0), key(1.0, 0.2)];
         ms.masks[0].keyframes.track_y = vec![key(0.0, 0.0), key(1.0, 0.0)];
     };
     for node in [window, grade_window] {
-        let c = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+        let c = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
         assert!(super::colour::edit_clip_masks(c, node, "Track Window", track).is_some());
     }
     let c = clip(&state, id);
@@ -1060,8 +1060,8 @@ fn copied_keys_paste_on_their_own_properties() {
     let t = |s| RationalTime::from_secs_f64(s, 24);
     let other = klipp_timeline::Clip::media(c.media_id().unwrap(), t(10.0), t(16.0), t(0.0), t(6.0));
     let other_id = other.id;
-    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-    state.sequences[0].tracks[v1].clips.push(other);
+    let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+    state.document.sequences[0].tracks[v1].clips.push(other);
     state.playhead = t(11.0);
     let target = clip(&state, other_id);
     let (cmds, skipped) = crate::panels::curve_editor::paste_key_commands(&state, &target, 1.0);
@@ -1159,14 +1159,14 @@ fn a_dope_sheet_key_dragged_in_small_steps_lands_where_it_is_let_go() {
     for step in [1.0f32, 2.0, 3.0, 5.0] {
         let mut state = AppState::default();
         let t = |s| RationalTime::from_secs_f64(s, 25);
-        state.sequences[0].fps = klipp_core::Fps::new(25, 1);
+        state.document.sequences[0].fps = klipp_core::Fps::new(25, 1);
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/cafe.mov".into(), None);
         item.duration = t(60.0);
-        let media = state.media_pool.add(item);
+        let media = state.document.media_pool.add(item);
         let clip = TestClip::of(klipp_timeline::Clip::media(media, t(0.0), t(6.0), t(0.0), t(6.0))).lane("pos_x", 1.0, 0.0).lane("pos_x", 4.0, 400.0).build();
         let id = clip.id;
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-        state.sequences[0].tracks[v1].clips.push(clip);
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        state.document.sequences[0].tracks[v1].clips.push(clip);
         state.selected_clip = Some(id);
         let mut e = Editor::showing(state, id, klipp_nodes::NodeId::new_v4(), CurveParam::Video(VideoParam::PositionX));
         let drawn = e.frame(Vec::new(), egui::Modifiers::NONE);
@@ -1234,8 +1234,8 @@ fn a_first_key_from_the_curve_editor_keeps_the_value() {
     let mut title_clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(6.0), t(0.0), t(6.0));
     title_clip.kind = klipp_timeline::ClipKind::Title(td);
     let id = title_clip.id;
-    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-    state.sequences[0].tracks[v1].clips.push(title_clip);
+    let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+    state.document.sequences[0].tracks[v1].clips.push(title_clip);
     state.selected_clip = Some(id);
     state.playhead = t(4.2);
     let param = crate::panels::title_curve::TitleCurveParam::Position(klipp_core::keyframe::TitlePositionAxis::X);

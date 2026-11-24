@@ -77,7 +77,7 @@ fn a_template_dropped_on_a_tall_sequence_is_laid_out_for_it() {
     let tpl = TITLES.iter().find(|t| t.name == "Name Bar").unwrap();
     let mut state = AppState { pending_title_data: Some(Entry::Builtin(tpl).data()), ..Default::default() };
     let i = state.active_sequence_idx;
-    state.sequences[i].resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+    state.document.sequences[i].resolution = klipp_core::Resolution { width: 1080, height: 1920 };
     let frames = state.sequence().fps.rate() * 5;
     let at = state.playhead;
     let track = free_text_track(&mut state, at, frames);

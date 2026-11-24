@@ -72,11 +72,11 @@ impl KlippApp {
             self.reuse_marks = ReuseMarks::default();
             return;
         }
-        let key = Key { revision: self.sequence.revision(), sequence: self.state.active_sequence_idx, media: self.state.media_pool.len(), analysis: self.state.analysis_generation };
+        let key = Key { revision: self.sequence.revision(), sequence: self.state.active_sequence_idx, media: self.state.document.media_pool.len(), analysis: self.state.analysis_generation };
         let state = &self.state;
         let found = self.reuse_marks.tick(key, || {
-            let sequences = state.sequences.clone();
-            let pool = state.media_pool.clone();
+            let sequences = state.document.sequences.clone();
+            let pool = state.document.media_pool.clone();
             let active = state.active_sequence_idx;
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::Builder::new()

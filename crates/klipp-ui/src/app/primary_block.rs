@@ -25,7 +25,7 @@ pub(crate) fn move_block(state: &mut AppState, block: &[(ClipId, Timecode)], oth
     let other_edits: Vec<EditCommand> = if ops.is_empty() {
         Vec::new()
     } else {
-        klipp_document::ops::resolve(state.sequence(), &state.media_pool, &ops).map_err(|r| r.why)?.steps.into_iter().map(|s| s.edit).collect()
+        klipp_document::ops::resolve(state.sequence(), &state.document.media_pool, &ops).map_err(|r| r.why)?.steps.into_iter().map(|s| s.edit).collect()
     };
     let mut block: Vec<(ClipId, Timecode)> = block.iter().copied().filter(|(id, _)| state.sequence().tracks[p].find_clip(*id).is_some()).collect();
     block.sort_by_key(|(_, at)| at.value);
@@ -70,7 +70,7 @@ pub(crate) fn move_block(state: &mut AppState, block: &[(ClipId, Timecode)], oth
         }
     }
     for e in other_edits {
-        let _ = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&e);
+        let _ = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(&e);
         state.push_history(e);
     }
     if own_batch {
@@ -93,17 +93,17 @@ mod tests {
     /// B 29-32 and C 34-37, gap clips between; a clip on V2 selected too.
     fn state() -> (AppState, Vec<ClipId>, ClipId) {
         let mut state = AppState::default();
-        state.sequences[0].add_video_track("V2".into());
+        state.document.sequences[0].add_video_track("V2".into());
         let p = state.sequence().primary_track_index().unwrap();
         let v2 = state.sequence().tracks.iter().position(|t| t.name == "V2").unwrap();
         let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
         let clips: Vec<Clip> = [(0.0, 4.0), (14.0, 18.0), (18.0, 22.0), (26.0, 29.0), (29.0, 32.0), (34.0, 37.0)].iter().map(|&(a, b)| c(a, b)).collect();
         let ids = clips.iter().map(|c| c.id).collect();
-        state.sequences[0].tracks[p].clips = clips;
-        state.sequences[0].fill_primary_holes();
+        state.document.sequences[0].tracks[p].clips = clips;
+        state.document.sequences[0].fill_primary_holes();
         let free = c(10.0, 11.0);
         let fid = free.id;
-        state.sequences[0].tracks[v2].clips.push(free);
+        state.document.sequences[0].tracks[v2].clips.push(free);
         (state, ids, fid)
     }
 
@@ -114,12 +114,12 @@ mod tests {
 
     fn undo(state: &mut AppState) {
         let entry = state.active_history_mut().undo().expect("a step");
-        let _ = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+        let _ = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
     }
 
     fn redo(state: &mut AppState) {
         let entry = state.active_history_mut().redo().expect("a step");
-        let _ = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&entry.command);
+        let _ = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(&entry.command);
     }
 
     /// A, B and C moved 2 s later, with the V2 clip. In Insert they go in
@@ -131,7 +131,7 @@ mod tests {
     fn a_block_moves_in_insert_and_overwrite_and_undoes_exactly() {
         for overwrite in [false, true] {
             let (mut state, ids, fid) = state();
-            let original = serde_json::to_value(&state.sequences).unwrap();
+            let original = serde_json::to_value(&state.document.sequences).unwrap();
             let block = [(ids[3], t(26.0)), (ids[4], t(29.0)), (ids[5], t(34.0))];
             move_block(&mut state, &block, &[(fid, t(12.0), None)], t(2.0), overwrite).unwrap();
             assert!(state.sequence().primary_holes().is_none(), "overwrite {overwrite}: gapless");
@@ -150,11 +150,11 @@ mod tests {
             assert_eq!(order, ids, "overwrite {overwrite}: the clips in their order, none lost");
             let free = state.sequence().all_clips().find(|c| c.id == fid).unwrap();
             assert_eq!(free.timeline_in, t(12.0), "overwrite {overwrite}: the V2 clip by the offset");
-            let moved = serde_json::to_value(&state.sequences).unwrap();
+            let moved = serde_json::to_value(&state.document.sequences).unwrap();
             undo(&mut state);
-            assert!(serde_json::to_value(&state.sequences).unwrap() == original, "overwrite {overwrite}: one undo, the exact document");
+            assert!(serde_json::to_value(&state.document.sequences).unwrap() == original, "overwrite {overwrite}: one undo, the exact document");
             redo(&mut state);
-            assert!(serde_json::to_value(&state.sequences).unwrap() == moved, "overwrite {overwrite}: one redo, the moved document");
+            assert!(serde_json::to_value(&state.document.sequences).unwrap() == moved, "overwrite {overwrite}: one redo, the moved document");
         }
     }
 }

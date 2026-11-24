@@ -184,7 +184,7 @@ impl EditListPanel {
         ui.add(egui::TextEdit::singleline(&mut self.query).hint_text("Filter by name, kind or track\u{2026}").desired_width(ui.available_width()));
         ui.add_space(4.0);
 
-        let mut all = rows(state.sequence(), &state.media_pool);
+        let mut all = rows(state.sequence(), &state.document.media_pool);
         sort(&mut all, self.column, !self.descending);
         let shown: Vec<&Row> = all.iter().filter(|r| matches(r, &self.query)).collect();
         let tc = state.timecode_display();
@@ -372,8 +372,8 @@ mod tests {
     #[test]
     fn the_drawn_list_sorts_by_a_header_and_a_row_click_selects() {
         let (seq, pool, _, second) = fixture();
-        let mut state = AppState { media_pool: pool, ..Default::default() };
-        state.sequences[0] = seq;
+        let mut state = AppState { document: klipp_document::Document { media_pool: pool, ..Default::default() }, ..Default::default() };
+        state.document.sequences[0] = seq;
         let (ctx, mut panel) = (egui::Context::default(), EditListPanel::default());
         let mut time = 0.0;
         let mut frame = |panel: &mut EditListPanel, state: &mut AppState, events| { time += 0.5; draw(panel, state, &ctx, time, events) };
@@ -402,7 +402,7 @@ mod tests {
     fn clicking_a_row_selects_it_and_moves_the_playhead() {
         let (seq, pool, first, _) = fixture();
         let mut state = AppState::default();
-        state.sequences[0] = seq.clone();
+        state.document.sequences[0] = seq.clone();
         let rows = rows(&seq, &pool);
         let clip = rows.iter().find(|r| r.target == Target::Clip(first)).unwrap();
         let cmds = activate(clip, &mut state);

@@ -16,7 +16,7 @@ impl KlippApp {
     pub(super) fn handle_audition_commands(&mut self, cmd: &AppCommand) -> bool {
         match cmd {
             AppCommand::EditAudition { clip_id, edit } => {
-                match crate::auditions::plan(self.state.sequence(), &self.state.media_pool, *clip_id, edit) {
+                match crate::auditions::plan(self.state.sequence(), &self.state.document.media_pool, *clip_id, edit) {
                     Ok((edits, label)) => self.apply_edits_as_one(&edits, &label),
                     Err(why) => self.state.toast.show(why),
                 }

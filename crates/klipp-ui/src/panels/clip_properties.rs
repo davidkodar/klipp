@@ -32,7 +32,7 @@ pub fn show_clip_properties_dialog(
     // state.media_pool while we also need to mutate `state.clip_properties_tab`,
     // walk `state.sequences`, etc. Cheap — MediaItem is ~200 bytes of mostly
     // Strings and numbers.
-    let Some(media) = state.media_pool.get(&media_id).cloned() else {
+    let Some(media) = state.document.media_pool.get(&media_id).cloned() else {
         // Item removed under our feet — close cleanly.
         state.show_clip_properties = false;
         return cmds;
@@ -98,10 +98,10 @@ pub fn show_clip_properties_dialog(
                         render_tags_tab(ui, &media, &mut cmds);
                     }
                     ClipPropertiesTab::Markers => {
-                        render_markers_tab(ui, &media, &state.sequences);
+                        render_markers_tab(ui, &media, &state.document.sequences);
                     }
                     ClipPropertiesTab::Usage => {
-                        render_usage_tab(ui, &media, &state.sequences);
+                        render_usage_tab(ui, &media, &state.document.sequences);
                     }
                     ClipPropertiesTab::Streams => render_streams_tab(ui, &media),
                     ClipPropertiesTab::Metadata => render_metadata_tab(ui, &media),

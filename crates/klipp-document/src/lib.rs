@@ -20,6 +20,8 @@
 //! the next steps route the control socket and an assistant through
 //! the same path.
 
+pub mod document;
+pub use document::Document;
 pub mod apply;
 pub mod blade;
 pub mod clipboard;

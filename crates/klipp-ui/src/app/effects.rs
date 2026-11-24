@@ -33,7 +33,7 @@ impl KlippApp {
                 if let Some((cid, path)) = self.state.split_compare_node.clone() {
                     let ofx_node = |slot: usize| klipp_graph_lift::ids::entry_id(klipp_graph_lift::ids::RootKind::Clip, cid.0, "ofx", slot);
                     // Up to the list's length before the removal.
-                    let before = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == cid).map_or(0, |c| c.ofx_effects().len() + 1);
+                    let before = self.state.document.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == cid).map_or(0, |c| c.ofx_effects().len() + 1);
                     let slot = path.node().and_then(|n| (0..before).find(|k| ofx_node(*k) == n));
                     match slot {
                         // The compared plug-in itself: its slot's id now names
@@ -54,7 +54,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetEffectEnabled { clip_id, effect_index, enabled } => {
-                let was = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).and_then(|c| c.ofx_effects().get(*effect_index)).map(|e| e.enabled);
+                let was = self.state.document.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).and_then(|c| c.ofx_effects().get(*effect_index)).map(|e| e.enabled);
                 if was.is_some_and(|on| on != *enabled) {
                     self.ofx_edits(*clip_id, &[klipp_timeline::OfxEdit::SetEnabled(*effect_index, *enabled)], "Toggle Plug-in", true);
                 }
@@ -62,7 +62,7 @@ impl KlippApp {
                 true
             }
             AppCommand::ReorderEffect { clip_id, from_index, to_index } => {
-                let len = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).map_or(0, |c| c.ofx_effects().len());
+                let len = self.state.document.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).map_or(0, |c| c.ofx_effects().len());
                 if *from_index < len && *to_index < len && from_index != to_index {
                     self.ofx_edits(*clip_id, &[klipp_timeline::OfxEdit::Move { from: *from_index, to: *to_index }], "Reorder Plug-ins", true);
                 }
@@ -82,7 +82,7 @@ impl KlippApp {
                 // SetAudioEffectWetDry calls during the drag check
                 // is_dragging(drag_key) and skip their own pushes,
                 // so the entire gesture coalesces into one entry.
-                let old_state = self.state.sequences[self.state.active_sequence_idx]
+                let old_state = self.state.document.sequences[self.state.active_sequence_idx]
                     .all_clips()
                     .find(|c| c.id == *clip_id)
                     .map(crate::history::AudioChainSnapshot::from_clip);
@@ -104,7 +104,7 @@ impl KlippApp {
             }
             AppCommand::EndAudioChainDrag { ref drag_key, clip_id } => {
                 let _ = drag_key; // matched against the pending begin_drag
-                let new_state = self.state.sequences[self.state.active_sequence_idx]
+                let new_state = self.state.document.sequences[self.state.active_sequence_idx]
                     .all_clips()
                     .find(|c| c.id == *clip_id)
                     .map(crate::history::AudioChainSnapshot::from_clip);
@@ -147,7 +147,7 @@ impl KlippApp {
             AppCommand::AddAudioEffect { clip_id, ref effect_type } => {
                 // On a picture with its sound on an audio track, the
                 // effect goes on that sound clip, which the mix plays.
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let clip_id = &seq.all_clips().find(|c| c.id == *clip_id).map_or(*clip_id, |c| crate::inspector::audio_tab::effects_clip(seq, c).id);
                 // Audio effects are edited in the Audio inspector. Switch to
                 // that surface as soon as the user adds one from the browser,
@@ -155,7 +155,7 @@ impl KlippApp {
                 // controls are immediately discoverable.
                 self.layout.active_inspector_tab = crate::layout_state::InspectorTab::Audio;
                 // Snapshot pre-state for undo.
-                let old_state = self.state.sequences[self.state.active_sequence_idx]
+                let old_state = self.state.document.sequences[self.state.active_sequence_idx]
                     .all_clips()
                     .find(|c| c.id == *clip_id)
                     .map(crate::history::AudioChainSnapshot::from_clip);
@@ -164,7 +164,7 @@ impl KlippApp {
                 // come from the discovered plugin info instead of the factory.
                 let instance = self.default_audio_effect(effect_type);
                 let mut added = false;
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         clip.audio_effects.push(instance.clone());
                         tracing::debug!("audio_fx: added effect '{}' to clip {:?}, total: {}", effect_type, clip.id, clip.audio_effects.len());
@@ -188,11 +188,11 @@ impl KlippApp {
                 true
             }
             AppCommand::RemoveAudioEffect { clip_id, effect_index } => {
-                let old_state = self.state.sequences[self.state.active_sequence_idx]
+                let old_state = self.state.document.sequences[self.state.active_sequence_idx]
                     .all_clips()
                     .find(|c| c.id == *clip_id)
                     .map(crate::history::AudioChainSnapshot::from_clip);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if *effect_index < clip.audio_effects.len() {
                             clip.audio_effects.remove(*effect_index);
@@ -218,14 +218,14 @@ impl KlippApp {
                 // Snapshot only when we'll actually push — saves an
                 // AudioChainSnapshot::clone on every drag tick.
                 let old_state = if !is_dragging {
-                    self.state.sequences[self.state.active_sequence_idx]
+                    self.state.document.sequences[self.state.active_sequence_idx]
                         .all_clips()
                         .find(|c| c.id == *clip_id)
                         .map(crate::history::AudioChainSnapshot::from_clip)
                 } else {
                     None
                 };
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
                             if let Some(p) = inst.params.iter_mut().find(|(k, _)| k == param_name) {
@@ -265,11 +265,11 @@ impl KlippApp {
                 true
             }
             AppCommand::ToggleAudioEffect { clip_id, effect_index } => {
-                let old_state = self.state.sequences[self.state.active_sequence_idx]
+                let old_state = self.state.document.sequences[self.state.active_sequence_idx]
                     .all_clips()
                     .find(|c| c.id == *clip_id)
                     .map(crate::history::AudioChainSnapshot::from_clip);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
                             inst.enabled = !inst.enabled;
@@ -290,14 +290,14 @@ impl KlippApp {
                 let drag_key = format!("audio_chain:{}:{}:__wetdry", clip_id.0, effect_index);
                 let is_dragging = self.state.active_history().is_dragging(&drag_key);
                 let old_state = if !is_dragging {
-                    self.state.sequences[self.state.active_sequence_idx]
+                    self.state.document.sequences[self.state.active_sequence_idx]
                         .all_clips()
                         .find(|c| c.id == *clip_id)
                         .map(crate::history::AudioChainSnapshot::from_clip)
                 } else {
                     None
                 };
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
                             inst.wet_dry = *wet_dry;
@@ -314,7 +314,7 @@ impl KlippApp {
                 true
             }
             AppCommand::ReorderAudioEffect { clip_id, from_index, to_index } => {
-                let old_state = self.state.sequences[self.state.active_sequence_idx]
+                let old_state = self.state.document.sequences[self.state.active_sequence_idx]
                     .all_clips()
                     .find(|c| c.id == *clip_id)
                     .map(crate::history::AudioChainSnapshot::from_clip);
@@ -323,7 +323,7 @@ impl KlippApp {
                 if !moved.as_mut().is_some_and(|m| m.reorder_effect(*from_index, *to_index)) {
                     return true;
                 }
-                if let (Some(clip), Some(moved)) = (self.state.sequences[self.state.active_sequence_idx].all_clips_mut().find(|c| c.id == *clip_id), &moved) {
+                if let (Some(clip), Some(moved)) = (self.state.document.sequences[self.state.active_sequence_idx].all_clips_mut().find(|c| c.id == *clip_id), &moved) {
                     moved.apply_to_clip(clip);
                 }
                 self.push_audio_chain_history(*clip_id, "Reorder Audio Effect", old_state);
@@ -338,7 +338,7 @@ impl KlippApp {
                 if self.modifier_edit(*clip_id, param, Some("Add Modifier"), |stack| stack.modifiers.push(modifier.clone())) {
                     return true;
                 }
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         with_modifiers(clip, param, true, |stack| stack.modifiers.push(modifier.clone()));
                         break;
@@ -357,7 +357,7 @@ impl KlippApp {
                 }) {
                     return true;
                 }
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         let emptied = with_modifiers(clip, param, false, |stack| {
                             if *modifier_index < stack.modifiers.len() {
@@ -387,7 +387,7 @@ impl KlippApp {
                 }) {
                     return true;
                 }
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         with_modifiers(clip, param, false, |stack| {
                             if let Some(m) = stack.modifiers.get_mut(*modifier_index) {
@@ -410,7 +410,7 @@ impl KlippApp {
                 }) {
                     return true;
                 }
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         with_modifiers(clip, param, false, |stack| {
                             if let Some(m) = stack.modifiers.get_mut(*modifier_index) {
@@ -475,7 +475,7 @@ impl KlippApp {
     /// The plug-ins' nodes are named by their places until #1500, so a
     /// reader of a plug-in's node reads it again after the edit.
     fn ofx_edits(&mut self, clip_id: klipp_core::ClipId, edits: &[klipp_timeline::OfxEdit], description: &'static str, record: bool) -> bool {
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
         let Some(clip) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return false };
         match clip.apply_ofx_edits(edits) {
             Ok(done) => {
@@ -502,7 +502,7 @@ impl KlippApp {
     /// parameter the picture doesn't animate (an audio one, a node inside
     /// a grade), which keeps the old route; a refusal is said in a toast.
     fn modifier_edit(&mut self, clip_id: klipp_core::ClipId, param: &klipp_core::ParamId, label: Option<&str>, edit: impl FnOnce(&mut klipp_core::ModifierStack)) -> bool {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return false };
         let Some((path, key, anim)) = modifier_target(clip, param) else { return false };
         let mut stack: klipp_core::ModifierStack = anim.as_ref().and_then(|a| a.modifiers.clone()).and_then(|m| serde_json::from_value(m).ok()).unwrap_or_default();
@@ -514,7 +514,7 @@ impl KlippApp {
         let done = match label {
             Some(label) => self.state.apply_path_ops(&[op], label),
             None => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 let Some(clip) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return false };
                 clip.apply_picture_ops(&[op]).map(|_| self.state.dirty = true)
             }
@@ -575,7 +575,7 @@ fn toggle(m: &mut klipp_core::Modifier) {
 impl crate::state::AppState {
     /// The clip's picture fields now, on the active sequence.
     pub(crate) fn picture_of(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::ClipPictureFields> {
-        self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id).map(|c| c.picture.clone())
+        self.document.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id).map(|c| c.picture.clone())
     }
 
     /// Close an effect gesture whose release was never seen: as one
@@ -587,7 +587,7 @@ impl crate::state::AppState {
         // A drag on one of the sequence's own grades (M3 step 19): one step
         // from the grade the drag began on to the grade now.
         if let Some(EditCommand::SetRootGrade { description, root, old, .. }) = &pending {
-            let new = self.sequences[self.active_sequence_idx].root_grade(*root).ok().flatten().cloned().map(Box::new);
+            let new = self.document.sequences[self.active_sequence_idx].root_grade(*root).ok().flatten().cloned().map(Box::new);
             self.active_history_mut().end_drag(HistoryEntry { command: EditCommand::SetRootGrade { description, root: *root, old: old.clone(), new } });
             return;
         }
@@ -604,7 +604,7 @@ impl crate::state::AppState {
             self.active_history_mut().abandon_pending_drag();
             return;
         };
-        let now = self.sequences[self.active_sequence_idx]
+        let now = self.document.sequences[self.active_sequence_idx]
             .all_clips()
             .find(|c| c.id == clip_id)
             .and_then(|c| c.builtin_effects().get(effect_index).cloned());

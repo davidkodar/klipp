@@ -97,7 +97,7 @@ pub(super) fn previewed(seq: &klipp_timeline::Sequence, want: &PreviewWant, ctx:
     let mut at = None;
     let mut span = want.span;
     if let Some(place) = &want.place {
-        let mut scratch = AppState { sequences: vec![out], active_sequence_idx: 0, playhead: ctx.playhead, ..Default::default() };
+        let mut scratch = AppState { document: klipp_document::Document { sequences: vec![out], ..Default::default() }, active_sequence_idx: 0, playhead: ctx.playhead, ..Default::default() };
         let (clip, park) = match place {
             Place::Generator(data) => {
                 let (clip, _, park) = timeline_edit::add_generator_clip(&mut scratch, None, data);
@@ -111,7 +111,7 @@ pub(super) fn previewed(seq: &klipp_timeline::Sequence, want: &PreviewWant, ctx:
                 (clip, rest.unwrap_or(ctx.playhead))
             }
         };
-        out = scratch.sequences.remove(0);
+        out = scratch.document.sequences.remove(0);
         span = out.all_clips().find(|c| c.id == clip).map(|c| (c.timeline_in, c.timeline_out));
         at = Some(park);
     }
@@ -261,7 +261,7 @@ impl KlippApp {
     /// scrub over its card runs over.
     fn put_preview_up(&mut self, want: &PreviewWant) -> Option<(klipp_core::Timecode, klipp_core::Timecode)> {
         let (shown, base) = self.sequence.snapshot_with_revision();
-        let ctx = PreviewContext { pool: &self.state.media_pool, analysis: &self.transcript_source, playhead: self.state.playhead };
+        let ctx = PreviewContext { pool: &self.state.document.media_pool, analysis: &self.transcript_source, playhead: self.state.playhead };
         match previewed(&shown, want, &ctx) {
             Ok(Shown { seq, at, span }) => {
                 self.state.hover_preview_note = None;
@@ -309,7 +309,7 @@ impl KlippApp {
         // At the playhead, where frame_at has put it: the time asked for,
         // not the entry's own (a transition's middle).
         let (shown, base) = self.sequence.snapshot_with_revision();
-        let ctx = PreviewContext { pool: &self.state.media_pool, analysis: &self.transcript_source, playhead: self.state.playhead };
+        let ctx = PreviewContext { pool: &self.state.document.media_pool, analysis: &self.transcript_source, playhead: self.state.playhead };
         let Shown { seq, .. } = previewed(&shown, &want, &ctx)?;
         if !self.sequence.set_preview(base, Arc::new(seq)) {
             return Err("the timeline changed while it was made: ask again".into());
@@ -437,12 +437,12 @@ mod tests {
 
     fn shown_want(state: &AppState, want: &PreviewWant) -> Result<Shown, String> {
         let analysis = crate::transcript::TranscriptSource::default();
-        previewed(state.sequence(), want, &PreviewContext { pool: &state.media_pool, analysis: &analysis, playhead: state.playhead })
+        previewed(state.sequence(), want, &PreviewContext { pool: &state.document.media_pool, analysis: &analysis, playhead: state.playhead })
     }
 
     fn timeline(clips: usize) -> (AppState, klipp_core::ClipId) {
         let mut state = AppState::default();
-        let seq = &mut state.sequences[state.active_sequence_idx];
+        let seq = &mut state.document.sequences[state.active_sequence_idx];
         let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
         let tc = |f: i64| klipp_core::Timecode::from_frames(f, 24);
         track.clips = (0..clips as i64).map(|i| klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..klipp_timeline::Clip::gap(tc(i * 24), tc(i * 24 + 24)) }).collect();
@@ -465,11 +465,11 @@ mod tests {
             assert_eq!(serde_json::to_string(state.sequence()).unwrap(), before, "the sequence previewed from is unchanged");
             // Applied as the click applies them: path edits through the
             // state, a placed effect through the clip's effect list.
-            let mut applying = AppState { sequences: state.sequences.clone(), active_sequence_idx: state.active_sequence_idx, ..Default::default() };
+            let mut applying = AppState { document: klipp_document::Document { sequences: state.document.sequences.clone(), ..Default::default() }, active_sequence_idx: state.active_sequence_idx, ..Default::default() };
             for cmd in &cmds {
                 match cmd {
                     AppCommand::AddBuiltinEffect { clip_id, effect } => {
-                        let seq = &mut applying.sequences[applying.active_sequence_idx];
+                        let seq = &mut applying.document.sequences[applying.active_sequence_idx];
                         let c = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(*clip_id)).unwrap();
                         assert!(matches!(c.apply_effect_edits(&[klipp_timeline::EffectEdit::Add(effect)]), Some(Ok(_))));
                     }
@@ -504,7 +504,7 @@ mod tests {
         let lut_of = |s: &klipp_timeline::Sequence| s.all_clips().find(|c| c.id == clip).and_then(|c| c.grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Lut3D).and_then(|n| n.params.lut_path.clone())).map(|p| klipp_core::assets::resolve_lut_path(&p.to_string_lossy(), Some(base)));
         assert_eq!(lut_of(&shown), Some(path.clone()), "the LUT in the clip's grade");
         let op = klipp_document::ops::Op::Look { clip_id: Some(klipp_document::ops::ClipRef::Id(clip)), on: None, lut_path: path.display().to_string(), name: None, opacity: None, remove: false };
-        let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &[op]).unwrap();
+        let plan = klipp_document::ops::resolve(state.sequence(), &state.document.media_pool, &[op]).unwrap();
         let mut seqs = vec![state.sequence().clone()];
         let (mut pool, mut fps) = (klipp_media::MediaPool::default(), seqs[0].fps);
         let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
@@ -569,14 +569,14 @@ mod tests {
             let mut m = klipp_media::MediaItem::synthetic_for_test(std::path::PathBuf::from(format!("/media/{}.mp4", id.0)), None);
             m.id = id;
             m.duration = tc(10.0);
-            state.media_pool.add(m);
+            state.document.media_pool.add(m);
             klipp_timeline::Clip::media(id, tc(from), tc(from + 2.0), tc(4.0), tc(6.0))
         };
         let (a, b) = (shot(0.0), shot(2.0));
         let (a_id, b_id) = (a.id, b.id);
         let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
         track.clips = vec![a, b];
-        state.sequences[state.active_sequence_idx].tracks = vec![track];
+        state.document.sequences[state.active_sequence_idx].tracks = vec![track];
         state.selected_clip = Some(a_id);
         let spec = klipp_core::spec_for_kind(klipp_core::TransitionKind::CrossDissolve);
         let key = want_transition(&mut state, spec, None).expect("a clip to preview on");
@@ -587,9 +587,9 @@ mod tests {
         assert_eq!(serde_json::to_string(state.sequence()).unwrap(), before, "the sequence previewed from is unchanged");
         // The edits the browser's click applies, applied.
         let analysis = crate::transcript::TranscriptSource::default();
-        let made = transitions::transition_edits(state.sequence(), &state.media_pool, &analysis, 0, a_id, b_id, spec.kind_id, state.default_transition_frames).expect("a transition");
+        let made = transitions::transition_edits(state.sequence(), &state.document.media_pool, &analysis, 0, a_id, b_id, spec.kind_id, state.default_transition_frames).expect("a transition");
         let mut sequences = vec![state.sequence().clone()];
-        let (mut pool, mut fps) = (state.media_pool.clone(), sequences[0].fps);
+        let (mut pool, mut fps) = (state.document.media_pool.clone(), sequences[0].fps);
         let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
         for edit in &made.edits {
             view.apply_forward(edit);
@@ -646,7 +646,7 @@ mod tests {
             let shown = shown_want(&state, &want).expect("a preview");
             assert_eq!(serde_json::to_string(state.sequence()).unwrap(), before, "the sequence previewed from is unchanged");
             // Placed by the click's own functions, on a state of its own.
-            let mut clicked = AppState { sequences: vec![state.sequence().clone()], active_sequence_idx: 0, playhead: state.playhead, ..Default::default() };
+            let mut clicked = AppState { document: klipp_document::Document { sequences: vec![state.sequence().clone()], ..Default::default() }, active_sequence_idx: 0, playhead: state.playhead, ..Default::default() };
             let (clip, park) = match &place {
                 Place::Generator(data) => {
                     let (clip, _, park) = timeline_edit::add_generator_clip(&mut clicked, None, data);
@@ -663,8 +663,8 @@ mod tests {
                 let mut v = serde_json::to_value(s.tracks.iter().map(|t| (&t.kind, t.clips.iter().map(|c| (c.timeline_in, c.timeline_out, serde_json::to_value(&c.kind).unwrap())).collect::<Vec<_>>())).collect::<Vec<_>>()).unwrap();
                 v.take()
             };
-            assert_eq!(shape(&shown.seq), shape(&clicked.sequences[0]), "the previewed sequence is the clicked one");
-            let placed = clicked.sequences[0].all_clips().find(|c| c.id == clip).unwrap();
+            assert_eq!(shape(&shown.seq), shape(&clicked.document.sequences[0]), "the previewed sequence is the clicked one");
+            let placed = clicked.document.sequences[0].all_clips().find(|c| c.id == clip).unwrap();
             assert_eq!((shown.at, shown.span), (Some(park), Some((placed.timeline_in, placed.timeline_out))), "shown where the click parks, over the clip's time");
         }
     }

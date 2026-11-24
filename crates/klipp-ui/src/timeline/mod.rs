@@ -697,10 +697,10 @@ mod colour_strip_tests {
     #[test]
     fn the_colour_strip_selects_whatever_tool_edit_left_armed() {
         let mut state = AppState::default();
-        let v1 = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1");
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1");
         let long = RationalTime { value: 24 * 600, rate: 24 };
         let zero = RationalTime { value: 0, rate: 24 };
-        state.sequences[0].tracks[v1].clips.push(Clip::media(MediaId::new(), zero, long, zero, long));
+        state.document.sequences[0].tracks[v1].clips.push(Clip::media(MediaId::new(), zero, long, zero, long));
         state.show_color_panel = true;
         state.active_tool = Tool::Blade;
 
@@ -775,12 +775,12 @@ mod menu_smoke_tests {
         /// The default sequence with a long clip on its first video track.
         fn new() -> Self {
             let mut state = AppState::default();
-            let v1 = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("a video track");
+            let v1 = state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("a video track");
             let (zero, long) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 24 * 600, rate: 24 });
             let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/smoke.mov".into(), None);
             item.duration = long;
-            let media: MediaId = state.media_pool.add(item);
-            state.sequences[0].tracks[v1].clips.push(Clip::media(media, zero, long, zero, long));
+            let media: MediaId = state.document.media_pool.add(item);
+            state.document.sequences[0].tracks[v1].clips.push(Clip::media(media, zero, long, zero, long));
             let mut old = crate::panels::timeline::TimelinePanel::default();
             old.embedded = true;
             Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), shapes: Vec::new(), height: 600.0, modifiers: egui::Modifiers::NONE }
@@ -856,7 +856,7 @@ mod menu_smoke_tests {
 
         /// Where the track header of the first track of `kind` shows its name.
         fn header(&mut self, kind: TrackKind) -> egui::Pos2 {
-            let name = self.state.sequences[0].tracks.iter().find(|t| t.kind == kind).expect("a track of that kind").name.clone();
+            let name = self.state.document.sequences[0].tracks.iter().find(|t| t.kind == kind).expect("a track of that kind").name.clone();
             let drawn = self.frame(Vec::new());
             drawn.into_iter().find(|(t, _)| *t == name).unwrap_or_else(|| panic!("{name}'s header is drawn")).1
         }
@@ -898,7 +898,7 @@ mod menu_smoke_tests {
         let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hello".into(), ..Default::default() });
         track.clips.push(Clip { kind: klipp_timeline::ClipKind::Title(td), ..Clip::gap(zero, two) });
         let track_id = track.id;
-        timeline.state.sequences[0].tracks.push(track);
+        timeline.state.document.sequences[0].tracks.push(track);
         let at = timeline.header(TrackKind::Subtitle);
         let menu = timeline.right_click(at);
         let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t.starts_with("Translate Captions")).unwrap_or_else(|| panic!("the caption track's menu translates: {menu:?}")).1;
@@ -925,7 +925,7 @@ mod menu_smoke_tests {
     fn an_audio_tracks_menu_sets_its_automation_mode() {
         let mut timeline = Timeline::new();
         let at = timeline.header(TrackKind::Audio);
-        let track_index = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).expect("an audio track");
+        let track_index = timeline.state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).expect("an audio track");
         let menu = timeline.right_click(at);
         let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t.starts_with("Automation:")).unwrap_or_else(|| panic!("the audio track's menu has its automation: {menu:?}")).1;
         timeline.frame(vec![egui::Event::PointerMoved(item)]);
@@ -954,7 +954,7 @@ mod menu_smoke_tests {
     #[test]
     fn a_tracks_menu_sets_its_role_for_new_clips() {
         let mut timeline = Timeline::new();
-        let track_id = timeline.state.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().id;
+        let track_id = timeline.state.document.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().id;
         let at = timeline.header(TrackKind::Audio);
         let menu = timeline.right_click(at);
         let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t == "Role for New Clips").unwrap_or_else(|| panic!("the track's menu has its role: {menu:?}")).1;
@@ -971,7 +971,7 @@ mod menu_smoke_tests {
         for _ in 0..2 {
             timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
         }
-        timeline.state.sequences[0].tracks.iter_mut().find(|t| t.id == track_id).unwrap().role = want;
+        timeline.state.document.sequences[0].tracks.iter_mut().find(|t| t.id == track_id).unwrap().role = want;
         let at = timeline.header(TrackKind::Audio);
         let menu = timeline.right_click(at);
         assert!(menu.iter().any(|t| t == "Role for New Clips: Dialogue"), "{menu:?}");
@@ -984,7 +984,7 @@ mod menu_smoke_tests {
         let mut timeline = Timeline::new();
         let track = klipp_timeline::Track::new("Subtitle 1", TrackKind::Subtitle);
         let track_id = track.id;
-        timeline.state.sequences[0].tracks.push(track);
+        timeline.state.document.sequences[0].tracks.push(track);
         let at = timeline.header(TrackKind::Subtitle);
         let menu = timeline.right_click(at);
         let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t.starts_with("Language")).unwrap_or_else(|| panic!("the subtitle track's menu has its language: {menu:?}")).1;
@@ -1011,7 +1011,7 @@ mod menu_smoke_tests {
     fn a_video_track_headers_effects_menu_grades_it_in_colour() {
         let mut timeline = Timeline::new();
         for kind in [TrackKind::Video, TrackKind::Audio] {
-            let track_id = timeline.state.sequences[0].tracks.iter().find(|t| t.kind == kind).unwrap().id;
+            let track_id = timeline.state.document.sequences[0].tracks.iter().find(|t| t.kind == kind).unwrap().id;
             let at = timeline.header(kind);
             timeline.right_click(at);
             // Hovering Track Effects opens it.
@@ -1056,10 +1056,10 @@ mod menu_smoke_tests {
     fn headers_stay_on_their_lanes_when_fit_squeezes_the_stack() {
         let mut timeline = Timeline::new();
         for i in 0..6 {
-            timeline.state.sequences[0].tracks.push(klipp_timeline::Track::new(&format!("Pic{i}"), TrackKind::Video));
+            timeline.state.document.sequences[0].tracks.push(klipp_timeline::Track::new(&format!("Pic{i}"), TrackKind::Video));
         }
         for i in 0..4 {
-            timeline.state.sequences[0].tracks.push(klipp_timeline::Track::new(&format!("Snd{i}"), TrackKind::Audio));
+            timeline.state.document.sequences[0].tracks.push(klipp_timeline::Track::new(&format!("Snd{i}"), TrackKind::Audio));
         }
         timeline.state.timeline_track_scale = 0.5;
         timeline.state.timeline_scroll_y = 0.0;
@@ -1068,11 +1068,11 @@ mod menu_smoke_tests {
         let lanes = timeline.old.frame_cache.track_rects.clone();
         assert!(!lanes.is_empty(), "lanes drawn");
         for (idx, _, lane) in &lanes {
-            let name = timeline.state.sequences[0].tracks[*idx].name.clone();
+            let name = timeline.state.document.sequences[0].tracks[*idx].name.clone();
             let at = drawn.iter().find(|(t, _)| *t == name).unwrap_or_else(|| panic!("{name}'s header drawn"));
             assert!(lane.y_range().contains(at.1.y), "{name}'s header at {} is off its lane {:?}", at.1.y, lane.y_range());
         }
-        let last = timeline.state.sequences[0].tracks.last().unwrap().name.clone();
+        let last = timeline.state.document.sequences[0].tracks.last().unwrap().name.clone();
         assert!(drawn.iter().any(|(t, p)| *t == last && p.y < timeline.height), "the last track's header on screen");
     }
 
@@ -1142,19 +1142,19 @@ mod menu_smoke_tests {
     fn a_clips_menu_is_for_the_clip_clicked_not_the_one_at_the_playhead() {
         let mut timeline = Timeline::new();
         timeline.height = 1400.0;
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
         // Short enough for the next clip to be on screen.
         let ten = RationalTime { value: 240, rate: 24 };
-        timeline.state.sequences[0].tracks[v1].clips[0].timeline_out = ten;
-        timeline.state.sequences[0].tracks[v1].clips[0].source_out = ten;
-        let first = timeline.state.sequences[0].tracks[v1].clips[0].clone();
+        timeline.state.document.sequences[0].tracks[v1].clips[0].timeline_out = ten;
+        timeline.state.document.sequences[0].tracks[v1].clips[0].source_out = ten;
+        let first = timeline.state.document.sequences[0].tracks[v1].clips[0].clone();
         let mut second = first.clone();
         second.id = klipp_core::ClipId::new();
         second.name = Some("second.mov".into());
         second.timeline_in = first.timeline_out;
         second.timeline_out = first.timeline_out + first.duration();
         let (at_playhead, clicked) = (first.id, second.id);
-        timeline.state.sequences[0].tracks[v1].clips.push(second);
+        timeline.state.document.sequences[0].tracks[v1].clips.push(second);
         timeline.state.selected_clip = Some(at_playhead);
         timeline.state.color_match_reference = Some((vec![0; 4], 1, 1));
         timeline.state.color_match_reference_clip = Some(at_playhead);
@@ -1195,7 +1195,7 @@ mod menu_smoke_tests {
         let (zero, two) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 48, rate: 24 });
         let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hello".into(), ..Default::default() });
         text.clips.push(Clip { kind: klipp_timeline::ClipKind::Title(td), name: Some("A title".into()), ..Clip::gap(zero, two) });
-        timeline.state.sequences[0].tracks.insert(0, text);
+        timeline.state.document.sequences[0].tracks.insert(0, text);
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "A title").expect("the title is drawn").1;
         let menu = timeline.right_click(at);
@@ -1209,9 +1209,9 @@ mod menu_smoke_tests {
     #[test]
     fn locking_a_track_is_in_its_headers_menu() {
         let mut timeline = Timeline::new();
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-        let track_id = timeline.state.sequences[0].tracks[v1].id;
-        timeline.state.sequences[0].tracks[v1].custom_height = Some(90.0);
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let track_id = timeline.state.document.sequences[0].tracks[v1].id;
+        timeline.state.document.sequences[0].tracks[v1].custom_height = Some(90.0);
         let at = timeline.header(TrackKind::Video);
         timeline.right_click(at);
         let drawn = timeline.frame(Vec::new());
@@ -1226,8 +1226,8 @@ mod menu_smoke_tests {
     #[test]
     fn freezing_a_track_is_in_a_video_header_s_menu() {
         let mut timeline = Timeline::new();
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-        let track_id = timeline.state.sequences[0].tracks[v1].id;
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let track_id = timeline.state.document.sequences[0].tracks[v1].id;
         let at = timeline.header(TrackKind::Video);
         timeline.right_click(at);
         let drawn = timeline.frame(Vec::new());
@@ -1236,7 +1236,7 @@ mod menu_smoke_tests {
         assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackFrozen { track_id: t, frozen: true } if *t == track_id)), "{sent:?}");
 
         let mut timeline = Timeline::new();
-        let track_id = timeline.state.sequences[0].tracks[v1].id;
+        let track_id = timeline.state.document.sequences[0].tracks[v1].id;
         let at = timeline.header(TrackKind::Video);
         timeline.right_click(at);
         let drawn = timeline.frame(Vec::new());
@@ -1246,8 +1246,8 @@ mod menu_smoke_tests {
 
         // A sound track freezes too: its stem.
         let mut timeline = Timeline::new();
-        let a1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
-        let track_id = timeline.state.sequences[0].tracks[a1].id;
+        let a1 = timeline.state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let track_id = timeline.state.document.sequences[0].tracks[a1].id;
         let at = timeline.header(TrackKind::Audio);
         timeline.right_click(at);
         let drawn = timeline.frame(Vec::new());
@@ -1263,20 +1263,20 @@ mod menu_smoke_tests {
     fn the_freeze_key_acts_on_the_selected_clip_s_track() {
         let mut state = crate::state::AppState::default();
         assert!(freeze_marks::toggle_selected(&state).is_none(), "nothing selected");
-        let v = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-        let a = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let v = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let a = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
         let pic = Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
         let sound = Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
-        let (pic_id, sound_id, track_id) = (pic.id, sound.id, state.sequences[0].tracks[v].id);
-        state.sequences[0].tracks[v].clips.push(pic);
-        state.sequences[0].tracks[a].clips.push(sound);
+        let (pic_id, sound_id, track_id) = (pic.id, sound.id, state.document.sequences[0].tracks[v].id);
+        state.document.sequences[0].tracks[v].clips.push(pic);
+        state.document.sequences[0].tracks[a].clips.push(sound);
         state.selected_clip = Some(pic_id);
         assert!(matches!(freeze_marks::toggle_selected(&state), Some(AppCommand::SetTrackFrozen { track_id: id, frozen: true }) if id == track_id));
-        state.sequences[0].tracks[v].frozen = true;
+        state.document.sequences[0].tracks[v].frozen = true;
         assert!(matches!(freeze_marks::toggle_selected(&state), Some(AppCommand::SetTrackFrozen { frozen: false, .. })));
         state.selected_clip = Some(sound_id);
-        let sound_track = state.sequences[0].tracks[a].id;
+        let sound_track = state.document.sequences[0].tracks[a].id;
         assert!(matches!(freeze_marks::toggle_selected(&state), Some(AppCommand::SetTrackFrozen { track_id: id, frozen: true }) if id == sound_track), "a sound clip's track freezes as a stem");
     }
 
@@ -1291,10 +1291,10 @@ mod menu_smoke_tests {
         let mut timeline = Timeline::new();
         // The analysis items sit low in a long menu.
         timeline.height = 1400.0;
-        let media = timeline.state.media_pool.all().next().unwrap().id;
-        timeline.state.media_pool.get_mut(&media).unwrap().path = file;
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
-        let id = timeline.state.sequences[0].tracks[v1].clips[0].id;
+        let media = timeline.state.document.media_pool.all().next().unwrap().id;
+        timeline.state.document.media_pool.get_mut(&media).unwrap().path = file;
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let id = timeline.state.document.sequences[0].tracks[v1].clips[0].id;
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         timeline.right_click(at);
@@ -1317,8 +1317,8 @@ mod menu_smoke_tests {
     fn a_clips_menu_makes_an_audition_and_the_clip_shows_its_takes() {
         let mut timeline = Timeline::new();
         timeline.height = 1400.0;
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
-        let id = timeline.state.sequences[0].tracks[v1].clips[0].id;
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let id = timeline.state.document.sequences[0].tracks[v1].clips[0].id;
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         timeline.right_click(at);
@@ -1329,9 +1329,9 @@ mod menu_smoke_tests {
         assert!(sent.iter().any(|c| matches!(c, AppCommand::EditAudition { clip_id, edit: klipp_core::AuditionEdit::Create } if *clip_id == id)), "{sent:?}");
 
         // As the app applies it.
-        let (edits, _) = crate::auditions::plan(timeline.state.sequence(), &timeline.state.media_pool, id, &klipp_core::AuditionEdit::Create).unwrap();
+        let (edits, _) = crate::auditions::plan(timeline.state.sequence(), &timeline.state.document.media_pool, id, &klipp_core::AuditionEdit::Create).unwrap();
         let mut fps = timeline.state.fps;
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut timeline.state.sequences, active: 0, media_pool: &mut timeline.state.media_pool, fps: &mut fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut timeline.state.document.sequences, active: 0, media_pool: &mut timeline.state.document.media_pool, fps: &mut fps };
         for e in &edits {
             view.apply_forward(e);
         }
@@ -1365,13 +1365,13 @@ mod menu_smoke_tests {
     fn a_press_on_the_timeline_takes_the_keys_from_the_source_viewer() {
         use klipp_core::ViewerMode::{Program, Source};
         let mut timeline = Timeline::new();
-        timeline.state.source_media_id = timeline.state.media_pool.all().next().map(|m| m.id);
+        timeline.state.source_media_id = timeline.state.document.media_pool.all().next().map(|m| m.id);
         timeline.frame(Vec::new());
         timeline.frame(Vec::new());
         let rect = timeline.old.frame_cache.track_rects.first().expect("a track drawn").2;
         let header = timeline.header(TrackKind::Video);
         let places = [
-            ("a clip", egui::pos2(rect.center().x, timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| timeline.state.sequences[0].tracks[*i].kind == TrackKind::Video).unwrap().2.center().y)),
+            ("a clip", egui::pos2(rect.center().x, timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| timeline.state.document.sequences[0].tracks[*i].kind == TrackKind::Video).unwrap().2.center().y)),
             ("the ruler", egui::pos2(rect.center().x, rect.top() - 8.0)),
             ("a track's header", header),
             ("empty timeline", egui::pos2(rect.center().x, 590.0)),
@@ -1415,9 +1415,9 @@ mod menu_smoke_tests {
     #[test]
     fn a_long_track_name_stops_before_the_buttons() {
         let mut timeline = Timeline::new();
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
         let long = "Video 1 (bounced) and more than a header holds";
-        timeline.state.sequences[0].tracks[v1].name = long.to_string();
+        timeline.state.document.sequences[0].tracks[v1].name = long.to_string();
         timeline.frame(Vec::new());
         let drawn = timeline.frame(Vec::new());
         let rect = timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v1).expect("drawn").2;
@@ -1426,9 +1426,9 @@ mod menu_smoke_tests {
             egui::Shape::Text(t) if t.galley.text().starts_with("Video 1") && t.galley.text().ends_with('\u{2026}') => Some(t.visual_bounding_rect()),
             _ => None,
         }).expect("drawn cut");
-        let room = super::track_headers::name_room(&timeline.state.sequences[0].tracks[v1], rect.min.x);
+        let room = super::track_headers::name_room(&timeline.state.document.sequences[0].tracks[v1], rect.min.x);
         assert!(cut.max.x <= room + 0.5, "ends at {}, its buttons at {room}", cut.max.x);
-        timeline.state.sequences[0].tracks[v1].name = "Video 1".to_string();
+        timeline.state.document.sequences[0].tracks[v1].name = "Video 1".to_string();
         assert!(timeline.frame(Vec::new()).iter().any(|(t, _)| t == "Video 1"), "a short name whole");
     }
 
@@ -1438,8 +1438,8 @@ mod menu_smoke_tests {
     #[test]
     fn the_header_buttons_ask_for_a_lock_and_a_mute() {
         let mut timeline = Timeline::new();
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-        let id = timeline.state.sequences[0].tracks[v1].id;
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let id = timeline.state.document.sequences[0].tracks[v1].id;
         timeline.frame(Vec::new());
         timeline.frame(Vec::new());
         let rect = timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v1).expect("drawn").2;
@@ -1458,10 +1458,10 @@ mod menu_smoke_tests {
         // The header ends where the clip area starts.
         let sent = click(&mut timeline, egui::pos2(rect.min.x - 12.0, rect.center().y));
         assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackLocked { track_id, locked: true } if *track_id == id)), "{sent:?}");
-        assert!(!timeline.state.sequences[0].tracks[v1].locked, "left to the command");
+        assert!(!timeline.state.document.sequences[0].tracks[v1].locked, "left to the command");
         let sent = click(&mut timeline, egui::pos2(rect.min.x - 52.0, rect.center().y));
         assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackMute { track_index, muted: true } if *track_index == v1)), "{sent:?}");
-        assert!(!timeline.state.sequences[0].tracks[v1].muted, "left to the command");
+        assert!(!timeline.state.document.sequences[0].tracks[v1].muted, "left to the command");
     }
 
     /// #3209: a pool file let go over a clip with Alt held goes into it as
@@ -1469,9 +1469,9 @@ mod menu_smoke_tests {
     #[test]
     fn an_alt_drop_onto_a_clip_adds_the_file_as_a_take() {
         let mut timeline = Timeline::new();
-        let media = timeline.state.media_pool.all().next().expect("the clip").id;
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
-        let id = timeline.state.sequences[0].tracks[v1].clips[0].id;
+        let media = timeline.state.document.media_pool.all().next().expect("the clip").id;
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let id = timeline.state.document.sequences[0].tracks[v1].clips[0].id;
         timeline.frame(Vec::new());
         timeline.frame(Vec::new());
         let rect = timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v1).expect("V1 drawn").2;
@@ -1504,9 +1504,9 @@ mod menu_smoke_tests {
         let mut timeline = Timeline::new();
         let mut song = klipp_media::MediaItem::synthetic_for_test("/tmp/song.mp3".into(), None);
         (song.duration, song.video_codec, song.has_audio) = (klipp_core::RationalTime::from_frames(480, 24), String::new(), true);
-        let media = timeline.state.media_pool.add(song);
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
-        let id = timeline.state.sequences[0].tracks[v1].clips[0].id;
+        let media = timeline.state.document.media_pool.add(song);
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let id = timeline.state.document.sequences[0].tracks[v1].clips[0].id;
         timeline.frame(Vec::new());
         timeline.frame(Vec::new());
         let rect = timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v1).expect("V1 drawn").2;
@@ -1530,7 +1530,7 @@ mod menu_smoke_tests {
             _ => None,
         });
         let edit = edit.unwrap_or_else(|| panic!("the drop asks for the edit: {sent:?}"));
-        let why = crate::auditions::plan(&timeline.state.sequences[0], &timeline.state.media_pool, id, &edit).expect_err("refused");
+        let why = crate::auditions::plan(&timeline.state.document.sequences[0], &timeline.state.document.media_pool, id, &edit).expect_err("refused");
         assert!(why.contains("song.mp3") && why.contains("sound only"), "{why}");
         assert!(!sent.iter().any(|c| matches!(c, AppCommand::PlaceMedia { .. })), "not placed on the track: {sent:?}");
         assert!(timeline.state.dragging_media.is_none(), "the drag ended");
@@ -1543,9 +1543,9 @@ mod menu_smoke_tests {
     fn a_drop_above_the_top_video_track_makes_a_video_track() {
         for above in [6.0f32, 20.0] {
             let mut timeline = Timeline::new();
-            let media = timeline.state.media_pool.all().next().expect("the clip").id;
-            let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
-            let videos = |t: &Timeline| t.state.sequences[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).count();
+            let media = timeline.state.document.media_pool.all().next().expect("the clip").id;
+            let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+            let videos = |t: &Timeline| t.state.document.sequences[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).count();
             let before = videos(&timeline);
             timeline.frame(Vec::new());
             timeline.frame(Vec::new());
@@ -1569,7 +1569,7 @@ mod menu_smoke_tests {
                 AppCommand::PlaceMedia { media_id, drop: klipp_core::events::ClipDrop::OnTrackAt { track_index, at, .. } } if *media_id == media => Some((*track_index, at.to_secs_f64())),
                 _ => None,
             });
-            let made = placed.is_some_and(|(ti, _)| timeline.state.sequences[0].tracks[ti].kind == TrackKind::Video && timeline.state.sequences[0].tracks[ti].clips.is_empty());
+            let made = placed.is_some_and(|(ti, _)| timeline.state.document.sequences[0].tracks[ti].kind == TrackKind::Video && timeline.state.document.sequences[0].tracks[ti].clips.is_empty());
             assert!(made && videos(&timeline) == before + 1, "{above} px above the top track: a new video track and the clip on it ({} video tracks, sent {sent:?})", videos(&timeline));
             let at = placed.unwrap().1;
             assert!((at - want).abs() < 0.5, "{above} px above: at the drop time {want:.2} s, not {at:.2} s");
@@ -1587,10 +1587,10 @@ mod menu_smoke_tests {
         let mut timeline = Timeline::new();
         // The analysis items sit low in a long menu.
         timeline.height = 1400.0;
-        let media = timeline.state.media_pool.all().next().unwrap().id;
-        timeline.state.media_pool.get_mut(&media).unwrap().path = file;
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
-        let id = timeline.state.sequences[0].tracks[v1].clips[0].id;
+        let media = timeline.state.document.media_pool.all().next().unwrap().id;
+        timeline.state.document.media_pool.get_mut(&media).unwrap().path = file;
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let id = timeline.state.document.sequences[0].tracks[v1].clips[0].id;
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         timeline.right_click(at);
@@ -1610,8 +1610,8 @@ mod menu_smoke_tests {
         use klipp_timeline::GradeAccess;
         let mut timeline = Timeline::new();
         timeline.height = 1500.0;
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
-        let clip = &mut timeline.state.sequences[0].tracks[v1].clips[0];
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let clip = &mut timeline.state.document.sequences[0].tracks[v1].clips[0];
         let id = clip.id;
         let mut graph = clip.grade().clone();
         let matte = klipp_nodes::NodeId::new_v4();
@@ -1643,7 +1643,7 @@ mod menu_smoke_tests {
     #[test]
     fn the_clip_menu_pins_a_clip_to_a_tracked_surface_under_it() {
         let mut timeline = Timeline::new();
-        let tracks = &mut timeline.state.sequences[0].tracks;
+        let tracks = &mut timeline.state.document.sequences[0].tracks;
         let v1 = tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
         let layer = tracks[v1].clips[0].id;
         // The host, on a video track of its own below, a surface tracked in it.
@@ -1676,8 +1676,8 @@ mod menu_smoke_tests {
         use klipp_timeline::GradeAccess;
         for faded in [false, true] {
             let mut timeline = Timeline::new();
-            let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
-            let clip = &mut timeline.state.sequences[0].tracks[v1].clips[0];
+            let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+            let clip = &mut timeline.state.document.sequences[0].tracks[v1].clips[0];
             let id = clip.id;
             if faded {
                 let mut graph = clip.grade().clone();
@@ -1709,10 +1709,10 @@ mod menu_smoke_tests {
     fn double_clicking_a_multicam_clip_turns_the_mode_on() {
         for multicam in [true, false] {
             let mut timeline = Timeline::new();
-            let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
-            let id = timeline.state.sequences[0].tracks[v1].clips[0].id;
+            let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+            let id = timeline.state.document.sequences[0].tracks[v1].clips[0].id;
             if multicam {
-                timeline.state.sequences[0].tracks[v1].clips[0].multicam_group = Some(klipp_core::GroupId::new());
+                timeline.state.document.sequences[0].tracks[v1].clips[0].multicam_group = Some(klipp_core::GroupId::new());
             }
             let drawn = timeline.frame(Vec::new());
             let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
@@ -1734,11 +1734,11 @@ mod menu_smoke_tests {
     fn add_fade_in_uses_the_default_fade() {
         for (secs, curve) in [(1.25_f32, klipp_core::FadeCurve::Exponential), (0.4, klipp_core::FadeCurve::Linear)] {
             let mut timeline = Timeline::new();
-            let a1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Audio)).expect("an audio track");
+            let a1 = timeline.state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Audio)).expect("an audio track");
             let (zero, long) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 24 * 600, rate: 24 });
-            let media = timeline.state.media_pool.all().next().unwrap().id;
-            timeline.state.sequences[0].tracks[a1].clips.push(Clip::media(media, zero, long, zero, long));
-            let audio_id = timeline.state.sequences[0].tracks[a1].clips[0].id;
+            let media = timeline.state.document.media_pool.all().next().unwrap().id;
+            timeline.state.document.sequences[0].tracks[a1].clips.push(Clip::media(media, zero, long, zero, long));
+            let audio_id = timeline.state.document.sequences[0].tracks[a1].clips[0].id;
             timeline.state.default_fade_secs = secs;
             timeline.state.default_fade_curve = curve;
             let drawn = timeline.frame(Vec::new());
@@ -1765,9 +1765,9 @@ mod menu_smoke_tests {
     fn a_sounding_clips_menu_normalizes_it() {
         for has_audio in [true, false] {
             let mut timeline = Timeline::new();
-            let media = timeline.state.media_pool.all().next().unwrap().id;
-            timeline.state.media_pool.get_mut(&media).unwrap().has_audio = has_audio;
-            let clip_id = timeline.state.sequences[0].all_clips().next().unwrap().id;
+            let media = timeline.state.document.media_pool.all().next().unwrap().id;
+            timeline.state.document.media_pool.get_mut(&media).unwrap().has_audio = has_audio;
+            let clip_id = timeline.state.document.sequences[0].all_clips().next().unwrap().id;
             let drawn = timeline.frame(Vec::new());
             let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
             let menu = timeline.right_click(at);
@@ -1796,9 +1796,9 @@ mod menu_smoke_tests {
     #[test]
     fn a_sounding_clips_menu_fits_it_to_a_length() {
         let mut timeline = Timeline::new();
-        let media = timeline.state.media_pool.all().next().unwrap().id;
-        timeline.state.media_pool.get_mut(&media).unwrap().has_audio = true;
-        let clip_id = timeline.state.sequences[0].all_clips().next().unwrap().id;
+        let media = timeline.state.document.media_pool.all().next().unwrap().id;
+        timeline.state.document.media_pool.get_mut(&media).unwrap().has_audio = true;
+        let clip_id = timeline.state.document.sequences[0].all_clips().next().unwrap().id;
         let at = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         let menu = timeline.right_click(at);
         let item = timeline.open_submenus(&["Audio"]).into_iter().find(|(t, _)| t == "Fit Music to Length\u{2026}").map(|(_, p)| p).unwrap_or_else(|| panic!("offered: {menu:?}"));
@@ -1817,7 +1817,7 @@ mod menu_smoke_tests {
     fn the_colour_strip_flags_a_clips_grade() {
         let mut timeline = Timeline::new();
         timeline.state.show_color_panel = true;
-        let clip = timeline.state.sequences[0].all_clips().next().unwrap().id;
+        let clip = timeline.state.document.sequences[0].all_clips().next().unwrap().id;
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn on the strip").1;
         timeline.right_click(at);
@@ -1836,7 +1836,7 @@ mod menu_smoke_tests {
             t.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Path(p) if p.closed && p.points.len() == 3 && p.fill == egui::Color32::from_rgb(r, g, b)))
         };
         assert!(!pennant(&mut timeline, klipp_timeline::GradeFlag::NeedsWork));
-        for c in timeline.state.sequences[0].all_clips_mut() {
+        for c in timeline.state.document.sequences[0].all_clips_mut() {
             c.grade_flag = klipp_timeline::GradeFlag::NeedsWork;
         }
         assert!(pennant(&mut timeline, klipp_timeline::GradeFlag::NeedsWork), "no pennant on the flagged clip");
@@ -1848,8 +1848,8 @@ mod menu_smoke_tests {
     fn the_colour_strip_wipes_against_another_clip() {
         let mut timeline = Timeline::new();
         timeline.state.show_color_panel = true;
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-        let track = &mut timeline.state.sequences[0].tracks[v1];
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let track = &mut timeline.state.document.sequences[0].tracks[v1];
         let media = track.clips[0].media_id().unwrap();
         let t = |secs: i64| RationalTime { value: 24 * secs, rate: 24 };
         track.clips = vec![Clip::media(media, t(0), t(4), t(0), t(4)), Clip::media(media, t(4), t(600), t(4), t(600))];
@@ -1897,20 +1897,20 @@ mod menu_smoke_tests {
             return;
         };
         let mut timeline = Timeline::new();
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
         let mut item = klipp_media::MediaItem::synthetic_for_test(path, None);
         let rt = |f| RationalTime { value: f, rate: 24 };
         item.duration = rt(48);
         item.fps = klipp_core::Fps::new(24, 1);
         item.resolution = klipp_core::Resolution { width: 64, height: 36 };
-        let media = timeline.state.media_pool.add(item);
-        timeline.state.sequences[0].tracks[v1].clips = vec![Clip::media(media, rt(0), rt(48), rt(0), rt(48))];
-        let clip = timeline.state.sequences[0].tracks[v1].clips[0].id;
+        let media = timeline.state.document.media_pool.add(item);
+        timeline.state.document.sequences[0].tracks[v1].clips = vec![Clip::media(media, rt(0), rt(48), rt(0), rt(48))];
+        let clip = timeline.state.document.sequences[0].tracks[v1].clips[0].id;
         timeline.state.show_color_panel = true;
         let ws = klipp_core::WorkingColorspace::Rec709Linear;
         let update = |t: &mut Timeline, now: f64| {
             let s = &mut t.state;
-            s.graded_thumbs.update(&t.ctx, now, &s.sequences[0], &s.media_pool, ws, None);
+            s.graded_thumbs.update(&t.ctx, now, &s.document.sequences[0], &s.document.media_pool, ws, None);
             s.graded_thumbs.settle(&t.ctx);
         };
         update(&mut timeline, 0.0);
@@ -1920,12 +1920,12 @@ mod menu_smoke_tests {
         assert!(drawn(&timeline, texture), "the graded thumbnail isn't drawn on the strip");
 
         // A grade change: the thumbnail is stale until it is drawn again.
-        let c = timeline.state.sequences[0].tracks[v1].clips.iter_mut().find(|c| c.id == clip).unwrap();
+        let c = timeline.state.document.sequences[0].tracks[v1].clips.iter_mut().find(|c| c.id == clip).unwrap();
         klipp_timeline::GradeAccess::edit_grade(c, |g| {
             let id = g.ensure_corrector();
             g.nodes.iter_mut().find(|n| n.id == id).unwrap().params.exposure = Some(1.0);
         });
-        let graded = timeline.state.sequences[0].tracks[v1].clips[0].clone();
+        let graded = timeline.state.document.sequences[0].tracks[v1].clips[0].clone();
         assert!(!timeline.state.graded_thumbs.is_current(&graded, ws));
         update(&mut timeline, 1.0);
         assert!(timeline.state.graded_thumbs.is_current(&graded, ws), "the new grade's thumbnail wasn't drawn");
@@ -1944,8 +1944,8 @@ mod menu_smoke_tests {
     #[test]
     fn an_edit_points_menu_has_its_items() {
         let mut timeline = Timeline::new();
-        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-        let track = &mut timeline.state.sequences[0].tracks[v1];
+        let v1 = timeline.state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let track = &mut timeline.state.document.sequences[0].tracks[v1];
         let media = track.clips[0].media_id().unwrap();
         let t = |secs: i64| RationalTime { value: 24 * secs, rate: 24 };
         track.clips = vec![Clip::media(media, t(0), t(4), t(0), t(4)), Clip::media(media, t(4), t(600), t(4), t(600))];
@@ -1983,7 +1983,7 @@ mod menu_smoke_tests {
         assert!(window.iter().any(|(t, _)| t == "Rename Clip"), "the rename window opens: {window:?}");
         timeline.frame(vec![egui::Event::Text("Hero shot".into())]);
         timeline.frame(vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
-        let clip_id = timeline.state.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap().clips[0].id;
+        let clip_id = timeline.state.document.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap().clips[0].id;
         assert!(
             timeline.sent.iter().any(|c| matches!(c, AppCommand::RenameClips { clip_ids, name } if *clip_ids == vec![clip_id] && name.as_deref() == Some("Hero shot"))),
             "Enter renames the clip: {:?}", timeline.sent
@@ -1995,7 +1995,7 @@ mod menu_smoke_tests {
     #[test]
     fn a_clip_shows_its_own_name_and_its_speed() {
         let mut timeline = Timeline::new();
-        let clip = &mut timeline.state.sequences[0].tracks.iter_mut().find(|t| t.kind == TrackKind::Video).unwrap().clips[0];
+        let clip = &mut timeline.state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == TrackKind::Video).unwrap().clips[0];
         clip.name = Some("Hero shot".into());
         clip.colour_label = 4;
         clip.speed = 1.5;
@@ -2012,8 +2012,8 @@ mod menu_smoke_tests {
     #[test]
     fn a_release_above_the_timeline_adds_nothing() {
         let mut timeline = Timeline::new();
-        let media = timeline.state.media_pool.all().next().expect("the clip").id;
-        let tracks = timeline.state.sequences[0].tracks.len();
+        let media = timeline.state.document.media_pool.all().next().expect("the clip").id;
+        let tracks = timeline.state.document.sequences[0].tracks.len();
         timeline.state.auto_create_tracks = true;
         timeline.state.dragging_media = Some(media);
         let (theme, kb) = (KlippTheme::default(), crate::keybindings::KeyBindings::default());
@@ -2031,7 +2031,7 @@ mod menu_smoke_tests {
                 });
             });
         }
-        assert_eq!(timeline.state.sequences[0].tracks.len(), tracks, "no track made");
+        assert_eq!(timeline.state.document.sequences[0].tracks.len(), tracks, "no track made");
         assert!(!sent.iter().any(|c| matches!(c, AppCommand::AppendClipToTrack { .. } | AppCommand::AppendMediaBatchToTrack { .. } | AppCommand::PlaceMedia { .. })), "{sent:?}");
         assert!(timeline.state.dragging_media.is_none(), "the drag is over");
     }
@@ -2042,8 +2042,8 @@ mod menu_smoke_tests {
     #[test]
     fn a_video_released_below_the_tracks_goes_on_the_new_track() {
         let mut timeline = Timeline::new();
-        let media = timeline.state.media_pool.all().next().expect("the clip").id;
-        let tracks = timeline.state.sequences[0].tracks.len();
+        let media = timeline.state.document.media_pool.all().next().expect("the clip").id;
+        let tracks = timeline.state.document.sequences[0].tracks.len();
         timeline.state.auto_create_tracks = true;
         // The tracks drawn once before the drag, as they are in the app.
         timeline.frame(Vec::new());
@@ -2051,7 +2051,7 @@ mod menu_smoke_tests {
         let last = timeline.old.frame_cache.track_rects.last().expect("tracks drawn").2;
         let below = egui::pos2(500.0, last.bottom() + 40.0);
         timeline.frame(vec![egui::Event::PointerMoved(below), egui::Event::PointerButton { pos: below, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
-        let seq = &timeline.state.sequences[0];
+        let seq = &timeline.state.document.sequences[0];
         assert_eq!(seq.tracks.len(), tracks + 1, "one track made");
         let placed = timeline.sent.iter().find_map(|c| match c {
             AppCommand::PlaceMedia { drop: klipp_core::events::ClipDrop::OnTrackAt { track_index, at, .. }, .. } => Some((*track_index, *at)),
@@ -2076,11 +2076,11 @@ mod menu_smoke_tests {
         use klipp_timeline::magnetic::EditMode;
         for mode in [EditMode::Insert, EditMode::Overwrite] {
             let mut timeline = Timeline::new();
-            let media = timeline.state.media_pool.all().next().expect("the clip").id;
-            let v2_id = timeline.state.sequences[0].add_video_track("Video 2".into());
-            let v2 = timeline.state.sequences[0].tracks.iter().position(|t| t.id == v2_id).unwrap();
+            let media = timeline.state.document.media_pool.all().next().expect("the clip").id;
+            let v2_id = timeline.state.document.sequences[0].add_video_track("Video 2".into());
+            let v2 = timeline.state.document.sequences[0].tracks.iter().position(|t| t.id == v2_id).unwrap();
             let s = |secs: f64| RationalTime::from_secs_f64(secs, 24);
-            timeline.state.sequences[0].tracks[v2].clips.push(Clip::media(media, s(0.0), s(11.0), s(0.0), s(11.0)));
+            timeline.state.document.sequences[0].tracks[v2].clips.push(Clip::media(media, s(0.0), s(11.0), s(0.0), s(11.0)));
             timeline.state.edit_mode = mode;
             timeline.frame(Vec::new());
             timeline.frame(Vec::new());
@@ -2109,7 +2109,7 @@ mod menu_smoke_tests {
             assert!((when.to_secs_f64() - 5.0).abs() < 0.1, "{mode:?}: at the drop time, not {when:?}");
             assert_eq!(overwrite, mode == EditMode::Overwrite, "{mode:?}");
             // As the app places it.
-            let seq = timeline.state.sequences[0].clone();
+            let seq = timeline.state.document.sequences[0].clone();
             let dropped = Clip::media(media, s(0.0), s(2.0), s(0.0), s(2.0));
             let (edits, placed) = crate::app::media_drop_for_tests(&seq, dropped, track_index, when, overwrite).unwrap_or_else(|e| panic!("{mode:?}: {e}"));
             let mut seqs = vec![seq];
@@ -2130,15 +2130,15 @@ mod menu_smoke_tests {
     #[test]
     fn a_drop_on_any_picture_track_lays_the_clip_there() {
         let mut timeline = Timeline::new();
-        let media = timeline.state.media_pool.all().next().expect("the clip").id;
-        let name = timeline.state.sequences[0].next_track_name(TrackKind::Video);
-        timeline.state.sequences[0].add_video_track(name);
-        let name = timeline.state.sequences[0].next_track_name(TrackKind::Text);
-        timeline.state.sequences[0].add_text_track(name);
+        let media = timeline.state.document.media_pool.all().next().expect("the clip").id;
+        let name = timeline.state.document.sequences[0].next_track_name(TrackKind::Video);
+        timeline.state.document.sequences[0].add_video_track(name);
+        let name = timeline.state.document.sequences[0].next_track_name(TrackKind::Text);
+        timeline.state.document.sequences[0].add_text_track(name);
         timeline.frame(Vec::new());
         timeline.frame(Vec::new());
         let rects = timeline.old.frame_cache.track_rects.clone();
-        let tracks = timeline.state.sequences[0].tracks.clone();
+        let tracks = timeline.state.document.sequences[0].tracks.clone();
         for (idx, _, rect) in &rects {
             let kind = tracks[*idx].kind;
             if !matches!(kind, TrackKind::Video | TrackKind::Text) {
@@ -2175,8 +2175,8 @@ mod menu_smoke_tests {
         timeline.frame(Vec::new());
         timeline.frame(Vec::new());
         let before = reds(&timeline);
-        let a1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Audio)).expect("an audio track");
-        timeline.state.sequences[0].tracks[a1].muted = true;
+        let a1 = timeline.state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Audio)).expect("an audio track");
+        timeline.state.document.sequences[0].tracks[a1].muted = true;
         timeline.frame(Vec::new());
         assert_eq!(reds(&timeline), before + 1, "one red mute button");
     }
@@ -2187,8 +2187,8 @@ mod menu_smoke_tests {
     #[test]
     fn only_tracks_that_make_sound_have_mute_and_solo() {
         let mut timeline = Timeline::new();
-        timeline.state.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Captions", TrackKind::Subtitle));
-        timeline.state.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Titles", TrackKind::Text));
+        timeline.state.document.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Captions", TrackKind::Subtitle));
+        timeline.state.document.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Titles", TrackKind::Text));
         timeline.frame(Vec::new());
         let texts = timeline.frame(Vec::new());
         let solos: Vec<egui::Pos2> = texts.iter().filter(|(t, _)| t == "S").map(|(_, at)| *at).collect();
@@ -2197,7 +2197,7 @@ mod menu_smoke_tests {
             let y = row_of(name);
             solos.iter().any(|s| (s.y - y).abs() < 12.0)
         };
-        let names: Vec<(String, TrackKind)> = timeline.state.sequences[0].tracks.iter().map(|t| (t.name.clone(), t.kind)).collect();
+        let names: Vec<(String, TrackKind)> = timeline.state.document.sequences[0].tracks.iter().map(|t| (t.name.clone(), t.kind)).collect();
         for (name, kind) in &names {
             let sounds = matches!(kind, TrackKind::Video | TrackKind::Audio);
             assert_eq!(has_solo(name), sounds, "{name} ({kind:?}): solo shown {}", has_solo(name));
@@ -2231,7 +2231,7 @@ mod menu_smoke_tests {
             let (from, to) = (at(i as f64 * len), at((i + 1) as f64 * len));
             text.clips.push(Clip { kind: ClipKind::Title(td), source_in: at(0.0), source_out: to - from, ..Clip::gap(from, to) });
         }
-        timeline.state.sequences[0].tracks.insert(0, text);
+        timeline.state.document.sequences[0].tracks.insert(0, text);
         timeline.frame(Vec::new());
         timeline.frame(Vec::new());
         // Each label's text as painted: where it starts, and where it is

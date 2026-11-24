@@ -238,7 +238,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, tab: &m
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         for item in &shown {
             let present = tab.is_present(&item.path);
-            let in_project = state.media_pool.find_by_path(&item.path).is_some();
+            let in_project = state.document.media_pool.find_by_path(&item.path).is_some();
             ui.add_space(4.0);
             let row = ui.horizontal(|ui| {
                 ui.add_space(8.0);

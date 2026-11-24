@@ -63,8 +63,8 @@ fn timeline() -> (Timeline, ClipId) {
     let mut state = AppState { playhead: t(30.0), timeline_zoom: 50.0, timeline_scroll_x: 0.0, ..Default::default() };
     let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/rubber-band-ui.wav".into(), None);
     item.duration = t(10.0);
-    let media = state.media_pool.add(item);
-    let seq = &mut state.sequences[0];
+    let media = state.document.media_pool.add(item);
+    let seq = &mut state.document.sequences[0];
     let a1 = seq.tracks.iter().position(|t| t.name == "Audio 1").unwrap();
     let mut clip = Clip::media(media, t(0.0), t(8.0), t(0.0), t(8.0));
     clip.volume = 0.25;

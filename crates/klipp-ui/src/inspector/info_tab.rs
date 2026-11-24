@@ -62,7 +62,7 @@ pub fn show_no_selection(
     });
 
     section_card(ui, "MEDIA", None, theme, |ui| {
-        let all: Vec<_> = state.media_pool.all().collect();
+        let all: Vec<_> = state.document.media_pool.all().collect();
         let video = all.iter().filter(|m| !m.video_codec.is_empty()).count();
         let audio = all.iter().filter(|m| m.video_codec.is_empty() && m.has_audio).count();
         text_row(ui, theme, "Clips in bin", format!("{} \u{00B7} {video} video \u{00B7} {audio} audio", all.len()));
@@ -93,7 +93,7 @@ pub fn show_no_selection(
             Some(bytes) => text_row(ui, theme, "Project file", format_size(bytes)),
             None => colour_row(ui, theme, "Project file", "Not saved", theme.text_secondary),
         }
-        text_row(ui, theme, "Media files", format_size(state.media_pool.all().map(|m| m.file_size_bytes).sum()));
+        text_row(ui, theme, "Media files", format_size(state.document.media_pool.all().map(|m| m.file_size_bytes).sum()));
 
         match cache_sizes() {
             Some((cache, proxies)) => {
@@ -352,7 +352,7 @@ fn media_section(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme, media:
             colour_row(ui, theme, "Cut short", text, theme.marker_warning);
         }
         if let Some(sync) = &media.synced_audio {
-            let name = state.media_pool.get(&sync.audio_media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "missing recording".to_string());
+            let name = state.document.media_pool.get(&sync.audio_media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "missing recording".to_string());
             text_row(ui, theme, "Synced audio", format!("{name} ({})", sync.describe()));
         }
         if let Some(span) = media.span {
@@ -1002,7 +1002,7 @@ mod view_tests {
         let mut m = media();
         m.offline = true;
         state.offline_media_ids.push(m.id);
-        state.media_pool.add(m);
+        state.document.media_pool.add(m);
         let draw = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| show_no_selection(ui, &state, theme, cmds);
         let (all, texts) = drawn(&ctx, draw);
         assert_has(&all, &[
@@ -1031,7 +1031,7 @@ mod view_tests {
             let mut state = AppState::default();
             let mut m = media();
             m.dolby_vision_profile = profile;
-            state.media_pool.add(m.clone());
+            state.document.media_pool.add(m.clone());
             let mut tag_input = String::new();
             let mut draw = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| show_bin_media(ui, &state, theme, &m, &mut tag_input, cmds);
             let (all, texts) = drawn(&ctx, &mut draw);
@@ -1050,7 +1050,7 @@ mod view_tests {
         let ctx = egui::Context::default();
         let mut state = AppState::default();
         let m = media();
-        state.media_pool.add(m.clone());
+        state.document.media_pool.add(m.clone());
         let seq = state.sequence_mut();
         seq.tracks[0].clips.push(Clip::media(m.id, RationalTime::from_secs_f64(0.0, 24), RationalTime::from_secs_f64(2.0, 24), RationalTime::from_secs_f64(0.0, 24), RationalTime::from_secs_f64(2.0, 24)));
         let mut tag_input = String::new();

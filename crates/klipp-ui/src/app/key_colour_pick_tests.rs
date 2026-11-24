@@ -90,9 +90,9 @@ fn the_viewer_sends_the_key_colour_click() {
     let mut item = klipp_media::MediaItem::synthetic_for_test(std::env::temp_dir().join("klipp-key-pick.mov"), None);
     item.duration = rt(48);
     item.resolution = klipp_core::Resolution { width: 64, height: 36 };
-    let media = state.media_pool.add(item);
-    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-    state.sequences[0].tracks[v1].clips = vec![klipp_timeline::Clip::media(media, rt(0), rt(48), rt(0), rt(48))];
+    let media = state.document.media_pool.add(item);
+    let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    state.document.sequences[0].tracks[v1].clips = vec![klipp_timeline::Clip::media(media, rt(0), rt(48), rt(0), rt(48))];
     let pick = (klipp_core::ClipId::new(), klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: uuid::Uuid::new_v4() }, [uuid::Uuid::new_v4()]));
     let ctx = egui::Context::default();
     let mut panel = ViewerPanel::default();

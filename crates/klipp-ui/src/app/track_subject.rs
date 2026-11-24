@@ -103,8 +103,8 @@ impl KlippApp {
         let model = model_of(model_name);
         let seq = self.state.sequence();
         let Some(clip) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
-        let times = klipp_compose::subject_matte::source_times_held(seq, &clip, last_frame_of(&self.state.media_pool, &clip));
-        let Some(mut item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).cloned() else {
+        let times = klipp_compose::subject_matte::source_times_held(seq, &clip, last_frame_of(&self.state.document.media_pool, &clip));
+        let Some(mut item) = clip.media_id().and_then(|m| self.state.document.media_pool.get(&m)).cloned() else {
             self.state.toast.show("Track Subject needs a clip with a picture from a file");
             return;
         };
@@ -170,7 +170,7 @@ impl KlippApp {
     /// bound to the grade. The model's download is offered, not begun.
     fn track_transition_subject(&mut self, transition_id: klipp_core::TransitionId) {
         let seq = self.state.sequence();
-        let pool = &self.state.media_pool;
+        let pool = &self.state.document.media_pool;
         let Some(ts) = klipp_compose::subject_matte::transition_subjects_with(seq, |c| last_frame_of(pool, c)).into_iter().find(|t| t.transition == transition_id) else {
             self.state.toast.show("Choose how the subject moves in this transition first");
             return;
@@ -179,7 +179,7 @@ impl KlippApp {
         let Some(clip) = seq.all_clips().find(|c| c.id == ts.clip).cloned() else { return };
         let name = if ts.model == 1 { "foreground" } else { "subject" };
         let model = model_of(name);
-        let Some(mut item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).cloned() else {
+        let Some(mut item) = clip.media_id().and_then(|m| self.state.document.media_pool.get(&m)).cloned() else {
             self.state.toast.show("The subject needs a clip with a picture from a file");
             return;
         };
@@ -327,7 +327,7 @@ impl KlippApp {
         // Bound by path, and by the clip's media and a model (#1881): the
         // latter found from the media as linked now.
         let mut folders: Vec<(std::path::PathBuf, Option<u32>)> = klipp_compose::subject_matte::sequences_of(clip).into_iter().map(|d| (d, None)).collect();
-        let item = clip.media_id().and_then(|m| self.state.media_pool.get(&m));
+        let item = clip.media_id().and_then(|m| self.state.document.media_pool.get(&m));
         for model in klipp_compose::subject_matte::subject_models_of(clip) {
             let dir = item.and_then(|i| klipp_compose::subject_matte::media_dir(&i.path, klipp_compose::subject_matte::decode_rotation(clip, i.source_rotation), model)).unwrap_or_default();
             folders.push((dir, Some(model)));
@@ -335,7 +335,7 @@ impl KlippApp {
         if folders.is_empty() {
             return;
         }
-        let times = klipp_compose::subject_matte::source_times_held(seq, clip, last_frame_of(&self.state.media_pool, clip));
+        let times = klipp_compose::subject_matte::source_times_held(seq, clip, last_frame_of(&self.state.document.media_pool, clip));
         let running = self.state.tracking_subjects.get(&clip_id).and_then(|t| klipp_analysis::service::subject_matte_status(t.media)).filter(|s| matches!(s.state, klipp_analysis::service::State::Running | klipp_analysis::service::State::Queued));
         for (dir, subject) in folders {
             let (covered, needed) = match (klipp_compose::subject_matte::coverage(&dir, &times), subject) {
@@ -385,10 +385,10 @@ impl KlippApp {
     /// 3): its matte's coverage of the frames it reads, and its pass.
     fn refresh_transition_card(&mut self, tid: klipp_core::TransitionId) {
         let seq = self.state.sequence();
-        let pool = &self.state.media_pool;
+        let pool = &self.state.document.media_pool;
         let Some(ts) = klipp_compose::subject_matte::transition_subjects_with(seq, |c| last_frame_of(pool, c)).into_iter().find(|t| t.transition == tid) else { return };
         let Some(clip) = seq.all_clips().find(|c| c.id == ts.clip) else { return };
-        let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)) else { return };
+        let Some(item) = clip.media_id().and_then(|m| self.state.document.media_pool.get(&m)) else { return };
         let dir = klipp_compose::subject_matte::media_dir(&item.path, klipp_compose::subject_matte::decode_rotation(clip, item.source_rotation), ts.model);
         let (covered, needed) = dir.as_deref().and_then(|d| klipp_compose::subject_matte::coverage(d, &ts.times)).unwrap_or((0, ts.times.len()));
         let lost = dir.as_deref().map_or(0, lost_frames);
@@ -541,7 +541,7 @@ mod tests {
             clip.set_grade(graph.clone());
             let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
             track.clips.push(clip);
-            state.sequences[0].tracks = vec![track];
+            state.document.sequences[0].tracks = vec![track];
             state.selected_node_id = Some(matte);
             restore_clip_background(&mut state, id).unwrap();
             assert_eq!(state.undo_depth(), 1);
@@ -552,8 +552,8 @@ mod tests {
             for redo in [false, true] {
                 let entry = if redo { state.take_redo() } else { state.take_undo() }.unwrap();
                 let mut doc = klipp_document::apply::DocumentView {
-                    sequences: &mut state.sequences, active: state.active_sequence_idx,
-                    media_pool: &mut state.media_pool, fps: &mut state.fps,
+                    sequences: &mut state.document.sequences, active: state.active_sequence_idx,
+                    media_pool: &mut state.document.media_pool, fps: &mut state.fps,
                 };
                 if redo { doc.apply_forward(&entry.command); } else { doc.apply_inverse(&entry.command); }
                 assert_eq!(state.sequence().all_clips().find(|c| c.id == id).unwrap().grade(), if redo { &restored } else { &graph });

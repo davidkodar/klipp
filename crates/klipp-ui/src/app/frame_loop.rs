@@ -571,7 +571,7 @@ impl KlippApp {
         // Rebuild media usage cache if dirty (O(clips) once per edit, then O(1) per render)
         if self.state.media_usage_cache_dirty {
             self.state.media_usage_cache.clear();
-            for seq in &self.state.sequences {
+            for seq in &self.state.document.sequences {
                 for track in &seq.tracks {
                     // An audition's other takes use their media too (#3209).
                     for clip in track.clips.iter().flat_map(klipp_timeline::Clip::with_takes) {
@@ -588,7 +588,7 @@ impl KlippApp {
         // the opened one, and only while the mode is on: the playhead
         // crossing a multicam clip never turns it on. The program
         // viewer's angle bar follows the playhead whatever the mode.
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let at_playhead = crate::multicam_grid::view_at(seq, self.state.multicam_opened, self.state.playhead);
         let view = crate::multicam_grid::mode_view(seq, self.state.multicam_mode, self.state.multicam_opened, self.state.playhead);
         self.state.multicam_at_playhead = at_playhead.is_some();
@@ -610,10 +610,10 @@ impl KlippApp {
         let grid_shown = self.state.multicam_viewer_active && source_on_screen;
         let mut old_tiles = Vec::new();
         if grid_shown {
-            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            let seq = &self.state.document.sequences[self.state.active_sequence_idx];
             if let Some(group) = crate::multicam_grid::group_at(seq, self.state.multicam_opened, self.state.playhead) {
                 let runtime = self.multicam_grid.get_or_insert_with(|| crate::multicam_grid::GridRuntime::new(ctx));
-                runtime.request(seq, &self.state.media_pool, group, self.state.playhead, self.state.playback == PlaybackState::Playing);
+                runtime.request(seq, &self.state.document.media_pool, group, self.state.playhead, self.state.playback == PlaybackState::Playing);
                 runtime.drain(ctx, |t| old_tiles.push(t));
                 old_tiles.extend(runtime.take_retired());
             }
@@ -861,15 +861,15 @@ impl KlippApp {
                     viewing_lut: self.state.project_viewing_lut.clone(),
                     scopes_after_viewing_lut: self.state.project_scopes_after_viewing_lut,
                 };
-                let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
+                let active_seq_id = self.state.document.sequences[self.state.active_sequence_idx].id.to_string();
 
                 // Snapshot everything the writer needs. The clone is a
                 // handful of allocations; the serialise-plus-disk-write it
                 // moves off this thread took seconds on a large project and
                 // stalled the whole editor mid-edit, on a timer, with no way
                 // for the user to tell what had happened.
-                let sequences = self.state.sequences.clone();
-                let media_pool = self.state.media_pool.clone();
+                let sequences = self.state.document.sequences.clone();
+                let media_pool = self.state.document.media_pool.clone();
                 let created_at = self.state.created_at.clone();
                 let notes = self.state.project_notes.clone();
                 let import_report = self.state.last_import_report.clone();
@@ -1032,7 +1032,7 @@ impl KlippApp {
         // without one queued for one (`apply_skims_found`).
         if let Some(found) = self.skim_lookup.as_ref().and_then(|l| l.take()) {
             self.skim_lookup = None;
-            let (kept, to_make) = super::proxies::apply_skims_found(&mut self.state.media_pool, found);
+            let (kept, to_make) = super::proxies::apply_skims_found(&mut self.state.document.media_pool, found);
             if kept {
                 self.sync_media_pool_to_engine();
             }
@@ -1130,7 +1130,7 @@ impl KlippApp {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             self.state.project_epoch.hash(&mut h);
-            self.state.sequences.get(self.state.active_sequence_idx).map(|s| s.id.to_string()).hash(&mut h);
+            self.state.document.sequences.get(self.state.active_sequence_idx).map(|s| s.id.to_string()).hash(&mut h);
             h.finish()
         };
         crate::file_dialog::install(ctx, picker_scope);
@@ -1563,7 +1563,7 @@ impl KlippApp {
         self.follow_take_preview();
         // The words the project knows, for the editors' spelling (#3236).
         self.state.spelling.enabled = self.prefs.general.check_spelling;
-        self.state.spelling.follow_project(self.state.sequence().brief.as_ref(), &self.state.media_pool);
+        self.state.spelling.follow_project(self.state.sequence().brief.as_ref(), &self.state.document.media_pool);
 
         // History panel
         if self.state.show_history_panel {
@@ -1627,7 +1627,7 @@ impl KlippApp {
         // Relink dialog. Closed once nothing is offline and no search or
         // plan is under way: left open saying all media is online, it
         // kept the keys, so no shortcut reached the app.
-        if self.state.show_relink_dialog && crate::panels::relink::all_relinked(self.state.media_pool.all().filter(|m| m.offline).count(), self.relink_panel.idle()) {
+        if self.state.show_relink_dialog && crate::panels::relink::all_relinked(self.state.document.media_pool.all().filter(|m| m.offline).count(), self.relink_panel.idle()) {
             self.state.show_relink_dialog = false;
             self.state.toast.show("All media is online");
         }

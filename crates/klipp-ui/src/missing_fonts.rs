@@ -252,7 +252,7 @@ impl AppState {
     /// The fonts this project's titles name that `installed` says are
     /// not here.
     pub fn missing_fonts(&self, installed: &dyn Fn(&str) -> bool) -> Vec<MissingFont> {
-        find(&self.sequences, installed)
+        find(&self.document.sequences, installed)
     }
 
     /// Every title in every sequence that names `from` set to `to`
@@ -261,10 +261,10 @@ impl AppState {
     /// The titles changed, by clip.
     pub fn replace_font(&mut self, from: &str, to: &str) -> Vec<ClipId> {
         let mut changed = Vec::new();
-        for s in 0..self.sequences.len() {
-            let seq_id = self.sequences[s].id;
+        for s in 0..self.document.sequences.len() {
+            let seq_id = self.document.sequences[s].id;
             let mut edits = Vec::new();
-            for track in &mut self.sequences[s].tracks {
+            for track in &mut self.document.sequences[s].tracks {
                 for clip in &mut track.clips {
                     if let klipp_timeline::ClipKind::Title(td) = &mut clip.kind {
                         let old = td.clone();
@@ -380,7 +380,7 @@ mod tests {
             _ => None,
         }).collect();
         assert_eq!(fonts, ["B612 Mono"], "the title's font, its name kept");
-        let state = crate::state::AppState { sequences: vec![imported.sequence], ..Default::default() };
+        let state = crate::state::AppState { document: klipp_document::Document { sequences: vec![imported.sequence], ..Default::default() }, ..Default::default() };
         let missing = state.missing_fonts(&|f| klipp_title::font_discovery::font_installed(&registry, f));
         assert!(missing.is_empty(), "listed as missing: {:?}", missing.iter().map(|m| m.family.clone()).collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(&dir);
@@ -442,7 +442,7 @@ mod tests {
     }
 
     fn font_of(state: &AppState, id: ClipId) -> String {
-        state.sequences[0].all_clips().find(|c| c.id == id).unwrap().title_data().unwrap().primary_text().unwrap().font_name.clone()
+        state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().title_data().unwrap().primary_text().unwrap().font_name.clone()
     }
 
     /// The done-when: a project naming a font that is not here lists it
@@ -453,9 +453,9 @@ mod tests {
         let mut state = AppState::default();
         let (a, b, c) = (title_clip("Opening", "Gone Grotesk"), title_clip("Credits", "Gone Grotesk"), title_clip("Kept", "Inter"));
         let (ia, ib, ic) = (a.id, b.id, c.id);
-        state.sequences[0].tracks[0].clips = vec![a, b, c];
+        state.document.sequences[0].tracks[0].clips = vec![a, b, c];
         // A styled run naming another missing font is found too.
-        if let ClipKind::Title(td) = &mut state.sequences[0].tracks[0].clips[2].kind {
+        if let ClipKind::Title(td) = &mut state.document.sequences[0].tracks[0].clips[2].kind {
             if let TitleObjectContent::TextBox(tb) = &mut td.objects[0].content {
                 tb.style_runs = vec![StyleRun { font_name: Some("Lost Serif".into()), ..StyleRun::default_for_range(0, 2) }];
             }
@@ -463,10 +463,10 @@ mod tests {
         // Saved and opened again, as a project the font is missing from.
         let dir = std::env::temp_dir().join(format!("klipp-missing-fonts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        klipp_project::save_project_with_color(&dir, &state.sequences, &klipp_media::MediaPool::new(), &Default::default(), None, None, "").unwrap();
+        klipp_project::save_project_with_color(&dir, &state.document.sequences, &klipp_media::MediaPool::new(), &Default::default(), None, None, "").unwrap();
         let (sequences, ..) = klipp_project::load_project_strict(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        state.sequences = sequences;
+        state.document.sequences = sequences;
         let missing = state.missing_fonts(&here);
         assert_eq!(missing.iter().map(|m| m.family.as_str()).collect::<Vec<_>>(), ["Gone Grotesk", "Lost Serif"]);
         assert_eq!(missing[0].titles.iter().map(|t| (t.clip, t.label.as_str())).collect::<Vec<_>>(), [(ia, "Opening"), (ib, "Credits")]);
@@ -485,7 +485,7 @@ mod tests {
         let crate::history::EditCommand::Batch(edits) = *edit else { panic!("a batch") };
         for e in edits {
             let crate::history::EditCommand::EditTitle { clip_id, old_data, .. } = e else { panic!("title edits") };
-            let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
+            let clip = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
             clip.kind = ClipKind::Title(old_data);
         }
         assert_eq!((font_of(&state, ia), font_of(&state, ib)), ("Gone Grotesk".into(), "Gone Grotesk".into()), "the name is kept for when the font comes back");

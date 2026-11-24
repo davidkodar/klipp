@@ -78,7 +78,7 @@ mod tests {
         let shot = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
         let hole = klipp_timeline::Clip::gap(t(2.0), t(5.0));
         let (shot_id, hole_id) = (shot.id, hole.id);
-        state.sequences[state.active_sequence_idx].tracks[p].clips = vec![shot, hole];
+        state.document.sequences[state.active_sequence_idx].tracks[p].clips = vec![shot, hole];
         state.selected_clip = Some(hole_id);
         assert_eq!(gap_of(&state), Some(Gap { track: p, start: t(2.0), end: t(5.0) }));
         state.selected_clip = Some(shot_id);

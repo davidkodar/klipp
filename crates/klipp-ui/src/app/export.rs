@@ -1085,8 +1085,8 @@ impl KlippApp {
             AppCommand::ExportSequence { settings } => {
                 // The form's export takes its range; any other, as a
                 // socket's, the marks'.
-                range_for_export(&mut self.export_dialog, &self.state.sequences[self.state.active_sequence_idx]);
-                if let Some(note) = export_range_note(&self.export_dialog, &self.state.sequences[self.state.active_sequence_idx]) {
+                range_for_export(&mut self.export_dialog, &self.state.document.sequences[self.state.active_sequence_idx]);
+                if let Some(note) = export_range_note(&self.export_dialog, &self.state.document.sequences[self.state.active_sequence_idx]) {
                     self.state.toast.show(note);
                 }
                 self.export_or_ask(settings, Confirmed::Nothing);
@@ -1190,7 +1190,7 @@ impl KlippApp {
             }
             AppCommand::GenerateRenderScript { path } => {
                 let path = path.clone();
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 // Use current export-dialog settings so users can tweak format/codec
                 // via the normal Export dialog and then dump the equivalent script.
                 let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
@@ -1203,7 +1203,7 @@ impl KlippApp {
 
                 let script = generate_render_script(
                     seq,
-                    &self.state.media_pool,
+                    &self.state.document.media_pool,
                     &settings,
                     &output_str,
                 );
@@ -1271,7 +1271,7 @@ impl KlippApp {
         &self,
         output_path: &std::path::Path,
     ) -> Option<String> {
-        source_written_over(output_path, self.state.media_pool.all().filter(|item| !item.is_synthetic()).map(|item| item.path.as_path()))
+        source_written_over(output_path, self.state.document.media_pool.all().filter(|item| !item.is_synthetic()).map(|item| item.path.as_path()))
     }
 
     /// Find next available numeric-suffixed filename (`output_1.mp4`,
@@ -1296,7 +1296,7 @@ impl KlippApp {
             return;
         }
         let offline = if confirmed == Confirmed::Nothing {
-            offline_clips(&self.state.sequences[self.state.active_sequence_idx], &self.state.media_pool, self.export_range())
+            offline_clips(&self.state.document.sequences[self.state.active_sequence_idx], &self.state.document.media_pool, self.export_range())
         } else {
             Vec::new()
         };
@@ -1312,7 +1312,7 @@ impl KlippApp {
     /// renders, as the form's range picks it (`None`: the whole of it).
     /// Markers render segment by segment, and are checked whole.
     fn export_range(&self) -> Option<(klipp_core::Timecode, klipp_core::Timecode)> {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         match self.export_dialog.range_mode {
             1 => seq.marked_range_on_timeline(),
             2 => {
@@ -1332,13 +1332,13 @@ impl KlippApp {
     /// with its neighbour's matte (#239).
     pub(super) fn ask_matte_gaps(&mut self) -> bool {
         let range = self.export_range();
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
-        let gaps = klipp_compose::subject_matte::in_range(seq, matte_gaps(seq, &self.state.media_pool), range);
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
+        let gaps = klipp_compose::subject_matte::in_range(seq, matte_gaps(seq, &self.state.document.media_pool), range);
         if gaps.is_empty() {
             return false;
         }
         let tracking = &self.state.tracking_subjects;
-        let lines = matte_gap_lines(&gaps, seq, &self.state.media_pool, |clip| {
+        let lines = matte_gap_lines(&gaps, seq, &self.state.document.media_pool, |clip| {
             let t = tracking.get(&clip)?;
             let s = klipp_analysis::service::subject_matte_status(t.media)?;
             matches!(s.state, klipp_analysis::service::State::Running | klipp_analysis::service::State::Queued).then(|| s.progress.unwrap_or(0.0))
@@ -1377,9 +1377,9 @@ impl KlippApp {
         }
         let use_marked = self.export_dialog.range_mode == 1;
         let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
-            &self.state.sequences[self.state.active_sequence_idx],
-            &self.state.sequences,
-            &self.state.media_pool,
+            &self.state.document.sequences[self.state.active_sequence_idx],
+            &self.state.document.sequences,
+            &self.state.document.media_pool,
             settings,
             // The confirmation dialogs used to drop the LUT here.
             self.state.timeline_lut(),
@@ -1388,7 +1388,7 @@ impl KlippApp {
         );
         if let Ok(ref mut snap) = snapshot {
             if self.export_dialog.range_mode == 2 {
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selection_or_clip(), seq, snap.sequence_snapshot.fps);
             }
             snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
@@ -1401,7 +1401,7 @@ impl KlippApp {
                 // it says it is running and when it is done (#2941).
                 self.export_dialog.last_job = Some(id);
                 // Said, the export not held back.
-                let warnings = export_warnings(self.state.sequence(), &self.state.media_pool, &self.transcript_source);
+                let warnings = export_warnings(self.state.sequence(), &self.state.document.media_pool, &self.transcript_source);
                 if !warnings.is_empty() {
                     self.state.toast.show(warnings.join("\n"));
                 }
@@ -1448,7 +1448,7 @@ impl KlippApp {
     /// Zero-length segments (e.g. two markers at the same frame) are
     /// silently skipped.
     pub(super) fn enqueue_marker_segments(&mut self, settings: &klipp_core::ExportSettings) {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let fps = seq.fps.as_f64();
 
         // Explicit-range mode: if any marker carries a `duration`, the user
@@ -1487,9 +1487,9 @@ impl KlippApp {
             // use_marked_range and override export_range manually so the
             // sequence in/out points (if any) don't interfere.
             let snap = klipp_export::RenderSnapshot::from_sequence_with_all(
-                &self.state.sequences[self.state.active_sequence_idx],
-                &self.state.sequences,
-                &self.state.media_pool,
+                &self.state.document.sequences[self.state.active_sequence_idx],
+                &self.state.document.sequences,
+                &self.state.document.media_pool,
                 &job_settings,
                 self.state.timeline_lut(),
                 false,
@@ -1567,7 +1567,7 @@ impl KlippApp {
         let suggested = self.export_dialog.suggested_path.as_deref().is_some_and(|s| stem(s) == stem(&self.export_dialog.output_path));
         let generate = self.export_dialog.output_path.trim().is_empty() || suggested;
         if generate {
-            let first = self.state.sequences.first().map(|s| s.name.clone()).unwrap_or_default();
+            let first = self.state.document.sequences.first().map(|s| s.name.clone()).unwrap_or_default();
             let seq = self.state.sequence();
             let active = (self.state.active_sequence_idx > 0).then(|| seq.name.clone());
             let shape = (seq.resolution.width, seq.resolution.height);
@@ -2046,7 +2046,7 @@ impl KlippApp {
                                 };
                                 let titles = self
                                     .state
-                                    .sequences
+                                    .document.sequences
                                     .get(self.state.active_sequence_idx)
                                     .map_or(klipp_timeline::DEFAULT_TITLE_NITS, |s| s.title_nits)
                                     .min(peak);
@@ -2205,7 +2205,7 @@ impl KlippApp {
         section_card(ui, "SIZE AND RATE", None, &theme, |ui| { indent(ui, &mut |ui| {
                 grid("export_grid_size").show(ui, |ui| {
                         // Resolution override
-                        let seq_res = &self.state.sequences[self.state.active_sequence_idx].resolution;
+                        let seq_res = &self.state.document.sequences[self.state.active_sequence_idx].resolution;
                         let res_labels = [
                             format!("Sequence ({}x{})", seq_res.width, seq_res.height),
                             "720p (1280x720)".into(),
@@ -2234,7 +2234,7 @@ impl KlippApp {
                         }
 
                         // Frame rate override
-                        let seq_fps = &self.state.sequences[self.state.active_sequence_idx].fps;
+                        let seq_fps = &self.state.document.sequences[self.state.active_sequence_idx].fps;
                         let fps_labels = [
                             format!("Sequence ({:.3} fps)", seq_fps.as_f64()),
                             "24 fps".into(), "25 fps".into(), "29.97 fps".into(), "30 fps".into(), "60 fps".into(),
@@ -2252,12 +2252,12 @@ impl KlippApp {
         }); });
 
         // Export range — radio selection: Full / Marked range / Selected clips
-        follow_marks(&mut self.export_dialog, &self.state.sequences[self.state.active_sequence_idx]);
+        follow_marks(&mut self.export_dialog, &self.state.document.sequences[self.state.active_sequence_idx]);
         section_card(ui, "RANGE", None, &theme, |ui| { indent(ui, &mut |ui| {
                 let before = self.export_dialog.range_mode;
                 ui.radio_value(&mut self.export_dialog.range_mode, 0, "Full timeline");
                 let display = self.state.timecode_display();
-                let (has_range, label, hint) = in_out_option(&self.state.sequences[self.state.active_sequence_idx], |t| display.position(t));
+                let (has_range, label, hint) = in_out_option(&self.state.document.sequences[self.state.active_sequence_idx], |t| display.position(t));
                 let picked = self.export_dialog.range_mode == 1;
                 let r = ui.add_enabled(has_range, egui::RadioButton::new(picked, label)).on_disabled_hover_text(hint.unwrap_or_default());
                 if r.clicked() {
@@ -2269,7 +2269,7 @@ impl KlippApp {
                     });
                 }
                 // Under the range it speaks of: the section scrolls.
-                if let Some(note) = export_range_note(&self.export_dialog, &self.state.sequences[self.state.active_sequence_idx]) {
+                if let Some(note) = export_range_note(&self.export_dialog, &self.state.document.sequences[self.state.active_sequence_idx]) {
                     ui.label(egui::RichText::new(note).small().color(self.theme.marker_warning));
                 }
                 let sel_count = self.state.selection_or_clip().len();
@@ -2283,7 +2283,7 @@ impl KlippApp {
                     ui.radio_value(&mut self.export_dialog.range_mode, 2, label);
                 });
                 // Marker-range multi-export: one file per segment between markers.
-                let marker_count = segment_markers(&self.state.sequences[self.state.active_sequence_idx].markers).len();
+                let marker_count = segment_markers(&self.state.document.sequences[self.state.active_sequence_idx].markers).len();
                 let markers_enabled = marker_count > 0;
                 ui.add_enabled_ui(markers_enabled, |ui| {
                     let label = if marker_count > 0 {
@@ -2331,7 +2331,7 @@ impl KlippApp {
 
                 // Subtitles — only show options if the active sequence has subtitle/text tracks
                 let has_subtitle_tracks = {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     seq.tracks.iter().any(|t| {
                         matches!(t.kind, klipp_timeline::TrackKind::Subtitle | klipp_timeline::TrackKind::Text)
                             && !t.clips.is_empty()
@@ -2384,7 +2384,7 @@ impl KlippApp {
                         "Write sequence markers tagged with kind = Chapter as chapter metadata in the output file. Other marker kinds (ToDo / Comment / Best Take / Section) are workflow notes and stay out of the container.",
                     );
                     if self.export_dialog.embed_chapters {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         let chapter_count = seq.markers.iter()
                             .filter(|m| m.kind == klipp_core::MarkerKind::Chapter)
                             .count();
@@ -2443,7 +2443,7 @@ impl KlippApp {
     /// only undo is rendering again. Saying so beside the button fixes
     /// the surprise without settling whether the default is right.
     pub(super) fn export_summary(&self) -> String {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let seq_fps = seq.fps.as_f64();
         let fps = dialog_fps(&self.export_dialog).map(|f| f.as_f64()).unwrap_or(seq_fps);
         let res = dialog_resolution(&self.export_dialog)
@@ -2665,9 +2665,9 @@ impl KlippApp {
         let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
         let use_marked = self.export_dialog.range_mode == 1;
         let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
-            &self.state.sequences[self.state.active_sequence_idx],
-            &self.state.sequences,
-            &self.state.media_pool,
+            &self.state.document.sequences[self.state.active_sequence_idx],
+            &self.state.document.sequences,
+            &self.state.document.media_pool,
             &settings,
             self.state.timeline_lut(),
             use_marked,
@@ -2675,7 +2675,7 @@ impl KlippApp {
         );
         if self.export_dialog.range_mode == 2 {
             if let Ok(ref mut snap) = snapshot {
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
             }
         }
@@ -3976,12 +3976,12 @@ impl KlippApp {
     fn render_job_again(&mut self, id: uuid::Uuid) {
         let Some(job) = self.state.render_queue.jobs.iter().find(|j| j.id == id) else { return };
         let (settings, label, range, sequence_id) = (job.settings.clone(), job.label.clone(), job.export_range, job.sequence_id);
-        let Some(seq_idx) = self.state.sequences.iter().position(|s| s.id == sequence_id) else {
+        let Some(seq_idx) = self.state.document.sequences.iter().position(|s| s.id == sequence_id) else {
             self.state.toast.show("The sequence this was rendered from is gone; export it again from the dialog");
             return;
         };
-        let seq = &self.state.sequences[seq_idx];
-        let offline = seq.tracks.iter().flat_map(|t| t.clips.iter()).filter_map(|c| c.media_id()).filter(|m| self.state.media_pool.get(m).is_some_and(|i| i.offline)).count();
+        let seq = &self.state.document.sequences[seq_idx];
+        let offline = seq.tracks.iter().flat_map(|t| t.clips.iter()).filter_map(|c| c.media_id()).filter(|m| self.state.document.media_pool.get(m).is_some_and(|i| i.offline)).count();
         if offline > 0 {
             self.state.toast.show(format!("{offline} clip{} in it {} offline; relink before rendering again", if offline == 1 { "" } else { "s" }, if offline == 1 { "is" } else { "are" }));
             return;
@@ -3990,14 +3990,14 @@ impl KlippApp {
             self.state.toast.show(format!("{} is source media in this project; rendering over it would destroy it", name));
             return;
         }
-        if !matte_gaps(&self.state.sequences[seq_idx], &self.state.media_pool).is_empty() {
+        if !matte_gaps(&self.state.document.sequences[seq_idx], &self.state.document.media_pool).is_empty() {
             self.state.toast.show("A tracked subject matte in it isn't finished; track the rest before rendering again");
             return;
         }
         let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
-            &self.state.sequences[seq_idx],
-            &self.state.sequences,
-            &self.state.media_pool,
+            &self.state.document.sequences[seq_idx],
+            &self.state.document.sequences,
+            &self.state.document.media_pool,
             &settings,
             self.state.timeline_lut(),
             false,
@@ -4183,7 +4183,7 @@ impl KlippApp {
                         let is_ttml = matches!(ext.as_str(), "ttml" | "dfxp" | "xml" | "itt");
                         let mut unreadable = None;
 
-                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                         let fps_rate = seq.fps.rate();
                         // One new track per imported file, named after the file stem.
                         let track_name = path
@@ -4394,7 +4394,7 @@ impl KlippApp {
                 true
             }
             AppCommand::AddSubtitleAtPlayhead { timeline_in, duration_frames } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 let fps_rate = seq.fps.rate();
                 let timeline_in = timeline_in.rescale_to(fps_rate);
                 let duration = klipp_core::RationalTime::from_frames(
@@ -4457,7 +4457,7 @@ impl KlippApp {
                 // saving it, and restyling the captions with it, is one
                 // undo step (tracks_undo).
                 let Some((_, style)) = self.state.subtitle_editor.style_draft.take().filter(|(id, _)| id == track_id) else { return true };
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
                     if *apply_to_all {
                         for clip in &mut track.clips {
@@ -4473,7 +4473,7 @@ impl KlippApp {
                 true
             }
             AppCommand::ClearCaptionStyle { track_id } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
                     track.caption_style = None;
                     self.state.dirty = true;
@@ -4482,7 +4482,7 @@ impl KlippApp {
                 true
             }
             AppCommand::ExportSubtitles { path } => {
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let ext = path.extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("")
@@ -4553,15 +4553,15 @@ impl KlippApp {
             AppCommand::ExportReviewCopy { path } => {
                 // The sequence with its review line burned in, rendered as
                 // any export is, and the comment file beside it (#2214).
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let round = klipp_document::review::next_round(seq);
                 let review = klipp_document::review::overlay(seq, round);
                 let template = klipp_document::review::comment_template(seq, round);
                 let settings = klipp_core::ExportSettings { output_path: path.clone(), burn_in_subtitles: true, embed_subtitles: false, ..Default::default() };
                 let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
                     &review,
-                    &self.state.sequences,
-                    &self.state.media_pool,
+                    &self.state.document.sequences,
+                    &self.state.document.media_pool,
                     &settings,
                     self.state.timeline_lut(),
                     false,
@@ -4586,7 +4586,7 @@ impl KlippApp {
                 // TODO: add clipboard copy variant (AppCommand::CopyYouTubeChapters)
                 //       once an `arboard`-style helper lives in the workspace.
                 let path = path.clone();
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let entries = youtube_chapter_entries(&seq.markers);
                 let left_out = seq.markers.iter().filter(|m| m.kind != klipp_core::MarkerKind::Chapter).count();
                 let content = generate_youtube_chapters(&entries);
@@ -4602,32 +4602,32 @@ impl KlippApp {
                 true
             }
             AppCommand::ExportFcpxml { path } => {
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
-                match klipp_project::fcpxml::export_fcpxml(seq, &self.state.media_pool, path) {
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
+                match klipp_project::fcpxml::export_fcpxml(seq, &self.state.document.media_pool, path) {
                     Ok(dropped) => self.state.toast.show(interchange_written("FCPXML", path, &dropped)),
                     Err(e) => self.state.toast.show(format!("FCPXML export failed: {e}")),
                 }
                 true
             }
             AppCommand::ExportKdenlive { path } => {
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
-                match klipp_project::mlt_export::export_kdenlive(seq, &self.state.media_pool, path) {
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
+                match klipp_project::mlt_export::export_kdenlive(seq, &self.state.document.media_pool, path) {
                     Ok(dropped) => self.state.toast.show(interchange_written("Kdenlive project", path, &dropped)),
                     Err(e) => self.state.toast.show(format!("Kdenlive export failed: {e}")),
                 }
                 true
             }
             AppCommand::ExportEdl { path } => {
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
-                match klipp_project::fcpxml::export_edl(seq, &self.state.media_pool, path) {
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
+                match klipp_project::fcpxml::export_edl(seq, &self.state.document.media_pool, path) {
                     Ok(dropped) => self.state.toast.show(interchange_written("EDL", path, &dropped)),
                     Err(e) => self.state.toast.show(format!("EDL export failed: {e}")),
                 }
                 true
             }
             AppCommand::ExportOtio { path } => {
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
-                match klipp_project::otio_export::export_otio(seq, &self.state.media_pool, path) {
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
+                match klipp_project::otio_export::export_otio(seq, &self.state.document.media_pool, path) {
                     Ok(warnings) => self.state.toast.show(interchange_written("OTIO", path, &warnings)),
                     Err(e) => self.state.toast.show(format!("OTIO export failed: {e}")),
                 }
@@ -4636,10 +4636,10 @@ impl KlippApp {
             AppCommand::ExportAaf { path } => {
                 // OTIO first, beside nothing: a scratch file the converter
                 // reads and that goes when it is done.
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
                 let otio = std::env::temp_dir().join(format!("klipp-aaf-{}-{stamp}.otio", std::process::id()));
-                match klipp_project::otio_export::export_otio(seq, &self.state.media_pool, &otio) {
+                match klipp_project::otio_export::export_otio(seq, &self.state.document.media_pool, &otio) {
                     Ok(warnings) => {
                         let path = path.clone();
                         self.state.toast.show(format!("Writing AAF to {}…", path.display()));
@@ -4927,7 +4927,7 @@ impl super::KlippApp {
         if self.read_aaf_aside(path, request_id, false) {
             return;
         }
-        let result = klipp_project::import_report::load(path, self.state.sequence().fps, &self.state.media_pool);
+        let result = klipp_project::import_report::load(path, self.state.sequence().fps, &self.state.document.media_pool);
         self.take_import(path, result, request_id, false);
     }
 
@@ -4957,7 +4957,7 @@ impl super::KlippApp {
         if self.read_aaf_aside(path, request_id, true) {
             return;
         }
-        let result = klipp_project::import_report::load(path, self.state.sequence().fps, &self.state.media_pool);
+        let result = klipp_project::import_report::load(path, self.state.sequence().fps, &self.state.document.media_pool);
         if result.is_ok() {
             self.do_new_project();
         }
@@ -5010,21 +5010,21 @@ impl super::KlippApp {
             Ok(result) => {
                 // Into an open project, its files and names are the
                 // project's; a fresh one has none to meet (#2472).
-                let names: Vec<&str> = if replace { Vec::new() } else { self.state.sequences.iter().map(|s| s.name.as_str()).collect() };
-                let result = klipp_project::import_report::fit_into(result, &self.state.media_pool, &names);
+                let names: Vec<&str> = if replace { Vec::new() } else { self.state.document.sequences.iter().map(|s| s.name.as_str()).collect() };
+                let result = klipp_project::import_report::fit_into(result, &self.state.document.media_pool, &names);
                 let report = klipp_project::import_report::ImportReport::from_import(path, &result);
-                for item in result.media_pool.all().cloned() { self.state.media_pool.add(item); }
+                for item in result.media_pool.all().cloned() { self.state.document.media_pool.add(item); }
                 if replace {
                     self.state.fps = result.sequence.fps;
-                    self.state.sequences = vec![result.sequence];
+                    self.state.document.sequences = vec![result.sequence];
                 } else {
-                    self.state.sequences.push(result.sequence);
+                    self.state.document.sequences.push(result.sequence);
                 }
-                self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                self.state.active_sequence_idx = self.state.document.sequences.len() - 1;
                 self.state.dirty = true;
                 self.state.show_import_report = true;
                 self.state.last_import_report = Some(report.clone());
-                self.state.offline_media_ids = self.state.media_pool.all().filter(|m| m.offline).map(|m| m.id).collect();
+                self.state.offline_media_ids = self.state.document.media_pool.all().filter(|m| m.offline).map(|m| m.id).collect();
                 // Media it names that isn't here: the relink flow opened at
                 // once, already searching beside the imported file (#2086).
                 if !report.missing_media.is_empty() {

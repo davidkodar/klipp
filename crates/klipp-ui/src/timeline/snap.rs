@@ -231,11 +231,11 @@ mod tests {
     /// points a second and a 10-point distance (0.1 s).
     fn state() -> (AppState, ClipId, ClipId) {
         let mut state = AppState { snap_threshold_px: 10.0, ..Default::default() };
-        let v = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let v = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
         let a = Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
         let b = Clip::media(klipp_core::MediaId::new(), t(5.0), t(7.0), t(0.0), t(2.0));
         let (ia, ib) = (a.id, b.id);
-        state.sequences[0].tracks[v].clips.extend([a, b]);
+        state.document.sequences[0].tracks[v].clips.extend([a, b]);
         state.playhead = t(20.0);
         (state, ia, ib)
     }
@@ -291,14 +291,14 @@ mod tests {
     #[test]
     fn markers_snap_and_the_clips_that_move_together_dont() {
         let (mut state, a, b) = state();
-        state.sequences[0].markers.push(klipp_timeline::Marker { id: klipp_core::MarkerId::new(), position: t(10.0), label: "m".into(), color: klipp_core::MarkerColor::Red, duration: Some(t(2.0)), comment: String::new(), kind: Default::default(), review: None });
+        state.document.sequences[0].markers.push(klipp_timeline::Marker { id: klipp_core::MarkerId::new(), position: t(10.0), label: "m".into(), color: klipp_core::MarkerColor::Red, duration: Some(t(2.0)), comment: String::new(), kind: Default::default(), review: None });
         let s = Snapper::of(&state, 100.0, false);
         let got = s.snap(&[t(10.04)], &[a], &mut None).unwrap();
         assert_eq!((got.at, got.kind), (t(10.0), SnapTargetKind::Marker));
         assert_eq!(s.snap(&[t(11.97)], &[a], &mut None).map(|g| g.at), Some(t(12.0)), "a range marker's end");
 
         // b linked to a: moving a, b's edges aren't targets.
-        for c in state.sequences[0].all_clips_mut() {
+        for c in state.document.sequences[0].all_clips_mut() {
             if c.id == a {
                 c.linked_clip_id = Some(b);
             }
@@ -311,7 +311,7 @@ mod tests {
 
         // Grouped instead: the same.
         let g = klipp_core::GroupId::new();
-        for c in state.sequences[0].all_clips_mut() {
+        for c in state.document.sequences[0].all_clips_mut() {
             c.linked_clip_id = None;
             c.group_id = Some(g);
         }

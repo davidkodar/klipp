@@ -31,20 +31,20 @@ fn the_viewer_wipes_against_another_clip_graded() {
     item.fps = klipp_core::Fps::new(24, 1);
     item.resolution = klipp_core::Resolution { width: 64, height: 36 };
     item.filename = "ramp.mkv".into();
-    let media = state.media_pool.add(item);
-    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    let media = state.document.media_pool.add(item);
+    let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
     let (a, mut b) = (klipp_timeline::Clip::media(media, rt(0), rt(48), rt(0), rt(48)), klipp_timeline::Clip::media(media, rt(48), rt(96), rt(0), rt(48)));
     b.name = Some("Reverse".into());
     let (ia, ib) = (a.id, b.id);
-    state.sequences[0].tracks[v1].clips = vec![a, b];
+    state.document.sequences[0].tracks[v1].clips = vec![a, b];
     state.selected_clip = Some(ia);
-    state.wipe_clip = crate::graded_thumbs::wipe_target(&state.sequences[0], state.selected_clip, state.playhead, klipp_core::WipeClip::Next);
+    state.wipe_clip = crate::graded_thumbs::wipe_target(&state.document.sequences[0], state.selected_clip, state.playhead, klipp_core::WipeClip::Next);
     assert_eq!(state.wipe_clip, Some(ib), "the next shot");
 
     let ctx = egui::Context::default();
     let ws = klipp_core::WorkingColorspace::Rec709Linear;
     let wipe = state.wipe_clip;
-    state.graded_thumbs.update(&ctx, 0.0, &state.sequences[0], &state.media_pool, ws, wipe);
+    state.graded_thumbs.update(&ctx, 0.0, &state.document.sequences[0], &state.document.media_pool, ws, wipe);
     state.graded_thumbs.settle(&ctx);
     let frame = state.graded_thumbs.wipe_frame(ib).expect("the wiped clip's graded frame");
     assert_eq!(frame.size()[0], crate::graded_thumbs::WIPE_WIDTH as usize, "drawn at the viewer's size");

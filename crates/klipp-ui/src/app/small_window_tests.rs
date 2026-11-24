@@ -140,7 +140,7 @@ fn the_timeline_shows_v1_a1_and_a2() {
     let dragged = crate::layout_state::LayoutState { timeline_height: 100.0, ..Default::default() };
     for (w, h, zoom, layout) in WINDOWS.into_iter().flat_map(|(w, h)| [(w, h, super::auto_zoom_factor(egui::vec2(w, h)), crate::layout_state::LayoutState::default()), (w, h, 1.0, dragged.clone())]) {
         let mut state = AppState::default();
-        state.sequences[0].tracks.push(klipp_timeline::Track::new("Audio 2", klipp_timeline::TrackKind::Audio));
+        state.document.sequences[0].tracks.push(klipp_timeline::Track::new("Audio 2", klipp_timeline::TrackKind::Audio));
         let names: Vec<String> = state.sequence().tracks.iter().map(|t| t.name.clone()).collect();
         let rect = editor_at(w, h, zoom, &layout, &state).timeline_rect;
         let ctx = egui::Context::default();
@@ -229,15 +229,15 @@ fn every_side_panel_scrolls_to_its_end() {
         // A media clip and a title, each inspector tab.
         let prefs = crate::prefs::Preferences::default();
         let mut media = AppState::default();
-        let item = media.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/small-window.mov".into(), None));
+        let item = media.document.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/small-window.mov".into(), None));
         let clip = klipp_timeline::Clip::media(item, klipp_core::Timecode::from_frames(0, 24), klipp_core::Timecode::from_frames(96, 24), klipp_core::Timecode::from_frames(0, 24), klipp_core::Timecode::from_frames(96, 24));
         media.selected_clip = Some(clip.id);
-        media.sequences[0].tracks[0].clips.push(clip);
+        media.document.sequences[0].tracks[0].clips.push(clip);
         let mut title = AppState::default();
         let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Title".into(), font_name: "Inter".into(), ..Default::default() });
         let tclip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(klipp_core::Timecode::zero(), klipp_core::Timecode::from_frames(48, 24)) };
         title.selected_clip = Some(tclip.id);
-        title.sequences[0].tracks[0].clips.push(tclip);
+        title.document.sequences[0].tracks[0].clips.push(tclip);
         for (what, state, tabs) in [("media", &media, &[InspectorTab::Video, InspectorTab::Audio, InspectorTab::Color, InspectorTab::Effects, InspectorTab::Info][..]), ("title", &title, &[InspectorTab::Title, InspectorTab::Effects][..])] {
             for tab in tabs {
                 let mut panel = crate::inspector::NewInspectorPanel::default();

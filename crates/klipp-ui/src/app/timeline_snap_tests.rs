@@ -85,7 +85,7 @@ impl Timeline {
 /// is the target; Video 2 and Video 3 free, a clip 0–2 s on Video 2.
 fn three_tracks() -> (AppState, ClipId, ClipId) {
     let mut state = AppState { snap_threshold_px: 10.0, playhead: t(30.0), ..Default::default() };
-    let seq = &mut state.sequences[0];
+    let seq = &mut state.document.sequences[0];
     seq.add_video_track("Video 2".into());
     seq.add_video_track("Video 3".into());
     let v1 = seq.tracks.iter().position(|t| t.name == "Video 1").unwrap();
@@ -198,7 +198,7 @@ fn a_snapped_move_holds_until_past_one_and_a_half_times_the_distance() {
 fn a_clip_moved_on_the_primary_track_goes_where_its_line_showed() {
     let (mut state, _, _) = three_tracks();
     state.edit_mode = klipp_timeline::magnetic::EditMode::Insert;
-    let seq = &mut state.sequences[0];
+    let seq = &mut state.document.sequences[0];
     let v1 = seq.tracks.iter().position(|t| t.name == "Video 1").unwrap();
     let clips: Vec<Clip> = (0..3).map(|i| Clip::media(klipp_core::MediaId::new(), t(2.0 * i as f64), t(2.0 * i as f64 + 2.0), t(0.0), t(2.0))).collect();
     let ids: Vec<ClipId> = clips.iter().map(|c| c.id).collect();
@@ -216,7 +216,7 @@ fn a_clip_moved_on_the_primary_track_goes_where_its_line_showed() {
 #[test]
 fn markers_snap_a_move_and_a_linked_partner_does_not() {
     let (mut state, moved, _) = three_tracks();
-    state.sequences[0].markers.push(klipp_timeline::Marker {
+    state.document.sequences[0].markers.push(klipp_timeline::Marker {
         id: klipp_core::MarkerId::new(), position: t(10.0), label: "m".into(), color: klipp_core::MarkerColor::Red,
         duration: None, comment: String::new(), kind: Default::default(), review: None,
     });
@@ -234,8 +234,8 @@ fn markers_snap_a_move_and_a_linked_partner_does_not() {
     let mut partner = Clip::media(klipp_core::MediaId::new(), t(0.5), t(2.5), t(0.0), t(2.0));
     partner.linked_clip_id = Some(moved2);
     let pid = partner.id;
-    state.sequences[0].tracks[v3].clips.push(partner);
-    for c in state.sequences[0].all_clips_mut() {
+    state.document.sequences[0].tracks[v3].clips.push(partner);
+    for c in state.document.sequences[0].all_clips_mut() {
         if c.id == moved2 {
             c.linked_clip_id = Some(pid);
         }
@@ -257,8 +257,8 @@ fn a_group_snaps_by_its_nearest_edge() {
     let mut second = Clip::media(klipp_core::MediaId::new(), t(1.0), t(3.0), t(0.0), t(2.0));
     second.group_id = Some(g);
     let second_id = second.id;
-    state.sequences[0].tracks[v3].clips.push(second);
-    for c in state.sequences[0].all_clips_mut() {
+    state.document.sequences[0].tracks[v3].clips.push(second);
+    for c in state.document.sequences[0].all_clips_mut() {
         if c.id == moved {
             c.group_id = Some(g);
         }
@@ -288,7 +288,7 @@ fn marker(at: f64) -> klipp_timeline::Marker {
 /// either side, and a marker at 2.5 s.
 fn clips_on_video_2(spans: &[(f64, f64)]) -> (AppState, Vec<ClipId>) {
     let (mut state, moved, _) = three_tracks();
-    let seq = &mut state.sequences[0];
+    let seq = &mut state.document.sequences[0];
     let v2 = seq.tracks.iter().position(|t| t.name == "Video 2").unwrap();
     seq.tracks[v2].clips.retain(|c| c.id != moved);
     let clips: Vec<Clip> = spans.iter().map(|&(a, b)| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(1.0), t(1.0 + b - a))).collect();
@@ -370,7 +370,7 @@ fn the_range_tool_snaps_and_shift_does_not() {
 #[test]
 fn drops_snap_to_markers_and_round_to_a_frame() {
     let (mut state, _, _) = three_tracks();
-    state.sequences[0].markers.push(marker(10.0));
+    state.document.sequences[0].markers.push(marker(10.0));
     let drop = |secs, shift| crate::panels::timeline::TimelinePanel::drop_time_for_test(&state, secs, ZOOM, shift);
     assert_eq!(drop(10.0 + 4.0 / ZOOM as f64, false), t(10.0));
     assert_eq!(drop(12.0 + 0.7 / 24.0, true), RationalTime { value: 289, rate: 24 });
@@ -383,7 +383,7 @@ fn drops_snap_to_markers_and_round_to_a_frame() {
 fn the_blade_cuts_where_its_line_shows() {
     for (m, want) in [(egui::Modifiers::NONE, t(1.5)), (egui::Modifiers::SHIFT, RationalTime { value: 38, rate: 24 })] {
         let (mut state, _, _) = three_tracks();
-        state.sequences[0].out_point = Some(t(1.5));
+        state.document.sequences[0].out_point = Some(t(1.5));
         state.active_tool = klipp_core::Tool::Blade;
         let mut tl = Timeline::new(state);
         let v2 = tl.track("Video 2");
@@ -406,7 +406,7 @@ fn the_blade_cuts_where_its_line_shows() {
 fn selection() -> (AppState, [ClipId; 3]) {
     let (mut state, moved, _) = three_tracks();
     state.snap.master = false;
-    let seq = &mut state.sequences[0];
+    let seq = &mut state.document.sequences[0];
     seq.add_video_track("Video 4".into());
     for t in &mut seq.tracks {
         t.clips.retain(|c| c.id != moved);
@@ -447,10 +447,10 @@ fn a_selection_drags_together_as_one_step() {
     let state = &mut tl.state;
     let before: Vec<_> = ids.iter().map(|&id| span(state, id)).collect();
     let ops = crate::timeline::moves::drag_move_ops(state.sequence(), &got, true);
-    let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &ops).expect("the moves resolve");
+    let plan = klipp_document::ops::resolve(state.sequence(), &state.document.media_pool, &ops).expect("the moves resolve");
     let edits: Vec<crate::history::EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
     {
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
         for e in &edits {
             let _ = view.apply_forward(e);
         }
@@ -458,7 +458,7 @@ fn a_selection_drags_together_as_one_step() {
     state.push_edits_as_one(&edits, "Move Clips");
     assert_eq!(ids.iter().map(|&id| span(state, id).0).collect::<Vec<_>>(), [t(2.0), t(2.5), t(5.0)]);
     let entry = state.active_history_mut().undo().expect("a step");
-    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
     view.apply_inverse(&entry.command);
     assert_eq!(ids.iter().map(|&id| span(state, id)).collect::<Vec<_>>(), before);
     assert!(state.active_history_mut().undo().is_none(), "one step");
@@ -472,7 +472,7 @@ fn a_selection_drags_across_tracks_or_is_refused_whole() {
     for locked in [false, true] {
         let (mut state, ids) = selection();
         let v2 = state.sequence().tracks.iter().position(|t| t.name == "Video 2").unwrap();
-        state.sequences[0].tracks[v2].locked = locked;
+        state.document.sequences[0].tracks[v2].locked = locked;
         let mut tl = Timeline::new(state);
         let (v4, v3) = (tl.track("Video 4"), tl.track("Video 3"));
         let grab = tl.at(v4, 0.5);
@@ -488,7 +488,7 @@ fn a_selection_drags_across_tracks_or_is_refused_whole() {
         // The document takes them in an order where none lands on a clip
         // still waiting to leave (the Video 3 one goes down first).
         let ops = crate::timeline::moves::drag_move_ops(tl.state.sequence(), &got, true);
-        let plan = klipp_document::ops::resolve(tl.state.sequence(), &tl.state.media_pool, &ops).expect("the moves resolve");
+        let plan = klipp_document::ops::resolve(tl.state.sequence(), &tl.state.document.media_pool, &ops).expect("the moves resolve");
         assert_eq!(plan.steps.len(), 3);
     }
 }
@@ -515,14 +515,14 @@ fn a_selection_on_the_primary_moves_as_a_block_and_undoes_exactly() {
         let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
         let clips: Vec<Clip> = [(0.0, 4.0), (14.0, 18.0), (18.0, 22.0), (26.0, 29.0), (29.0, 32.0), (34.0, 37.0)].iter().map(|&(a, b)| c(a, b)).collect();
         let ids: Vec<ClipId> = clips.iter().map(|c| c.id).collect();
-        for t in &mut state.sequences[0].tracks {
+        for t in &mut state.document.sequences[0].tracks {
             t.clips.clear();
         }
-        state.sequences[0].tracks[v1].clips = clips;
-        state.sequences[0].fill_primary_holes();
+        state.document.sequences[0].tracks[v1].clips = clips;
+        state.document.sequences[0].fill_primary_holes();
         state.selected_clips = ids[3..].to_vec();
         state.selected_clip = Some(ids[3]);
-        let original = serde_json::to_value(&state.sequences).unwrap();
+        let original = serde_json::to_value(&state.document.sequences).unwrap();
         // Zoomed out so the whole track is drawn.
         let mut tl = Timeline::new(state);
         tl.state.timeline_zoom = 30.0;
@@ -563,13 +563,13 @@ fn a_selection_on_the_primary_moves_as_a_block_and_undoes_exactly() {
         assert_eq!(real.iter().map(|r| r.0).collect::<Vec<_>>(), ids, "{mode:?}: every clip kept, in its order");
         assert_eq!(real[3..].iter().map(|r| (r.1, r.2)).collect::<Vec<_>>(), lands, "{mode:?}: the block where its ghosts showed");
         assert_eq!(real[..3].iter().map(|r| (r.1, r.2)).collect::<Vec<_>>(), [(0.0, 4.0), (14.0, 18.0), (18.0, 22.0)], "{mode:?}: the clips before it unmoved");
-        let moved = serde_json::to_value(&state.sequences).unwrap();
+        let moved = serde_json::to_value(&state.document.sequences).unwrap();
         let entry = state.active_history_mut().undo().expect("a step");
-        let _ = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
-        assert!(serde_json::to_value(&state.sequences).unwrap() == original, "{mode:?}: one undo puts the whole document back");
+        let _ = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+        assert!(serde_json::to_value(&state.document.sequences).unwrap() == original, "{mode:?}: one undo puts the whole document back");
         let entry = state.active_history_mut().redo().expect("the step again");
-        let _ = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&entry.command);
-        assert!(serde_json::to_value(&state.sequences).unwrap() == moved, "{mode:?}: one redo as the move left it");
+        let _ = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(&entry.command);
+        assert!(serde_json::to_value(&state.document.sequences).unwrap() == moved, "{mode:?}: one redo as the move left it");
     }
 }
 
@@ -592,10 +592,10 @@ fn escape_cancels_a_trim_and_a_move() {
             let mut sound = Clip::media(media, t(4.0), t(6.0), t(1.0), t(3.0));
             picture.linked_clip_id = Some(sound.id);
             sound.linked_clip_id = Some(picture.id);
-            state.sequences[0].tracks[p].clips = vec![picture];
-            state.sequences[0].tracks[a1].clips = vec![sound];
-            state.sequences[0].tracks[p].clips.push(Clip::media(klipp_core::MediaId::new(), t(8.0), t(9.0), t(0.0), t(1.0)));
-            state.sequences[0].fill_primary_holes();
+            state.document.sequences[0].tracks[p].clips = vec![picture];
+            state.document.sequences[0].tracks[a1].clips = vec![sound];
+            state.document.sequences[0].tracks[p].clips.push(Clip::media(klipp_core::MediaId::new(), t(8.0), t(9.0), t(0.0), t(1.0)));
+            state.document.sequences[0].fill_primary_holes();
             ("Video 1", 6.0)
         } else {
             ("Video 2", if trim { 2.0 } else { 1.0 })
@@ -635,7 +635,7 @@ fn a_moved_clip_snaps_by_the_edge_it_was_grabbed_nearer() {
     for (grab_secs, start) in [(0.4, 69), (1.6, 72)] {
         let (mut state, _, _) = three_tracks();
         // At frame 69 (2.875 s), so the distances below are whole frames.
-        state.sequences[0].markers.push(marker(69.0 / 24.0));
+        state.document.sequences[0].markers.push(marker(69.0 / 24.0));
         let mut tl = Timeline::new(state);
         let v2 = tl.track("Video 2");
         let grab = tl.at(v2, grab_secs);
@@ -654,7 +654,7 @@ fn a_moved_clip_snaps_by_the_edge_it_was_grabbed_nearer() {
 #[test]
 fn a_title_dropped_on_a_busy_text_track_overlaps_nothing() {
     let (mut state, _) = clips_on_video_2(&[(0.0, 2.0)]);
-    state.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Text 1", TrackKind::Text));
+    state.document.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Text 1", TrackKind::Text));
     let rate = state.sequence().fps.rate();
     let (_marina, _) = super::titles::add_title_clip(&mut state, 0, RationalTime::from_frames((9.16 * rate as f64).round() as i64, rate), rate * 5);
     let mut tl = Timeline::new(state);
@@ -723,14 +723,14 @@ fn a_linked_roll_shows_its_partners_moving() {
         let v2 = state.sequence().tracks.iter().position(|t| t.name == "Video 2").unwrap();
         let mut sounds = Vec::new();
         for (i, &id) in ids.iter().enumerate() {
-            let picture = state.sequences[0].tracks[v2].clips.iter_mut().find(|c| c.id == id).unwrap();
+            let picture = state.document.sequences[0].tracks[v2].clips.iter_mut().find(|c| c.id == id).unwrap();
             let mut sound = picture.clone();
             sound.id = ClipId::new();
             sound.linked_clip_id = Some(id);
             picture.linked_clip_id = Some(sound.id);
             sounds.push(sound.id);
-            if i == 0 { state.sequences[0].tracks[a1].clips.clear(); }
-            state.sequences[0].tracks[a1].clips.push(sound);
+            if i == 0 { state.document.sequences[0].tracks[a1].clips.clear(); }
+            state.document.sequences[0].tracks[a1].clips.push(sound);
         }
         let mut tl = Timeline::new(state);
         let row = tl.track("Video 2");

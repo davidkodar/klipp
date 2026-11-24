@@ -26,7 +26,7 @@ impl KlippApp {
         let mut valid_media_ids = std::collections::HashSet::new();
         let mut valid_cache_keys = std::collections::HashSet::new();
 
-        for item in self.state.media_pool.all() {
+        for item in self.state.document.media_pool.all() {
             // Media ID (used by proxy files)
             valid_media_ids.insert(format!("{}", item.id.0));
 

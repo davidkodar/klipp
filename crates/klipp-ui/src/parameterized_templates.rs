@@ -285,7 +285,7 @@ pub fn show_save_dialog(ctx: &egui::Context, state: &mut crate::state::AppState)
         let chosen: Vec<String> = dialog.picks.iter().filter(|(_, on, _)| *on).map(|(l, ..)| l.clone()).collect();
         let mut scene = dialog.scene.clone();
         scene.name = dialog.name.trim().to_string();
-        let made = klipp_timeline::composition_template::template_from_scene(&scene, &state.sequences, &dialog.name, Some(&chosen)).and_then(|mut t| {
+        let made = klipp_timeline::composition_template::template_from_scene(&scene, &state.document.sequences, &dialog.name, Some(&chosen)).and_then(|mut t| {
             t.category = dialog.category.trim().to_string();
             // Saved over a template of the same name, as a title template is.
             if let Some(existing) = state.composition_templates.templates().find(|e| e.name.eq_ignore_ascii_case(t.name.trim())) {

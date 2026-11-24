@@ -64,7 +64,7 @@ impl KlippApp {
             self.state.toast.show("Select clips to move first");
             return;
         }
-        match klipp_document::ops::resolve(self.state.sequence(), &self.state.media_pool, &ops) {
+        match klipp_document::ops::resolve(self.state.sequence(), &self.state.document.media_pool, &ops) {
             Ok(plan) => {
                 let edits: Vec<EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
                 self.apply_edits_as_one(&edits, label);

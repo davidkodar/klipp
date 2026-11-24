@@ -33,7 +33,7 @@ pub(crate) enum TranscribeProgress {
 /// download offered there, the clip kept to transcribe once it is in,
 /// and nothing started; else followed, and `true` to start it.
 pub(crate) fn begin_transcription(state: &mut AppState, media_id: klipp_core::MediaId, model_installed: bool, speech_model: Option<klipp_ml::ModelEntry>) -> bool {
-    let Some(item) = state.media_pool.get(&media_id) else { return false };
+    let Some(item) = state.document.media_pool.get(&media_id) else { return false };
     let filename = item.filename.clone();
     if !item.has_audio {
         state.toast.show(format!("{filename} has no sound to transcribe"));
@@ -70,7 +70,7 @@ pub(crate) fn follow_transcriptions(state: &mut AppState, progress: &dyn Fn(klip
     let mut lines = Vec::new();
     let mut still = Vec::new();
     for media_id in std::mem::take(&mut state.transcribing) {
-        let Some(name) = state.media_pool.get(&media_id).map(|m| m.filename.clone()) else { continue };
+        let Some(name) = state.document.media_pool.get(&media_id).map(|m| m.filename.clone()) else { continue };
         match progress(media_id) {
             TranscribeProgress::Waiting(why) => {
                 lines.push(match why {
@@ -105,7 +105,7 @@ impl KlippApp {
         let entry = klipp_ml::load_effective().ok().and_then(|m| m.get(klipp_analysis::transcript::MODEL_ID).cloned());
         if begin_transcription(&mut self.state, media_id, installed, entry) {
             self.apply_brief_to_transcription();
-            if let Some(item) = self.state.media_pool.get(&media_id) {
+            if let Some(item) = self.state.document.media_pool.get(&media_id) {
                 klipp_analysis::service::request_transcription(item);
             }
         }
@@ -117,7 +117,7 @@ impl KlippApp {
             self.state.status_transcription = None;
             return;
         }
-        let pool = self.state.media_pool.clone();
+        let pool = self.state.document.media_pool.clone();
         follow_transcriptions(&mut self.state, &|media_id| {
             use klipp_analysis::service::State as S;
             let waiting = || TranscribeProgress::Waiting(klipp_analysis::service::why_waiting(media_id));
@@ -144,7 +144,7 @@ impl KlippApp {
 
     /// [`brief_to_transcription`] with the active sequence's brief.
     pub(super) fn apply_brief_to_transcription(&self) {
-        brief_to_transcription(self.state.sequences.get(self.state.active_sequence_idx).and_then(|s| s.brief.as_ref()));
+        brief_to_transcription(self.state.document.sequences.get(self.state.active_sequence_idx).and_then(|s| s.brief.as_ref()));
     }
 
     /// Each frame: the active brief's spellings and language to the
@@ -153,7 +153,7 @@ impl KlippApp {
     /// transcript made, or read, after the brief was set has them; set
     /// only when analysis was asked for, one made later had none.
     pub(super) fn keep_brief_with_transcription(&self) {
-        let brief = self.state.sequences.get(self.state.active_sequence_idx).and_then(|s| s.brief.as_ref());
+        let brief = self.state.document.sequences.get(self.state.active_sequence_idx).and_then(|s| s.brief.as_ref());
         let now = brief.map(|b| (b.spellings(), b.language.clone())).unwrap_or_default();
         let mut given = GIVEN.lock().unwrap_or_else(|e| e.into_inner());
         if given.as_ref() != Some(&now) {
@@ -166,7 +166,7 @@ impl KlippApp {
     pub(super) fn handle_transcription_commands(&mut self, cmd: &AppCommand) -> bool {
         match cmd {
             AppCommand::CorrectTranscriptWord { media_id, source_secs, text } => {
-                let Some(path) = self.state.media_pool.get(media_id).map(|m| m.path.clone()) else { return true };
+                let Some(path) = self.state.document.media_pool.get(media_id).map(|m| m.path.clone()) else { return true };
                 match klipp_analysis::transcript::correct_word(&path, *source_secs, text) {
                     Ok(()) => {
                         // Read again everywhere: the panel, captions, search.
@@ -178,7 +178,7 @@ impl KlippApp {
                 true
             }
             AppCommand::RetranscribeClip { media_id, model, language } => {
-                let Some(item) = self.state.media_pool.get(media_id).cloned() else { return true };
+                let Some(item) = self.state.document.media_pool.get(media_id).cloned() else { return true };
                 self.apply_brief_to_transcription();
                 klipp_analysis::transcript::redo(&item.path, klipp_analysis::transcript::Redo { model: model.clone(), language: language.clone() });
                 klipp_analysis::service::request_transcription(&item);
@@ -188,7 +188,7 @@ impl KlippApp {
             }
             AppCommand::SpellingIgnore { word } => {
                 let word = word.trim();
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 let old = seq.brief.clone();
                 let Some(brief) = crate::spelling::ignored(old.as_ref(), word) else { return true };
                 seq.brief = Some(brief.clone());
@@ -211,7 +211,7 @@ impl KlippApp {
             }
             AppCommand::SetTranscriptLanguage { language } => {
                 let language = language.as_deref().map(str::trim).filter(|l| !l.is_empty()).map(str::to_lowercase);
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 let old = seq.brief.clone();
                 let mut brief = old.clone().unwrap_or_default();
                 if brief.language == language {
@@ -224,7 +224,7 @@ impl KlippApp {
                 self.apply_brief_to_transcription();
                 // Transcripts whisper detected in another language are stale
                 // now; asking for analysis makes those again, and only those.
-                for item in self.state.media_pool.all().filter(|m| m.has_audio && m.kind == klipp_media::MediaItemKind::File && !m.offline) {
+                for item in self.state.document.media_pool.all().filter(|m| m.has_audio && m.kind == klipp_media::MediaItemKind::File && !m.offline) {
                     klipp_analysis::service::request(item);
                 }
                 true
@@ -245,7 +245,7 @@ mod transcribe_tests {
         let mut state = AppState::default();
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/klipp-transcribe-test.wav".into(), None);
         item.has_audio = true;
-        let id = state.media_pool.add(item);
+        let id = state.document.media_pool.add(item);
         (state, id)
     }
 

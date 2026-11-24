@@ -45,7 +45,7 @@ impl KlippApp {
     /// of the op refused, and why. Applied, the node ids the picture holds
     /// under other ids once written (#1256), and readers that lost a mask.
     pub(super) fn apply_graph_ops(&mut self, ops: &[GraphOp], label: &str) -> Result<GraphOpsOutcome, (Option<usize>, String)> {
-        let outcome = graph_ops_edit(&self.state.sequences[self.state.active_sequence_idx], ops)?;
+        let outcome = graph_ops_edit(&self.state.document.sequences[self.state.active_sequence_idx], ops)?;
         self.apply_edits_as_one(std::slice::from_ref(&outcome.edit), label);
         // A batch that adds nodes can put them outside the view: framed
         // again, once for the batch, unless the view was moved by hand

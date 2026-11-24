@@ -100,8 +100,8 @@ fn fixture() -> (AppState, ClipId, ClipId) {
     let mut state = AppState { snap_threshold_px: 10.0, playhead: t(30.0), ..Default::default() };
     let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/stretch-ui.mov".into(), None);
     item.duration = t(10.0);
-    let media = state.media_pool.add(item);
-    let seq = &mut state.sequences[0];
+    let media = state.document.media_pool.add(item);
+    let seq = &mut state.document.sequences[0];
     seq.add_video_track("Video 2".into());
     let v1 = seq.tracks.iter().position(|t| t.name == "Video 1").unwrap();
     let v2 = seq.tracks.iter().position(|t| t.name == "Video 2").unwrap();
@@ -156,9 +156,9 @@ fn the_edge_below_the_grip_still_trims() {
 #[test]
 fn two_selected_clips_with_the_same_end_stretch_together() {
     let (mut state, clip, other) = fixture();
-    let v2 = state.sequences[0].tracks.iter().position(|t| t.name == "Video 2").unwrap();
-    state.sequences[0].tracks[v2].clips[0].timeline_out = t(4.0);
-    state.sequences[0].tracks[v2].clips[0].source_out = t(4.0);
+    let v2 = state.document.sequences[0].tracks.iter().position(|t| t.name == "Video 2").unwrap();
+    state.document.sequences[0].tracks[v2].clips[0].timeline_out = t(4.0);
+    state.document.sequences[0].tracks[v2].clips[0].source_out = t(4.0);
     state.selected_clip = Some(clip);
     state.selected_clips = vec![clip, other];
     let mut tl = Timeline::new(state);
@@ -180,7 +180,7 @@ fn a_trim_at_the_media_end_offers_a_stretch() {
     for take_it in [true, false] {
         let (mut state, clip, _) = fixture();
         // The clip shows the file's last 4 s: nothing after its end.
-        let c = state.sequences[0].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == clip).unwrap();
+        let c = state.document.sequences[0].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == clip).unwrap();
         c.source_in = t(6.0);
         c.source_out = t(10.0);
         let mut tl = Timeline::new(state);
@@ -250,8 +250,8 @@ fn the_offered_stretch_stops_at_the_next_shot() {
         state.ripple_enabled = false;
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/stretch-clamp.mov".into(), None);
         item.duration = t(10.0);
-        let media = state.media_pool.add(item);
-        let seq = &mut state.sequences[0];
+        let media = state.document.media_pool.add(item);
+        let seq = &mut state.document.sequences[0];
         let v1 = seq.tracks.iter().position(|t| t.name == "Video 1").unwrap();
         // 1-4 s, a gap clip 4-6 s, the clip at 6-9 s showing 1-4 s of a
         // 10 s file (1 s before it, 6 after), a gap clip 9-11 s, 11-13 s.
@@ -277,7 +277,7 @@ fn the_offered_stretch_stops_at_the_next_shot() {
         let want = if at_end { 11.0 } else { 4.0 };
         assert!((to.to_secs_f64() - want).abs() < 1e-6, "at_end {at_end}: held at the next shot's edge {want}: {}", to.to_secs_f64());
         let edge = if at_end { klipp_document::ops::Edge::Out } else { klipp_document::ops::Edge::In };
-        let planned = klipp_document::ops::stretch_at(tl.state.sequence(), &tl.state.media_pool, &[id], edge, klipp_document::ops::StretchTo::EdgeAt(to.to_secs_f64()), false, true);
+        let planned = klipp_document::ops::stretch_at(tl.state.sequence(), &tl.state.document.media_pool, &[id], edge, klipp_document::ops::StretchTo::EdgeAt(to.to_secs_f64()), false, true);
         assert!(planned.is_ok(), "at_end {at_end}: {:?}", planned.err().map(|r| r.why));
     }
 }
@@ -292,8 +292,8 @@ fn the_toasts_stretch_instead_plans_from_a_start_edge() {
         state.ripple_enabled = ripple;
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/stretch-head.mov".into(), None);
         item.duration = t(10.0);
-        let media = state.media_pool.add(item);
-        let seq = &mut state.sequences[0];
+        let media = state.document.media_pool.add(item);
+        let seq = &mut state.document.sequences[0];
         let v1 = seq.tracks.iter().position(|t| t.name == "Video 1").unwrap();
         let before = Clip::media(media, t(1.0), t(4.0), t(1.0), t(4.0));
         let clip = Clip::media(media, t(6.0), t(9.0), t(1.0), t(4.0));
@@ -311,7 +311,7 @@ fn the_toasts_stretch_instead_plans_from_a_start_edge() {
         };
         assert!(!at_end && clip_id == id);
         assert!((to.to_secs_f64() - 4.0).abs() < 1e-6, "ripple {ripple}: to the previous clip's end: {}", to.to_secs_f64());
-        let planned = klipp_document::ops::stretch_at(tl.state.sequence(), &tl.state.media_pool, &[id], klipp_document::ops::Edge::In, klipp_document::ops::StretchTo::EdgeAt(to.to_secs_f64()), false, true);
+        let planned = klipp_document::ops::stretch_at(tl.state.sequence(), &tl.state.document.media_pool, &[id], klipp_document::ops::Edge::In, klipp_document::ops::StretchTo::EdgeAt(to.to_secs_f64()), false, true);
         assert!(planned.is_ok(), "ripple {ripple}: {:?}; sent {:?}", planned.err().map(|r| r.why), tl.sent);
     }
 }

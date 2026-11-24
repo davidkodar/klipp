@@ -12,14 +12,14 @@ impl KlippApp {
                 true
             }
             AppCommand::AnalyzeDeflicker { clip_id } => {
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let found = seq
                     .tracks
                     .iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == *clip_id)
                     .and_then(|c| {
-                        let item = self.state.media_pool.get(&c.media_id()?)?;
+                        let item = self.state.document.media_pool.get(&c.media_id()?)?;
                         let fps = item.fps.as_f64();
                         let frames = klipp_analysis::assets::frames_of(item.duration.to_secs_f64(), fps);
                         let key = klipp_analysis::assets::asset_key(klipp_analysis::assets::AssetKind::Deflicker, item);
@@ -63,12 +63,12 @@ impl KlippApp {
             }
             AppCommand::AnalyzeStabilization { clip_id } => {
                 // Find clip -> get media_id -> get media path, fps, duration
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let clip_info = seq.tracks.iter().flat_map(|t| t.clips.iter())
                     .find(|c| c.id == *clip_id)
                     .and_then(|c| {
                         let mid = c.media_id()?;
-                        let item = self.state.media_pool.get(&mid)?;
+                        let item = self.state.document.media_pool.get(&mid)?;
                         let fps = item.fps.as_f64();
                         let dur_secs = item.duration.to_secs_f64();
                         let frame_count = klipp_analysis::assets::frames_of(dur_secs, fps);
@@ -122,12 +122,12 @@ impl KlippApp {
                 // Pipelined decode + histogram analysis — same shape as
                 // AnalyzeStabilization, but calling scene_detect::detect_scenes
                 // on the consumer side and emitting cut times.
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let clip_info = seq.tracks.iter().flat_map(|t| t.clips.iter())
                     .find(|c| c.id == *clip_id)
                     .and_then(|c| {
                         let mid = c.media_id()?;
-                        let item = self.state.media_pool.get(&mid)?;
+                        let item = self.state.document.media_pool.get(&mid)?;
                         let fps = item.fps.as_f64();
                         let dur_secs = item.duration.to_secs_f64();
                         let frame_count = (dur_secs * fps).round() as usize;
@@ -254,7 +254,7 @@ impl KlippApp {
             AppCommand::JoinThroughEdit { clip_id, next } => {
                 let side = if *next { klipp_document::ops::JoinSide::Next } else { klipp_document::ops::JoinSide::Previous };
                 let op = klipp_document::ops::Op::Join { clip_id: klipp_document::ops::ClipRef::Id(*clip_id), side };
-                match klipp_document::ops::resolve(self.state.sequence(), &self.state.media_pool, std::slice::from_ref(&op)) {
+                match klipp_document::ops::resolve(self.state.sequence(), &self.state.document.media_pool, std::slice::from_ref(&op)) {
                     Ok(plan) => {
                         let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
                         self.apply_edits_as_one(&edits, "Join Through Edit");
@@ -270,18 +270,18 @@ impl KlippApp {
                 let cid = *clip_id;
                 let active = self.state.active_sequence_idx;
                 // Find the track index holding the clip.
-                let track_idx = match self.state.sequences[active].tracks.iter()
+                let track_idx = match self.state.document.sequences[active].tracks.iter()
                     .position(|t| t.find_clip(cid).is_some())
                 {
                     Some(i) => i,
                     None => { return true; }
                 };
-                if self.state.sequences[active].tracks[track_idx].locked { return true; }
+                if self.state.document.sequences[active].tracks[track_idx].locked { return true; }
                 // Snapshot the original clip + its source fps so we can
                 // convert marker times (clip-relative seconds) into timeline
                 // RationalTimes at the correct rate.
                 let (original, position, marker_times_secs, source_in_secs, fps) = {
-                    let track = &self.state.sequences[active].tracks[track_idx];
+                    let track = &self.state.document.sequences[active].tracks[track_idx];
                     let clip = match track.find_clip(cid) {
                         Some(c) => c.clone(),
                         None => { return true; }
@@ -328,8 +328,8 @@ impl KlippApp {
                 let mut new_clips: Vec<klipp_timeline::Clip> = Vec::new();
                 let mut current_id = cid;
                 {
-                    let seq_fps = self.state.sequences[active].fps;
-                    let track = &mut self.state.sequences[active].tracks[track_idx];
+                    let seq_fps = self.state.document.sequences[active].fps;
+                    let track = &mut self.state.document.sequences[active].tracks[track_idx];
                     for cut in &cuts {
                         match track.blade_at(current_id, *cut, seq_fps) {
                             Some((clip_a, clip_b)) => {
@@ -363,7 +363,7 @@ impl KlippApp {
 
                 if new_clips.len() < 2 {
                     // Nothing meaningfully changed — rollback by restoring original.
-                    let track = &mut self.state.sequences[active].tracks[track_idx];
+                    let track = &mut self.state.document.sequences[active].tracks[track_idx];
                     track.clips.retain(|c| c.id != current_id);
                     track.clips.insert(position.min(track.clips.len()), original.clone());
                     track.sort_clips();
@@ -402,11 +402,11 @@ impl KlippApp {
                     return true;
                 }
                 let at = at_secs.unwrap_or(self.state.playhead_smooth_secs);
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let frame = [seq.resolution.width, seq.resolution.height];
                 let fps = seq.fps.as_f64();
                 let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return true };
-                let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)) else {
+                let Some(item) = clip.media_id().and_then(|m| self.state.document.media_pool.get(&m)) else {
                     self.state.toast.show("Only a clip from a file can be tracked");
                     return true;
                 };
@@ -485,7 +485,7 @@ impl KlippApp {
                 true
             }
             AppCommand::RemoveSurface { clip_id, surface } => {
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let Some(old) = seq.all_clips().find(|c| c.id == *clip_id).cloned() else { return true };
                 let mut new = old.clone();
                 new.surfaces.retain(|s| s.id != *surface);
@@ -507,14 +507,14 @@ impl KlippApp {
                 // Each way out said: a press that went nowhere left no trace.
                 tracing::info!("track window: clip {clip_id:?}, node {node_id}, mask {mask_index}, perspective {perspective}");
                 let playhead_secs = self.state.playhead_smooth_secs;
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let aspect = seq.resolution.height as f32 / seq.resolution.width.max(1) as f32;
                 let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else {
                     tracing::warn!("track window: clip {clip_id:?} isn't on the open sequence");
                     self.state.toast.show("The window's clip isn't on this sequence: open its sequence to track it");
                     return true;
                 };
-                let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)) else {
+                let Some(item) = clip.media_id().and_then(|m| self.state.document.media_pool.get(&m)) else {
                     tracing::warn!("track window: clip {clip_id:?} has no media file");
                     self.state.toast.show("Only a clip from a file can be tracked");
                     return true;
@@ -539,7 +539,7 @@ impl KlippApp {
                 };
                 let quad = window_quad(&shape, aspect);
                 let pivot = shape.pivot();
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else { return true };
                 let index = clip.track_points.len();
                 clip.track_points.push(klipp_core::TrackPoint {
@@ -565,7 +565,7 @@ impl KlippApp {
                 true
             }
             AppCommand::RemoveTrackPoint { clip_id, index } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
                     if *index < clip.track_points.len() {
                         clip.track_points.remove(*index);
@@ -590,12 +590,12 @@ impl KlippApp {
                 let clip_id = *clip_id;
                 let point_index = *point_index;
                 // Get clip info for tracking
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let clip_info = seq.tracks.iter().flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id)
                     .and_then(|c| {
                         let mid = c.media_id()?;
-                        let item = self.state.media_pool.get(&mid)?;
+                        let item = self.state.document.media_pool.get(&mid)?;
                         let fps = item.fps.as_f64();
                         let dur_secs = item.duration.to_secs_f64();
                         let frame_count = (dur_secs * fps).round() as usize;
@@ -711,7 +711,7 @@ impl KlippApp {
                 // The position lanes a transform target lays down.
                 let mut position_lanes: Option<Vec<(&str, Vec<klipp_core::Keyframe>)>> = None;
 
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
                     if let Some(tp) = clip.track_points.get(point_index) {
                         let positions = tp.positions.clone();
@@ -732,7 +732,7 @@ impl KlippApp {
                                 // A window track in perspective (#238): the
                                 // corners' course on the window, one undo
                                 // step.
-                                let track = window_perspective_track(clip, tp, &self.state.media_pool, fps);
+                                let track = window_perspective_track(clip, tp, &self.state.document.media_pool, fps);
                                 let count = track.as_ref().map_or(0, |t| t.keys.len());
                                 // In the grade, or beside the picture chain.
                                 let edit = super::colour::edit_clip_masks(clip, node_id, "Track Window", |ms| {
@@ -750,7 +750,7 @@ impl KlippApp {
                                 // A window track (#238): the window's move,
                                 // size and turn, as keyframes on its own
                                 // clock, one undo step.
-                                let keys = window_track_keys(clip, tp, &self.state.media_pool, fps);
+                                let keys = window_track_keys(clip, tp, &self.state.document.media_pool, fps);
                                 let count = keys.len();
                                 // In the grade, or beside the picture chain.
                                 let edit = super::colour::edit_clip_masks(clip, node_id, "Track Window", |ms| {
@@ -846,7 +846,7 @@ impl KlippApp {
                 AssetKind::RollingShutter => {
                     // No progress of its own to show: the asset is all, and
                     // the next look finds it.
-                    let Some(item) = self.state.sequences.get(self.state.active_sequence_idx).and_then(|s| s.all_clips().find(|c| c.id == clip_id)).and_then(|c| c.media_id()).and_then(|m| self.state.media_pool.get(&m)) else { continue };
+                    let Some(item) = self.state.document.sequences.get(self.state.active_sequence_idx).and_then(|s| s.all_clips().find(|c| c.id == clip_id)).and_then(|c| c.media_id()).and_then(|m| self.state.document.media_pool.get(&m)) else { continue };
                     let (path, fps) = (item.path.clone(), item.fps.as_f64());
                     let frames = assets::frames_of(item.duration.to_secs_f64(), fps);
                     let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -873,7 +873,7 @@ impl KlippApp {
 pub(super) fn analysis_uses(state: &mut crate::state::AppState) -> Vec<crate::state::AnalysisUse> {
     use klipp_analysis::assets::{self, AssetKind};
     let mut uses: Vec<crate::state::AnalysisUse> = Vec::new();
-    let Some(seq) = state.sequences.get(state.active_sequence_idx) else { return uses };
+    let Some(seq) = state.document.sequences.get(state.active_sequence_idx) else { return uses };
     for clip in seq.tracks.iter().flat_map(|t| t.clips.iter()) {
         let effects = match clip.picture_effects() {
             Ok(effects) => effects,
@@ -884,7 +884,7 @@ pub(super) fn analysis_uses(state: &mut crate::state::AppState) -> Vec<crate::st
         };
         for effect in effects.iter().filter(|e| e.enabled) {
             let Some(kind) = klipp_compose::render::asset_kind(&effect.effect) else { continue };
-            let Some(item) = clip.media_id().and_then(|m| state.media_pool.get(&m)) else { continue };
+            let Some(item) = clip.media_id().and_then(|m| state.document.media_pool.get(&m)) else { continue };
             // No key without the original: the inspector says so.
             let Some(key) = assets::asset_key(kind, item) else {
                 state.analysis_unavailable.insert((clip.id, kind));
@@ -937,7 +937,7 @@ mod analysis_tests {
         item.fps = klipp_core::Fps::new(24, 1);
         item.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
         let mut state = AppState::default();
-        state.media_pool.add(item);
+        state.document.media_pool.add(item);
         (dir, state)
     }
 
@@ -979,7 +979,7 @@ mod analysis_tests {
         use klipp_graph_format::path::{NodePath, Root};
         use klipp_graph_lift::ops::GraphOp;
         let (_dir, mut state) = with_media();
-        let media = state.media_pool.all().next().unwrap().id;
+        let media = state.document.media_pool.all().next().unwrap().id;
         let tc = |f| RationalTime::from_frames(f, 24);
         let mut clip = Clip::media(media, tc(0), tc(24), tc(0), tc(24));
         clip.apply_effect_edits(&[EffectEdit::Add(&klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 })]).expect("through the picture").unwrap();
@@ -987,7 +987,7 @@ mod analysis_tests {
         let seq = state.sequence_mut();
         let v = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         seq.tracks[v].clips = vec![clip];
-        let shared = klipp_timeline::SharedSequence::new(state.sequences[state.active_sequence_idx].clone());
+        let shared = klipp_timeline::SharedSequence::new(state.document.sequences[state.active_sequence_idx].clone());
         let queue = crossbeam_queue::ArrayQueue::new(8);
         let t = Instant::now();
         assert_eq!(state.analysis_due(shared.revision(), t), AnalysisDue::Now, "the look before the add");
@@ -996,15 +996,15 @@ mod analysis_tests {
         // holding the registry's sample Deflicker, after the blur.
         let deflicker = (klipp_effects::registry::effect_type("deflicker").expect("deflicker").sample)();
         // The type an effect node of the picture has, the blur's.
-        let type_id = state.sequences[state.active_sequence_idx].all_clips().next().unwrap().picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.id == blur).unwrap().type_id.clone();
+        let type_id = state.document.sequences[state.active_sequence_idx].all_clips().next().unwrap().picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.id == blur).unwrap().type_id.clone();
         let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({
             "id": uuid::Uuid::new_v4(), "type_id": type_id, "label": "",
             "legacy": { "payload": serde_json::to_value(&deflicker).unwrap() },
         }))
         .unwrap();
         let op = GraphOp::AddNode { after: NodePath::new(Root::Clip { clip: clip_id.0 }, [blur]), node: Box::new(node) };
-        let outcome = crate::app::graph_ops::graph_ops_edit(&state.sequences[state.active_sequence_idx], &[op]).expect("the batch");
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        let outcome = crate::app::graph_ops::graph_ops_edit(&state.document.sequences[state.active_sequence_idx], &[op]).expect("the batch");
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
         let _ = view.apply_forward(&outcome.edit);
         crate::app::engine_sync::sync_sequence(&state, &shared, &queue);
         // 0.18 s after the last look: a frame asked for when the gap is
@@ -1048,7 +1048,7 @@ mod analysis_tests {
     #[test]
     fn the_analyses_used_are_the_pictures() {
         let (_dir, mut state) = with_media();
-        let media = state.media_pool.all().next().unwrap().id;
+        let media = state.document.media_pool.all().next().unwrap().id;
         let tc = |f| RationalTime::from_frames(f, 24);
         let deflicker = (klipp_effects::registry::effect_type("deflicker").expect("deflicker").sample)();
         let mut on = Clip::media(media, tc(0), tc(24), tc(0), tc(24));
@@ -1073,7 +1073,7 @@ pub(super) fn add_track_point(state: &mut AppState, clip_id: klipp_core::ClipId,
     let fps = state.fps.as_f64();
     let playhead_secs = state.playhead_smooth_secs;
     let search_radius = state.track_search_radius;
-    let seq = &mut state.sequences[state.active_sequence_idx];
+    let seq = &mut state.document.sequences[state.active_sequence_idx];
     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
         let clip_in_secs = clip.timeline_in.to_secs_f64();
         let source_in_secs = clip.source_in.to_secs_f64();
@@ -1106,7 +1106,7 @@ mod track_point_radius_tests {
             let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
             let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
             let id = clip.id;
-            state.sequences[0].tracks[0].clips.push(clip);
+            state.document.sequences[0].tracks[0].clips.push(clip);
             state.track_search_radius = radius;
             add_track_point(&mut state, id, 0.25, 0.75);
             let points = &state.sequence().all_clips().find(|c| c.id == id).unwrap().track_points;

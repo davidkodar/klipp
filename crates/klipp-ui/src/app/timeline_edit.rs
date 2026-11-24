@@ -8,7 +8,7 @@ impl crate::state::AppState {
     /// named `label` (#3165), or folded into an open batch: a fader drag's
     /// steps are one. A change that changes nothing is no step.
     pub fn set_track_mix(&mut self, tracks: impl IntoIterator<Item = usize>, label: &str, change: impl Fn(usize, &mut klipp_timeline::Track)) {
-        let seq = &mut self.sequences[self.active_sequence_idx];
+        let seq = &mut self.document.sequences[self.active_sequence_idx];
         let mut changes = Vec::new();
         for i in tracks {
             let Some(t) = seq.tracks.get_mut(i) else { continue };
@@ -29,7 +29,7 @@ impl crate::state::AppState {
     /// when it changed. Mark → Set In Point and the timeline's range items
     /// used to set it with no step, while the I and O keys made one.
     pub fn mark_range(&mut self, in_point: Option<Option<Timecode>>, out_point: Option<Option<Timecode>>) {
-        let seq = &mut self.sequences[self.active_sequence_idx];
+        let seq = &mut self.document.sequences[self.active_sequence_idx];
         let (old_in, old_out) = (seq.in_point, seq.out_point);
         let (new_in, new_out) = (in_point.unwrap_or(old_in), out_point.unwrap_or(old_out));
         if (new_in, new_out) == (old_in, old_out) {
@@ -53,7 +53,7 @@ impl KlippApp {
         match cmd {
                 // Phase 4: Track properties
                 AppCommand::SetTrackOpacity { track_index, opacity } => {
-                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
+                    if let Some(track) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                         track.opacity = opacity.clamp(0.0, 1.0);
                         tracing::debug!("SetTrackOpacity: track[{}]={} name={}", track_index, track.opacity, track.name);
                     }
@@ -63,7 +63,7 @@ impl KlippApp {
                 // The picture changes, so the engine is given it and draws
                 // again: the eye left the viewer showing the track as it was.
                 AppCommand::SetTrackVisibility { track_index, visible } => {
-                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
+                    if let Some(track) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                         track.visible = *visible;
                         self.state.dirty = true;
                         *needs_refresh = true;
@@ -85,7 +85,7 @@ impl KlippApp {
                 AppCommand::SetTrackSolo { track_index, solo } => {
                     // One track soloed at a time; unsoloed, none is. The others'
                     // solo turned off goes in the same undo step.
-                    let count = self.state.sequences[self.state.active_sequence_idx].tracks.len();
+                    let count = self.state.document.sequences[self.state.active_sequence_idx].tracks.len();
                     let solo_idx = *track_index;
                     self.state.set_track_mix(0..count, if *solo { "Solo Track" } else { "Unsolo Track" }, |i, t| t.solo = *solo && i == solo_idx);
                     let _ = self.cmd_tx.send(cmd.clone());
@@ -137,7 +137,7 @@ impl KlippApp {
                 // Open compound clip: drill into nested sequence
                 AppCommand::OpenCompoundClip { clip_id } => {
                     let cid = *clip_id;
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     let nested_id = seq.all_clips()
                         .find(|c| c.id == cid)
                         .and_then(|c| match &c.kind {
@@ -145,16 +145,16 @@ impl KlippApp {
                             _ => None,
                         });
                     if let Some(sid) = nested_id {
-                        if let Some(target_idx) = self.state.sequences.iter().position(|s| s.id == sid) {
+                        if let Some(target_idx) = self.state.document.sequences.iter().position(|s| s.id == sid) {
                             // Defensive: a compound clip already in the
                             // project should never form a cycle (the
                             // CreateCompoundClip guard rejects creation that
                             // would do so). Trip a debug_assert if data
                             // integrity has been violated.
                             let parent_seq_id =
-                                self.state.sequences[self.state.active_sequence_idx].id;
+                                self.state.document.sequences[self.state.active_sequence_idx].id;
                             debug_assert!(
-                                !would_create_cycle(sid, parent_seq_id, &self.state.sequences),
+                                !would_create_cycle(sid, parent_seq_id, &self.state.document.sequences),
                                 "Existing compound clip is already a cycle — data integrity issue"
                             );
                             // Push current position to breadcrumb stack
@@ -164,12 +164,12 @@ impl KlippApp {
                             ));
                             // Switch to nested sequence
                             self.state.active_sequence_idx = target_idx;
-                            self.state.fps = self.state.sequences[target_idx].fps;
+                            self.state.fps = self.state.document.sequences[target_idx].fps;
                             // From its start: the parent's scroll left it
                             // looking empty, scrolled past its end (#910).
                             self.state.timeline_scroll_x = 0.0;
                             self.state.playhead = klipp_core::RationalTime::from_secs_f64(
-                                0.0, self.state.sequences[target_idx].fps.rate());
+                                0.0, self.state.document.sequences[target_idx].fps.rate());
                             self.state.selected_clip = None;
                             self.state.selected_clips.clear();
                             self.sync_sequence_to_engine();
@@ -180,9 +180,9 @@ impl KlippApp {
                 // Close compound clip: navigate back to parent sequence
                 AppCommand::CloseCompoundClip => {
                     if let Some((parent_idx, parent_playhead)) = self.state.compound_clip_stack.pop() {
-                        if parent_idx < self.state.sequences.len() {
+                        if parent_idx < self.state.document.sequences.len() {
                             self.state.active_sequence_idx = parent_idx;
-                            self.state.fps = self.state.sequences[parent_idx].fps;
+                            self.state.fps = self.state.document.sequences[parent_idx].fps;
                             self.state.playhead = parent_playhead;
                             // The parent's playhead in view again.
                             self.state.timeline_scroll_x = (parent_playhead.to_secs_f64() as f32 * self.state.timeline_zoom - 80.0).max(0.0);
@@ -204,7 +204,7 @@ impl KlippApp {
                 // Create multicam clip: group clips at playhead across tracks as angles
                 AppCommand::CreateMulticamClip => {
                     let ph = self.state.playhead;
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     // Collect video clips at the playhead — one per
                     // video track. `continue` on non-video tracks
                     // skips them; using `return` here previously
@@ -229,7 +229,7 @@ impl KlippApp {
                     let group_id = klipp_core::GroupId::new();
                     // One undo step: it changed the clips with no step at all.
                     let before = crate::tracks_undo::before_labelled(&self.state, "Create Multicam");
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     for (angle_idx, (ti, cid)) in angle_clips.iter().enumerate() {
                         if let Some(clip) = seq.tracks[*ti].clips.iter_mut().find(|c| c.id == *cid) {
                             clip.multicam_group = Some(group_id);
@@ -272,7 +272,7 @@ impl KlippApp {
                 // width (#911): the menu item ran Fit to Window, and the key
                 // took only the clip last clicked.
                 AppCommand::ZoomToSelection => {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     let span = seq
                         .all_clips()
                         .filter(|c| self.state.selected_clip == Some(c.id) || self.state.selected_clips.contains(&c.id))
@@ -289,7 +289,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::FitTimelineToWindow => {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     let max_secs = seq.tracks.iter()
                         .flat_map(|t| t.clips.iter())
                         .map(|c| c.timeline_out.to_secs_f64())
@@ -362,8 +362,8 @@ impl KlippApp {
                     // Capture sequence resolution before the mutable
                     // borrow of `seq` so the PiP helpers can read it
                     // without borrow conflicts.
-                    let res = self.state.sequences[self.state.active_sequence_idx].resolution;
-                    let Some(dur) = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == cid).map(|c| c.duration().to_secs_f64()) else { return true };
+                    let res = self.state.document.sequences[self.state.active_sequence_idx].resolution;
+                    let Some(dur) = self.state.document.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == cid).map(|c| c.duration().to_secs_f64()) else { return true };
                     let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
                     let lanes: Vec<(&str, Vec<klipp_core::Keyframe>)> = match preset.as_str() {
                         "ken_burns_zoom_in" => vec![("scale", vec![key(0.0, 1.0), key(dur, 1.4)])],
@@ -404,7 +404,7 @@ impl KlippApp {
                 // Next edit point: the nearest clip boundary, marker, In or Out after the playhead (#921)
                 AppCommand::NextEditPoint => {
                     let ph = self.state.playhead;
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     let points = crate::navigation::edit_points(seq);
                     if let Some(next) = crate::navigation::step_to(&points, ph, true) {
                         self.state.playhead = next;
@@ -415,7 +415,7 @@ impl KlippApp {
                 // Previous edit point: the nearest clip boundary, marker, In or Out before the playhead (#921)
                 AppCommand::PrevEditPoint => {
                     let ph = self.state.playhead;
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     let points = crate::navigation::edit_points(seq);
                     if let Some(prev) = crate::navigation::step_to(&points, ph, false) {
                         self.state.playhead = prev;
@@ -434,7 +434,7 @@ impl KlippApp {
                         end: Some(klipp_document::ops::Anchor::Secs(end.to_secs_f64())),
                         track: Some(klipp_document::ops::TrackRef::Index(*track_index)),
                     };
-                    match klipp_document::ops::resolve(self.state.sequence(), &self.state.media_pool, std::slice::from_ref(&op)) {
+                    match klipp_document::ops::resolve(self.state.sequence(), &self.state.document.media_pool, std::slice::from_ref(&op)) {
                         Ok(plan) => {
                             let made = plan.steps.iter().flat_map(|s| s.made_clips.iter().copied()).next();
                             let edits: Vec<klipp_document::history::EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
@@ -454,7 +454,7 @@ impl KlippApp {
                     // On the linked clips' tracks too, or not at all:
                     // closed on one track alone, each later pair went out
                     // of sync.
-                    match self.state.sequences[self.state.active_sequence_idx].close_gap(*track_index, *gap_start, *gap_end) {
+                    match self.state.document.sequences[self.state.active_sequence_idx].close_gap(*track_index, *gap_start, *gap_end) {
                         Ok(_) => self.state.dirty = true,
                         Err(why) => self.state.toast.show(format!("Gap not closed: {why}")),
                     }
@@ -466,7 +466,7 @@ impl KlippApp {
                     let (selected, playhead) = (self.state.selected_clip, self.state.playhead);
                     match crate::selection::range_to_clip(self.state.sequence(), selected, playhead) {
                         Some((new_in, new_out)) => {
-                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                            let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                             let (old_in, old_out) = (seq.in_point, seq.out_point);
                             seq.in_point = Some(new_in);
                             seq.out_point = Some(new_out);
@@ -484,22 +484,22 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetSequenceInPoint(tc) => {
-                    self.state.sequences[self.state.active_sequence_idx].in_point = Some(*tc);
+                    self.state.document.sequences[self.state.active_sequence_idx].in_point = Some(*tc);
                     self.sync_sequence_to_engine();
                     true
                 }
                 AppCommand::SetSequenceOutPoint(tc) => {
-                    self.state.sequences[self.state.active_sequence_idx].out_point = Some(*tc);
+                    self.state.document.sequences[self.state.active_sequence_idx].out_point = Some(*tc);
                     self.sync_sequence_to_engine();
                     true
                 }
                 AppCommand::ClearSequenceInPoint => {
-                    self.state.sequences[self.state.active_sequence_idx].in_point = None;
+                    self.state.document.sequences[self.state.active_sequence_idx].in_point = None;
                     self.sync_sequence_to_engine();
                     true
                 }
                 AppCommand::ClearSequenceOutPoint => {
-                    self.state.sequences[self.state.active_sequence_idx].out_point = None;
+                    self.state.document.sequences[self.state.active_sequence_idx].out_point = None;
                     self.sync_sequence_to_engine();
                     true
                 }
@@ -514,7 +514,7 @@ impl KlippApp {
                     // Clear stale source I/O from previous source clip
                     if let Some(old_mid) = self.state.source_media_id {
                         if old_mid != *media_id {
-                            if let Some(old_item) = self.state.media_pool.get_mut(&old_mid) {
+                            if let Some(old_item) = self.state.document.media_pool.get_mut(&old_mid) {
                                 old_item.default_source_in = None;
                                 old_item.default_source_out = None;
                             }
@@ -541,7 +541,7 @@ impl KlippApp {
                     // `source_frame_buffer`, the source viewer paints from
                     // that and the cached `source_video_texture` falls back
                     // to a placeholder role.
-                    if let Some(item) = self.state.media_pool.get(media_id) {
+                    if let Some(item) = self.state.document.media_pool.get(media_id) {
                         if !item.offline && item.path.exists()
                             && !item.video_codec.is_empty()
                         {
@@ -583,7 +583,7 @@ impl KlippApp {
                     let secs = tc.to_secs_f64();
                     // Clamp to media duration so the scrub bar can't hand
                     // us an out-of-range time on a near-rounding edge.
-                    let clamped_secs = if let Some(item) = self.state.media_pool.get(&mid) {
+                    let clamped_secs = if let Some(item) = self.state.document.media_pool.get(&mid) {
                         let dur = item.duration.to_secs_f64();
                         secs.clamp(0.0, dur.max(0.0))
                     } else {
@@ -620,7 +620,7 @@ impl KlippApp {
                 }
                 AppCommand::SetSourceInPoint(tc) => {
                     if let Some(mid) = self.state.source_media_id {
-                        if let Some(item) = self.state.media_pool.get_mut(&mid) {
+                        if let Some(item) = self.state.document.media_pool.get_mut(&mid) {
                             item.default_source_in = Some(*tc);
                         }
                     }
@@ -628,7 +628,7 @@ impl KlippApp {
                 }
                 AppCommand::SetSourceOutPoint(tc) => {
                     if let Some(mid) = self.state.source_media_id {
-                        if let Some(item) = self.state.media_pool.get_mut(&mid) {
+                        if let Some(item) = self.state.document.media_pool.get_mut(&mid) {
                             item.default_source_out = Some(*tc);
                         }
                     }
@@ -647,7 +647,7 @@ impl KlippApp {
                             return true;
                         }
                         self.suppress_fps_prompt = false;
-                        let Some(item) = self.state.media_pool.get(&mid).cloned() else {
+                        let Some(item) = self.state.document.media_pool.get(&mid).cloned() else {
                             self.state.toast.show("Source clip is no longer in the media pool");
                             return true;
                         };
@@ -671,7 +671,7 @@ impl KlippApp {
                                 klipp_timeline::TrackKind::Video
                             };
                             let seq_idx = self.state.active_sequence_idx;
-                            let has_target_track = self.state.sequences[seq_idx].tracks.iter()
+                            let has_target_track = self.state.document.sequences[seq_idx].tracks.iter()
                                 .any(|t| t.kind == target_kind);
                             if !has_target_track {
                                 self.state.toast.show(if is_audio_only {
@@ -696,12 +696,12 @@ impl KlippApp {
                             // The track the source is patched to (#915); the
                             // magnetic path only when that is the primary.
                             let Some(target) = self.source_edit_track(seq_idx, target_kind, timeline_in, timeline_in + dur) else { return true };
-                            let primary_idx = self.state.sequences[seq_idx].primary_track_index();
+                            let primary_idx = self.state.document.sequences[seq_idx].primary_track_index();
                             let use_magnetic = !is_audio_only
                                 && primary_idx.is_some_and(|idx| {
                                     idx == target
                                         && self.is_magnetic_track(idx)
-                                        && self.state.sequences[seq_idx].tracks[idx].kind == target_kind
+                                        && self.state.document.sequences[seq_idx].tracks[idx].kind == target_kind
                                 });
 
                             if use_magnetic {
@@ -719,10 +719,10 @@ impl KlippApp {
                             } else {
                                 // Its sound under it, as an insert lays one; the
                                 // edit is one undo step (tracks_undo, #919).
-                                Self::overwrite_insert_clip_on_track(&mut self.state.sequences[seq_idx].tracks[target], new_clip);
+                                Self::overwrite_insert_clip_on_track(&mut self.state.document.sequences[seq_idx].tracks[target], new_clip);
                                 if item.has_audio && !is_audio_only {
                                     let external = self.external_audio_of(mid);
-                                    let _ = attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], new_id, external);
+                                    let _ = attach_linked_audio_to_clip(&mut self.state.document.sequences[seq_idx], new_id, external);
                                 }
                             }
                             self.state.selected_clip = Some(new_id);
@@ -746,7 +746,7 @@ impl KlippApp {
                             return true;
                         }
                         self.suppress_fps_prompt = false;
-                        let Some(item) = self.state.media_pool.get(&mid).cloned() else {
+                        let Some(item) = self.state.document.media_pool.get(&mid).cloned() else {
                             self.state.toast.show("Source clip is no longer in the media pool");
                             return true;
                         };
@@ -770,7 +770,7 @@ impl KlippApp {
                                 klipp_timeline::TrackKind::Video
                             };
                             let seq_idx = self.state.active_sequence_idx;
-                            let has_target_track = self.state.sequences[seq_idx].tracks.iter()
+                            let has_target_track = self.state.document.sequences[seq_idx].tracks.iter()
                                 .any(|t| t.kind == target_kind);
                             if !has_target_track {
                                 self.state.toast.show(if is_audio_only {
@@ -792,13 +792,13 @@ impl KlippApp {
                             // The track the source is patched to (#915); the
                             // magnetic path only when that is the primary.
                             let Some(target) = self.source_edit_track(seq_idx, target_kind, timeline_in, timeline_in + dur) else { return true };
-                            let primary_idx = self.state.sequences[seq_idx].primary_track_index();
+                            let primary_idx = self.state.document.sequences[seq_idx].primary_track_index();
                             let use_magnetic = !is_audio_only
                                 && primary_idx.is_some_and(|idx| {
                                     idx == target
                                         && self.is_magnetic_track(idx)
-                                        && self.state.sequences[seq_idx].tracks[idx].kind == target_kind
-                                        && super::source_edits::insert_closes_up(&self.state.sequences[seq_idx].tracks[idx], timeline_in)
+                                        && self.state.document.sequences[seq_idx].tracks[idx].kind == target_kind
+                                        && super::source_edits::insert_closes_up(&self.state.document.sequences[seq_idx].tracks[idx], timeline_in)
                                 });
 
                             if use_magnetic {
@@ -819,7 +819,7 @@ impl KlippApp {
                                 // rippled by the clip's length, so they stay
                                 // in sync; a straddling clip is split. See
                                 // klipp_timeline::insert_edit.
-                                let Some(mut edit) = self.state.sequences[seq_idx].insert_edit(target, new_clip, timeline_in) else {
+                                let Some(mut edit) = self.state.document.sequences[seq_idx].insert_edit(target, new_clip, timeline_in) else {
                                     self.state.toast.show("Target track is locked");
                                     return true;
                                 };
@@ -830,12 +830,12 @@ impl KlippApp {
                                 // none. The record's clip takes the link so a
                                 // redo brings it back linked.
                                 let (audio, created_audio_track_at) = if item.has_audio && !is_audio_only {
-                                    let external = self.state.sequences[seq_idx]
+                                    let external = self.state.document.sequences[seq_idx]
                             .all_clips()
                             .find(|c| c.id == new_id)
                             .and_then(|c| c.media_id())
                             .and_then(|m| self.external_audio_of(m));
-                        match attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], new_id, external) {
+                        match attach_linked_audio_to_clip(&mut self.state.document.sequences[seq_idx], new_id, external) {
                                         Some(a) => {
                                             edit.clip.linked_clip_id = Some(a.clip.id);
                                             (Some((a.clip, a.track_index)), a.created_track_at)
@@ -861,8 +861,8 @@ impl KlippApp {
                 AppCommand::LiftEdit => {
                     // Remove content between sequence in/out, leave gap
                     let (in_pt, out_pt) = match (
-                        self.state.sequences[self.state.active_sequence_idx].in_point,
-                        self.state.sequences[self.state.active_sequence_idx].out_point,
+                        self.state.document.sequences[self.state.active_sequence_idx].in_point,
+                        self.state.document.sequences[self.state.active_sequence_idx].out_point,
                     ) {
                         (Some(i), Some(o)) => (i, o),
                         _ => {
@@ -877,14 +877,14 @@ impl KlippApp {
                     // Locked tracks are left as they are, and named (#908).
                     let mut skipped = Vec::new();
                     let mut split = Vec::new();
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if track.locked {
                             skipped.push(track.name.clone());
                             continue;
                         }
                         split.extend(Self::lift_range(track, in_pt, out_pt));
                     }
-                    Self::link_right_pieces(&mut self.state.sequences[self.state.active_sequence_idx].tracks, &split);
+                    Self::link_right_pieces(&mut self.state.document.sequences[self.state.active_sequence_idx].tracks, &split);
                     if !skipped.is_empty() {
                         self.state.toast.show(format!("Lift left locked tracks as they were: {}", skipped.join(", ")));
                     }
@@ -895,8 +895,8 @@ impl KlippApp {
                 AppCommand::ExtractEdit => {
                     // Remove content between sequence in/out, ripple left to close gap
                     let (in_pt, out_pt) = match (
-                        self.state.sequences[self.state.active_sequence_idx].in_point,
-                        self.state.sequences[self.state.active_sequence_idx].out_point,
+                        self.state.document.sequences[self.state.active_sequence_idx].in_point,
+                        self.state.document.sequences[self.state.active_sequence_idx].out_point,
                     ) {
                         (Some(i), Some(o)) => (i, o),
                         _ => {
@@ -911,7 +911,7 @@ impl KlippApp {
                     let gap = out_pt - in_pt;
                     let mut skipped = Vec::new();
                     let mut split = Vec::new();
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if track.locked {
                             skipped.push(track.name.clone());
                             continue;
@@ -925,7 +925,7 @@ impl KlippApp {
                             }
                         }
                     }
-                    Self::link_right_pieces(&mut self.state.sequences[self.state.active_sequence_idx].tracks, &split);
+                    Self::link_right_pieces(&mut self.state.document.sequences[self.state.active_sequence_idx].tracks, &split);
                     if !skipped.is_empty() {
                         self.state.toast.show(format!("Extract left locked tracks as they were: {}", skipped.join(", ")));
                     }
@@ -971,7 +971,7 @@ impl KlippApp {
                         return true;
                     }
                     let playhead = self.state.playhead;
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     let Some(track) = seq.tracks.get_mut(track_idx) else {
                         self.state.toast.show("Insert silence — track not found");
                         return true;
@@ -1005,7 +1005,7 @@ impl KlippApp {
                     // magnetic layer's own snap (8 frames at any zoom)
                     // would move it to a nearby cut (#3056).
                     let result = klipp_timeline::magnetic::MagneticEditor::insert_gap(
-                        &mut self.state.sequences[self.state.active_sequence_idx],
+                        &mut self.state.document.sequences[self.state.active_sequence_idx],
                         one_sec, playhead, None, Some(&klipp_timeline::magnetic::PLACED));
                     self.state.push_history(EditCommand::Magnetic(result.command));
                     self.state.dirty = true;
@@ -1088,7 +1088,7 @@ impl KlippApp {
     fn trim_to_playhead_dispatch(&mut self, dir: TrimToPlayheadDir) {
         let seq_idx = self.state.active_sequence_idx;
         let playhead = self.state.playhead;
-        let seq = &self.state.sequences[seq_idx];
+        let seq = &self.state.document.sequences[seq_idx];
 
         let track_idx = if let Some(sel) = self.state.selected_clip {
             seq.tracks.iter().position(|t| t.find_clip(sel).is_some())
@@ -1289,7 +1289,7 @@ impl KlippApp {
 
     fn create_subclip_from_zone(&mut self, source_media_id: klipp_core::MediaId, name: Option<String>) {
         // Clone the parent so we can release the immutable borrow before mutating.
-        let parent = match self.state.media_pool.get(&source_media_id).cloned() {
+        let parent = match self.state.document.media_pool.get(&source_media_id).cloned() {
             Some(p) => p,
             None => return,
         };
@@ -1326,11 +1326,11 @@ impl KlippApp {
     /// undo step: the Source viewer's In to Out, or a timeline clip's
     /// source range (#925).
     pub(super) fn make_subclip(&mut self, source_media_id: klipp_core::MediaId, zone_in: Timecode, zone_out: Timecode, name: Option<String>) {
-        let Some(parent) = self.state.media_pool.get(&source_media_id).cloned() else { return };
+        let Some(parent) = self.state.document.media_pool.get(&source_media_id).cloned() else { return };
         // Auto-name: count existing subclips of this parent, suffix N+1.
         let n = self
             .state
-            .media_pool
+            .document.media_pool
             .all()
             .filter(|i| i.parent_media_id == Some(source_media_id))
             .count()
@@ -1357,7 +1357,7 @@ impl KlippApp {
         subclip.waveform_data = None;
         subclip.audio_cache = None;
 
-        self.state.media_pool.add(subclip.clone());
+        self.state.document.media_pool.add(subclip.clone());
         self.state.push_history(crate::history::EditCommand::CreateSubclip {
                 subclip,
                 parent_id: source_media_id,
@@ -1407,12 +1407,12 @@ impl KlippApp {
 
         // 4. Pick target track + playhead snapped to sequence fps.
         let seq_idx = self.state.active_sequence_idx;
-        let fps_rate = self.state.sequences[seq_idx].fps.rate();
+        let fps_rate = self.state.document.sequences[seq_idx].fps.rate();
         let ph = self.state.playhead.rescale_to(fps_rate);
         let duration_frames = (duration_secs * fps_rate as f64).round() as i64;
         let duration = klipp_core::RationalTime::from_frames(duration_frames.max(1), fps_rate);
         let track_idx = {
-            let seq = &mut self.state.sequences[seq_idx];
+            let seq = &mut self.state.document.sequences[seq_idx];
             match seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video) {
                 Some(i) => i,
                 None => {
@@ -1433,13 +1433,13 @@ impl KlippApp {
         // 5. Blade any clip under the playhead on that track so the freeze
         //    inserts cleanly between halves; the blade's edit joins the
         //    step.
-        let clip_under_ph = self.state.sequences[seq_idx].tracks[track_idx]
+        let clip_under_ph = self.state.document.sequences[seq_idx].tracks[track_idx]
             .clip_at_timecode(ph)
             .map(|(_, c)| c.id);
         if let Some(cid) = clip_under_ph {
             // Only blade when the cut is interior — skip if the playhead sits
             // exactly on the clip's in or out edge (blade_at rejects edge cuts).
-            let clip = self.state.sequences[seq_idx].tracks[track_idx]
+            let clip = self.state.document.sequences[seq_idx].tracks[track_idx]
                 .find_clip(cid).cloned();
             if let Some(c) = clip {
                 if c.timeline_in < ph && c.timeline_out > ph {
@@ -1448,14 +1448,14 @@ impl KlippApp {
             }
         }
 
-        let after_blade = self.state.sequences[seq_idx].tracks.clone();
+        let after_blade = self.state.document.sequences[seq_idx].tracks.clone();
 
         // 6. Ripple: shift every clip on the target track that starts at or
         //    after the playhead by +duration so the freeze has a gap to land
         //    in. Using a direct mutation rather than the magnetic editor so
         //    we don't touch other tracks.
         {
-            let seq = &mut self.state.sequences[seq_idx];
+            let seq = &mut self.state.document.sequences[seq_idx];
             for c in seq.tracks[track_idx].clips.iter_mut() {
                 if c.timeline_in >= ph {
                     c.timeline_in += duration;
@@ -1481,13 +1481,13 @@ impl KlippApp {
         };
         let clip_id = clip.id;
         {
-            let seq = &mut self.state.sequences[seq_idx];
+            let seq = &mut self.state.document.sequences[seq_idx];
             seq.tracks[track_idx].clips.push(clip);
             seq.tracks[track_idx].sort_clips();
         }
 
         // 8. The move and the still, after the cut, in the same step.
-        let new = self.state.sequences[seq_idx].tracks.clone();
+        let new = self.state.document.sequences[seq_idx].tracks.clone();
         self.state.push_history(EditCommand::SetTracks { description: "Freeze Frame", old: after_blade, new });
         if owns_batch {
             self.state.active_history_mut().end_batch_as("Freeze Frame");
@@ -1535,7 +1535,7 @@ impl KlippApp {
     /// fall inside, it is left as it is and that is said too.
     pub(super) fn split_at_scene_cuts(&mut self, clip_id: klipp_core::ClipId, cut_times: &[f64]) {
         let seq = self.state.sequence();
-        let Some((name, media_fps)) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id).and_then(|c| c.media_id()).and_then(|m| self.state.media_pool.get(&m)).map(|m| (m.filename.clone(), m.fps.as_f64())) else {
+        let Some((name, media_fps)) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id).and_then(|c| c.media_id()).and_then(|m| self.state.document.media_pool.get(&m)).map(|m| (m.filename.clone(), m.fps.as_f64())) else {
             self.state.toast.show("Scene cuts found, but the clip is gone".to_string());
             return;
         };
@@ -1544,7 +1544,7 @@ impl KlippApp {
             self.state.toast.show(format!("No scene cuts found in {name}; it is unchanged"));
             return;
         }
-        match klipp_document::ops::resolve(seq, &self.state.media_pool, &ops) {
+        match klipp_document::ops::resolve(seq, &self.state.document.media_pool, &ops) {
             Ok(plan) => {
                 let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
                 self.apply_edits_as_one(&edits, "Detect Scene Cuts");
@@ -1640,11 +1640,11 @@ pub(super) fn add_generator_clip_at(state: &mut AppState, track_index: Option<us
 /// laid over what the track has. Its id, and where the playhead parks to
 /// show it.
 pub(super) fn add_clip_above(state: &mut AppState, track_index: Option<usize>, at: Option<klipp_core::Timecode>, kind: klipp_timeline::ClipKind, new_track: &str) -> (klipp_core::ClipId, klipp_core::Timecode) {
-    let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+    let fps_rate = state.document.sequences[state.active_sequence_idx].fps.rate();
     let ph = at.unwrap_or(state.playhead).rescale_to(fps_rate);
     let duration = klipp_core::RationalTime::from_secs_f64(5.0, fps_rate);
     let timeline_out = ph + duration;
-    let seq = &mut state.sequences[state.active_sequence_idx];
+    let seq = &mut state.document.sequences[state.active_sequence_idx];
     // Free: a picture track above (before) every one with a clip there,
     // the nearest to them taken.
     let busy = |t: &klipp_timeline::Track| t.kind == klipp_timeline::TrackKind::Video && t.clips.iter().any(|c| c.timeline_in < timeline_out && ph < c.timeline_out);
@@ -1685,26 +1685,26 @@ mod track_mix_tests {
         let mut state = AppState::default();
         let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
         v1.clips = vec![klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..klipp_timeline::Clip::gap(tc(0.0), tc(10.0)) }];
-        state.sequences[state.active_sequence_idx].tracks = vec![v1];
+        state.document.sequences[state.active_sequence_idx].tracks = vec![v1];
         state.playhead = tc(2.0);
         let bars = klipp_core::GeneratorData::ColorBars;
         let (clip, _, _) = super::add_generator_clip(&mut state, None, &bars);
-        let tracks = &state.sequences[state.active_sequence_idx].tracks;
+        let tracks = &state.document.sequences[state.active_sequence_idx].tracks;
         assert_eq!(tracks.len(), 2, "a track of its own");
         assert!(tracks[0].clips.iter().any(|c| c.id == clip) && tracks[1].clips.len() == 1, "on top, the clip under it untouched");
         // That track is free from 8 s on: a later one goes there.
         state.playhead = tc(8.0);
         let (later, _, _) = super::add_generator_clip(&mut state, None, &bars);
-        let tracks = &state.sequences[state.active_sequence_idx].tracks;
+        let tracks = &state.document.sequences[state.active_sequence_idx].tracks;
         assert_eq!(tracks.len(), 2, "no new track where one is free");
         assert!(tracks[0].clips.iter().any(|c| c.id == later));
         // A free track under a clip would hide it too.
         let mut v2 = klipp_timeline::Track::new("V2", klipp_timeline::TrackKind::Video);
         v2.clips = vec![klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..klipp_timeline::Clip::gap(tc(0.0), tc(10.0)) }];
-        state.sequences[state.active_sequence_idx].tracks = vec![v2, klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video)];
+        state.document.sequences[state.active_sequence_idx].tracks = vec![v2, klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video)];
         state.playhead = tc(2.0);
         let (over, _, _) = super::add_generator_clip(&mut state, None, &bars);
-        let tracks = &state.sequences[state.active_sequence_idx].tracks;
+        let tracks = &state.document.sequences[state.active_sequence_idx].tracks;
         assert_eq!(tracks.len(), 3, "not on the free track under the clip");
         assert!(tracks[0].clips.iter().any(|c| c.id == over));
     }
@@ -1716,20 +1716,20 @@ mod track_mix_tests {
     fn a_dropped_generator_goes_where_it_was_let_go() {
         let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
         let mut state = AppState::default();
-        state.sequences[state.active_sequence_idx].tracks = vec![klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video)];
+        state.document.sequences[state.active_sequence_idx].tracks = vec![klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video)];
         state.playhead = tc(199.0);
         let bars = klipp_core::GeneratorData::ColorBars;
         let (dropped, _, _) = super::add_generator_clip_at(&mut state, Some(0), Some(tc(0.0)), &bars);
         let (at_playhead, _, _) = super::add_generator_clip_at(&mut state, None, None, &bars);
-        let start = |id| state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == id).map(|c| c.timeline_in.to_secs_f64());
+        let start = |id| state.document.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == id).map(|c| c.timeline_in.to_secs_f64());
         assert_eq!(start(dropped), Some(0.0), "where it was let go");
         assert_eq!(start(at_playhead), Some(199.0), "no place given: the playhead");
         // Let go on a clip: over it, never two clips at once on the track.
         let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
         v1.clips = vec![klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..klipp_timeline::Clip::gap(tc(0.0), tc(10.0)) }];
-        state.sequences[state.active_sequence_idx].tracks = vec![v1];
+        state.document.sequences[state.active_sequence_idx].tracks = vec![v1];
         super::add_generator_clip_at(&mut state, Some(0), Some(tc(6.0)), &bars);
-        let clips = &state.sequences[state.active_sequence_idx].tracks[0].clips;
+        let clips = &state.document.sequences[state.active_sequence_idx].tracks[0].clips;
         for pair in clips.windows(2) {
             assert!(pair[0].timeline_out <= pair[1].timeline_in, "overlap: {:?}", clips.iter().map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())).collect::<Vec<_>>());
         }
@@ -1746,10 +1746,10 @@ mod track_mix_tests {
         let mut state = AppState::default();
         let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
         v1.clips = vec![klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..klipp_timeline::Clip::gap(tc(0.0), tc(10.0)) }];
-        state.sequences[state.active_sequence_idx].tracks = vec![v1];
+        state.document.sequences[state.active_sequence_idx].tracks = vec![v1];
         state.playhead = tc(2.0);
         let (layer, _) = super::add_clip_above(&mut state, None, None, klipp_timeline::ClipKind::AdjustmentLayer, "Adjustment");
-        let tracks = &state.sequences[state.active_sequence_idx].tracks;
+        let tracks = &state.document.sequences[state.active_sequence_idx].tracks;
         assert_eq!(tracks.len(), 2, "a track of its own");
         assert!(tracks[0].clips.iter().any(|c| c.id == layer && c.timeline_in == tc(2.0)), "on top, at the playhead");
         assert_eq!(tracks[1].clips.len(), 1, "the clip under it untouched");
@@ -1757,7 +1757,7 @@ mod track_mix_tests {
     }
 
     fn view(state: &mut AppState) -> klipp_document::apply::DocumentView<'_> {
-        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }
+        klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps }
     }
 
     /// #3165: a track's volume set is one undo step that puts it back, and
@@ -1768,7 +1768,7 @@ mod track_mix_tests {
     fn a_tracks_volume_mute_and_solo_are_undo_steps() {
         let mut state = AppState::default();
         let a = state.sequence().tracks.len();
-        state.sequences[state.active_sequence_idx].tracks.push(klipp_timeline::Track::new("A2", klipp_timeline::TrackKind::Audio));
+        state.document.sequences[state.active_sequence_idx].tracks.push(klipp_timeline::Track::new("A2", klipp_timeline::TrackKind::Audio));
         let steps = |s: &mut AppState| s.active_history_mut().undo_count();
         let before = steps(&mut state);
         state.set_track_mix([0], "Track Volume", |_, t| t.volume = 0.5);
@@ -1831,7 +1831,7 @@ mod mark_range_tests {
         assert_eq!((s.sequence().in_point, s.sequence().out_point), (None, None));
         let undone = s.take_undo().expect("the clear").command;
         let active = s.active_sequence_idx;
-        klipp_document::apply::DocumentView { sequences: &mut s.sequences, active, media_pool: &mut s.media_pool, fps: &mut s.fps }.apply_inverse(&undone);
+        klipp_document::apply::DocumentView { sequences: &mut s.document.sequences, active, media_pool: &mut s.document.media_pool, fps: &mut s.fps }.apply_inverse(&undone);
         assert_eq!((s.sequence().in_point, s.sequence().out_point), (Some(t(2.0)), Some(t(6.0))), "undone in one step");
     }
 }

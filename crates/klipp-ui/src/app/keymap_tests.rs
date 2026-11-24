@@ -160,7 +160,7 @@ fn a_shared_key_runs_one_of_its_pair() {
     c.id = clip;
     seq.tracks[0].clips = vec![c];
     let seq_track = seq.tracks[0].id;
-    let mut state = crate::state::AppState { sequences: vec![seq], selected_clip: Some(clip), ..Default::default() };
+    let mut state = crate::state::AppState { document: klipp_document::Document { sequences: vec![seq], ..Default::default() }, selected_clip: Some(clip), ..Default::default() };
     state.selected_edits.push(crate::edit_point::EditPoint { track: seq_track, outgoing: Some(clip), incoming: None, side: crate::edit_point::EditSide::Both });
     let mut cmds = Vec::new();
     let before = state.selected_node_id;
@@ -402,7 +402,7 @@ fn final_cuts_e_appends_the_selection() {
     assert!(fired(&ctx, &kb, &e).iter().any(|a| a == "append_edit"), "E: {:?}", fired(&ctx, &kb, &e));
     let mut state = crate::state::AppState::default();
     let item = |n: &str| klipp_media::MediaItem::synthetic_for_test(format!("/tmp/{n}.mov").into(), None);
-    let (a, b, c) = (state.media_pool.add(item("a")), state.media_pool.add(item("b")), state.media_pool.add(item("c")));
+    let (a, b, c) = (state.document.media_pool.add(item("a")), state.document.media_pool.add(item("b")), state.document.media_pool.add(item("c")));
     assert!(state.append_targets().is_empty(), "nothing selected or loaded");
     state.source_media_id = Some(b);
     assert_eq!(state.append_targets(), [b], "the source viewer's clip");

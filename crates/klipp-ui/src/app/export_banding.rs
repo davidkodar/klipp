@@ -174,9 +174,9 @@ impl KlippApp {
         let state = &self.state;
         self.export_dialog.banding.want(key, idle, || {
             klipp_export::RenderSnapshot::from_sequence_with_all(
-                &state.sequences[state.active_sequence_idx],
-                &state.sequences,
-                &state.media_pool,
+                &state.document.sequences[state.active_sequence_idx],
+                &state.document.sequences,
+                &state.document.media_pool,
                 settings,
                 state.timeline_lut(),
                 false,
@@ -216,7 +216,7 @@ mod tests {
     fn the_viewing_lut_never_reaches_an_export() {
         let mut state = crate::state::AppState::default();
         let export_lut = |state: &crate::state::AppState| {
-            klipp_export::RenderSnapshot::from_sequence_with_all(state.sequence(), &state.sequences, &state.media_pool, &eight(), state.timeline_lut(), false, state.project_working_colorspace)
+            klipp_export::RenderSnapshot::from_sequence_with_all(state.sequence(), &state.document.sequences, &state.document.media_pool, &eight(), state.timeline_lut(), false, state.project_working_colorspace)
                 .unwrap()
                 .sequence_snapshot
                 .global_lut_path

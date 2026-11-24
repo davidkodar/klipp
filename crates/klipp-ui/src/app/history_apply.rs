@@ -71,9 +71,9 @@ impl KlippApp {
     /// borrowed field by field.
     fn document_view(&mut self) -> klipp_document::apply::DocumentView<'_> {
         klipp_document::apply::DocumentView {
-            sequences: &mut self.state.sequences,
+            sequences: &mut self.state.document.sequences,
             active: self.state.active_sequence_idx,
-            media_pool: &mut self.state.media_pool,
+            media_pool: &mut self.state.document.media_pool,
             fps: &mut self.state.fps,
         }
     }
@@ -125,7 +125,7 @@ impl KlippApp {
         }
         // Files read again for what an edit pointed them at (#2327).
         for media_id in &effects.reprobe_media {
-            if let Some(path) = self.state.media_pool.get(media_id).filter(|m| !m.offline).map(|m| m.path.clone()) {
+            if let Some(path) = self.state.document.media_pool.get(media_id).filter(|m| !m.offline).map(|m| m.path.clone()) {
                 let _ = self.cmd_tx.send(AppCommand::LoadMediaFile { path, media_id: *media_id });
             }
         }

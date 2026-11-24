@@ -211,7 +211,7 @@ impl crate::state::AppState {
     /// grade group, a sequence grade's, edited through its stand-in, at its
     /// own root.
     pub(super) fn grade_level(&self, clip_id: ClipId, descent: &[klipp_nodes::NodeId]) -> Result<NodePath, String> {
-        let seq = &self.sequences[self.active_sequence_idx];
+        let seq = &self.document.sequences[self.active_sequence_idx];
         if let Some(which) = super::timeline_grade::GradeStandIn::of(seq, clip_id) {
             return Ok(NodePath::new(which.root(seq), descent.iter().copied()));
         }
@@ -284,7 +284,7 @@ impl crate::state::AppState {
                 Some((*clip_id, super::colour::add_node_path(*node_id, &self.graph_descent_path), GradeStructure::Add { kind, id, position: *position }))
             }
             AppCommand::RemoveNode { clip_id, node_id } => {
-                let seq = &self.sequences[self.active_sequence_idx];
+                let seq = &self.document.sequences[self.active_sequence_idx];
                 let grade = seq.all_clips().find(|c| c.id == *clip_id)?.grade();
                 let descent = super::colour::graph_path_for(grade, &[*node_id], &self.graph_descent_path)?;
                 Some((*clip_id, descent, GradeStructure::Remove { node: *node_id }))
@@ -332,7 +332,7 @@ impl crate::state::AppState {
         let descent = self.graph_descent_path.clone();
         let laid = || -> Result<Vec<GraphOp>, String> {
             let level = self.grade_level(*clip_id, &descent)?;
-            let seq = &self.sequences[self.active_sequence_idx];
+            let seq = &self.document.sequences[self.active_sequence_idx];
             let grade = match level.root {
                 Root::Clip { .. } => seq.all_clips().find(|c| c.id == *clip_id).ok_or("no such clip")?.grade(),
                 root => match seq.root_grade(root)? {
@@ -379,7 +379,7 @@ impl crate::state::AppState {
     pub(super) fn canvas_structure_edit(&mut self, cmd: &AppCommand) -> Option<bool> {
         let (clip_id, descent, edit) = self.canvas_structure(cmd)?;
         let unpacked: Vec<klipp_nodes::NodeId> = match &edit {
-            GradeStructure::Ungroup { node } => self.sequences[self.active_sequence_idx]
+            GradeStructure::Ungroup { node } => self.document.sequences[self.active_sequence_idx]
                 .all_clips()
                 .find(|c| c.id == clip_id)
                 .and_then(|c| crate::inspector::grade_view::v1_level(c.grade(), &descent).and_then(|g| g.nodes.iter().find(|n| n.id == *node)).and_then(|n| n.params.compound_subgraph.clone()))
@@ -591,7 +591,7 @@ impl crate::state::AppState {
             | C::EndKeyframeDrag { clip_id, .. } => *clip_id,
             _ => return None,
         };
-        let clip = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id)?.clone();
+        let clip = self.document.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id)?.clone();
         let addr = clip.placement_path()?;
         let lane = |param: &klipp_core::VideoParam| crate::inspector::placement_by_path::lane_key(*param);
         // The whole-lane ops: one batch, so one step.
@@ -732,7 +732,7 @@ impl crate::state::AppState {
             _ => return None,
         };
         let key = crate::inspector::placement_by_path::lane_key(param)?;
-        let clip = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id)?;
+        let clip = self.document.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id)?;
         Some((clip.placement_path()?, ParamKey::from(key)))
     }
 
@@ -741,7 +741,7 @@ impl crate::state::AppState {
     /// motion preset, a tracker's positions). Each `(key, keys)` replaces
     /// that lane, its modifier stack kept.
     pub(super) fn set_lanes(&mut self, clip_id: ClipId, lanes: &[(&str, Vec<klipp_core::Keyframe>)], label: &str) -> Result<(), String> {
-        let clip = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id).ok_or("no such clip")?;
+        let clip = self.document.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id).ok_or("no such clip")?;
         let addr = clip.placement_path().ok_or("this clip has no placement to key")?;
         let ops: Vec<GraphOp> = lanes.iter().map(|(key, keys)| set_lane(clip, &addr, key, keys.clone())).collect();
         self.apply_path_ops(&ops, label)
@@ -756,7 +756,7 @@ impl crate::state::AppState {
 
     /// One op written now, inside the open drag that will record it.
     fn apply_live(&mut self, op: GraphOp) -> Result<bool, String> {
-        let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], &[op]).map_err(|(_, why)| why)?;
+        let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.document.sequences[self.active_sequence_idx], &[op]).map_err(|(_, why)| why)?;
         if let EditCommand::PictureEdit { clip_id, edit, .. } = edit {
             self.set_picture(clip_id, &edit.after);
         }
@@ -932,7 +932,7 @@ impl crate::state::AppState {
         // or a node moved in its chain by a drop on a wire (#1744).
         if let [GraphOp::SetNodeMeta { path, label: None, position: Some(_) } | GraphOp::SetAnnotations { path, .. } | GraphOp::MoveAfter { path, .. }] = ops {
             if self.active_history().is_dragging(&layout_drag(path.root)) {
-                let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
+                let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.document.sequences[self.active_sequence_idx], ops).map_err(refused)?;
                 if let EditCommand::PictureEdit { clip_id, edit, .. } = edit { self.set_picture(clip_id, &edit.after); }
                 return Ok(());
             }
@@ -951,7 +951,7 @@ impl crate::state::AppState {
         };
         if let Some((path, key)) = dragged {
             if self.active_history().pending_drag_key().is_some_and(|open| open == drag_key(path, key) || open == node_drag(path)) {
-                let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
+                let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.document.sequences[self.active_sequence_idx], ops).map_err(refused)?;
                 if let EditCommand::PictureEdit { clip_id, edit, .. } = edit {
                     self.set_picture(clip_id, &edit.after);
                 }
@@ -961,7 +961,7 @@ impl crate::state::AppState {
         if self.active_history().is_any_drag_in_progress() {
             self.close_open_drag();
         }
-        let graph_ops::GraphOpsOutcome { edit, ungated, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
+        let graph_ops::GraphOpsOutcome { edit, ungated, .. } = graph_ops::graph_ops_edit(&self.document.sequences[self.active_sequence_idx], ops).map_err(refused)?;
         if let EditCommand::PictureEdit { clip_id, edit, .. } = &edit {
             self.set_picture(*clip_id, &edit.after);
         }
@@ -984,7 +984,7 @@ impl crate::state::AppState {
         // A node placed inside an open layout gesture: the gesture's step
         // holds it (#1528).
         if matches!(ops, [GraphOp::SetNodeMeta { label: None, position: Some(_), .. }]) && self.active_history().is_dragging(&layout_drag(root)) {
-            self.sequences[self.active_sequence_idx].apply_root_grade_ops(ops, start.as_ref())?;
+            self.document.sequences[self.active_sequence_idx].apply_root_grade_ops(ops, start.as_ref())?;
             self.dirty = true;
             return Ok(());
         }
@@ -1002,7 +1002,7 @@ impl crate::state::AppState {
         if !live && self.active_history().is_any_drag_in_progress() {
             self.close_open_drag();
         }
-        let (old, new) = self.sequences[self.active_sequence_idx].apply_root_grade_ops(ops, start.as_ref())?;
+        let (old, new) = self.document.sequences[self.active_sequence_idx].apply_root_grade_ops(ops, start.as_ref())?;
         self.dirty = true;
         if live {
             return Ok(());
@@ -1015,7 +1015,7 @@ impl crate::state::AppState {
 
     /// Write `picture` to the clip, with no history entry of its own.
     pub(super) fn set_picture(&mut self, clip_id: ClipId, picture: &klipp_timeline::ClipPictureFields) {
-        let seq = &mut self.sequences[self.active_sequence_idx];
+        let seq = &mut self.document.sequences[self.active_sequence_idx];
         if let Some(clip) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) {
             clip.restore_picture(picture);
             self.dirty = true;
@@ -1027,7 +1027,7 @@ impl crate::state::AppState {
     /// clip the grade canvas edits it through) stands for its own root
     /// (#1528).
     fn layout_root(&self, root: Root) -> Root {
-        let seq = &self.sequences[self.active_sequence_idx];
+        let seq = &self.document.sequences[self.active_sequence_idx];
         match root {
             Root::Clip { clip } => super::timeline_grade::GradeStandIn::of(seq, ClipId(clip)).map_or(root, |which| which.root(seq)),
             _ => root,
@@ -1043,7 +1043,7 @@ impl crate::state::AppState {
     fn begin_node_layout_edit(&mut self, root: Root) -> Result<(), String> {
         // A sequence grade's canvas: one step over its grade (#1528).
         if is_sequence_grade(root) {
-            let before = self.sequences[self.active_sequence_idx].root_grade(root)?.cloned().map(Box::new);
+            let before = self.document.sequences[self.active_sequence_idx].root_grade(root)?.cloned().map(Box::new);
             if self.active_history().is_any_drag_in_progress() { self.close_open_drag(); }
             self.active_history_mut().begin_drag(layout_drag(root), HistoryEntry {
                 command: EditCommand::SetRootGrade { description: "Move Nodes", root, old: before.clone(), new: before },
@@ -1083,7 +1083,7 @@ impl crate::state::AppState {
         if let Some(EditCommand::SetRootGrade { root, old, .. }) = self.active_history().pending_old_entry_ref().map(|e| e.command.clone()) {
             self.active_history_mut().abandon_pending_drag();
             self.dirty = true;
-            return self.sequences[self.active_sequence_idx].set_root_grade(root, old.map(|g| *g)).is_ok();
+            return self.document.sequences[self.active_sequence_idx].set_root_grade(root, old.map(|g| *g)).is_ok();
         }
         let before = match self.active_history().pending_old_entry_ref().map(|e| &e.command) {
             Some(EditCommand::PictureEdit { clip_id, edit, .. }) => Some((*clip_id, edit.before.clone())),
@@ -1104,7 +1104,7 @@ impl crate::state::AppState {
             self.node_at(addr)?;
         }
         if is_sequence_grade(addr.root) {
-            let before = self.sequences[self.active_sequence_idx].root_grade(addr.root)?.cloned().map(Box::new);
+            let before = self.document.sequences[self.active_sequence_idx].root_grade(addr.root)?.cloned().map(Box::new);
             self.active_history_mut().begin_drag(
                 drag_key(addr, key),
                 HistoryEntry { command: EditCommand::SetRootGrade { description: "Edit Parameter", root: addr.root, old: before.clone(), new: before } },
@@ -1146,7 +1146,7 @@ impl crate::state::AppState {
         }
         if let Some(EditCommand::SetRootGrade { root, old, .. }) = self.active_history().pending_old_entry_ref().map(|e| e.command.clone()) {
             self.active_history_mut().abandon_pending_drag();
-            let _ = self.sequences[self.active_sequence_idx].set_root_grade(root, old.map(|g| *g));
+            let _ = self.document.sequences[self.active_sequence_idx].set_root_grade(root, old.map(|g| *g));
             self.dirty = true;
             return true;
         }
@@ -1221,7 +1221,7 @@ impl crate::state::AppState {
     /// keys to scale by when pasted; 0 for a graph that isn't a clip's.
     fn clip_secs_at(&self, addr: &NodePath) -> f64 {
         addr.root_clip()
-            .and_then(|id| self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id.0 == id))
+            .and_then(|id| self.document.sequences[self.active_sequence_idx].all_clips().find(|c| c.id.0 == id))
             .map_or(0.0, |c| c.duration().to_secs_f64())
     }
 
@@ -1240,7 +1240,7 @@ impl crate::state::AppState {
     /// The clip a root's grade commands name: the clip, or the stand-in a
     /// sequence's own grade is edited through (`GradeStandIn`).
     fn editing_clip(&self, root: Root) -> Option<ClipId> {
-        let seq = &self.sequences[self.active_sequence_idx];
+        let seq = &self.document.sequences[self.active_sequence_idx];
         match root {
             Root::Clip { clip } => Some(ClipId(clip)),
             Root::TimelineGrade { sequence } if sequence == seq.id.0 => Some(seq.timeline_grade_clip_id()),
@@ -1254,7 +1254,7 @@ impl crate::state::AppState {
     /// it: the one stored, or while it has none, the graph its stand-in
     /// was put on with (`root_grade_start`).
     fn root_grade_doc(&self, root: Root) -> Result<klipp_graph_format::Graph, String> {
-        let seq = &self.sequences[self.active_sequence_idx];
+        let seq = &self.document.sequences[self.active_sequence_idx];
         let start = self.root_grade_start.as_ref().filter(|(r, _)| *r == root).map(|(_, g)| g);
         let grade = seq.root_grade(root)?.or(start).ok_or("this grade doesn't exist yet")?;
         seq.lift_root_grade(root, grade)
@@ -1318,7 +1318,7 @@ impl crate::state::AppState {
             return walk(&self.root_grade_doc(path.root)?.nodes, &path.nodes).cloned().ok_or_else(|| format!("{:?} names no node of the grade", path.nodes));
         }
         let Root::Clip { clip } = path.root else { return Err("only a clip's graph is shown by path so far".into()) };
-        let c = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id.0 == clip).ok_or_else(|| format!("no clip {clip} on this sequence"))?;
+        let c = self.document.sequences[self.active_sequence_idx].all_clips().find(|c| c.id.0 == clip).ok_or_else(|| format!("no clip {clip} on this sequence"))?;
         let lifted = c.picture_v2().map_err(|e| e.to_string())?;
         // The placement by its stable address (M3 step 13).
         if path.nodes == [klipp_graph_lift::clip_properties::placement_id(clip)] {
@@ -1354,7 +1354,7 @@ impl crate::state::AppState {
 
     fn set_graph_dock_root(&mut self, root: Root) -> Result<(), String> {
         let Root::Clip { clip } = root else { return Err("only a clip's graph is shown by path so far".into()) };
-        if !self.sequences[self.active_sequence_idx].all_clips().any(|c| c.id.0 == clip) {
+        if !self.document.sequences[self.active_sequence_idx].all_clips().any(|c| c.id.0 == clip) {
             return Err(format!("no clip {clip} on this sequence"));
         }
         self.selected_clip = Some(ClipId(clip));
@@ -1417,8 +1417,8 @@ mod tests {
     /// A fresh state holding `clips` on its first video track.
     fn with(clips: &[klipp_timeline::Clip]) -> AppState {
         let mut state = AppState::default();
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        state.sequences[0].tracks[v1].clips.extend(clips.iter().cloned());
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.document.sequences[0].tracks[v1].clips.extend(clips.iter().cloned());
         state
     }
 
@@ -1429,7 +1429,7 @@ mod tests {
     }
 
     fn clip(state: &AppState, id: ClipId) -> &klipp_timeline::Clip {
-        state.sequences[0].all_clips().find(|c| c.id == id).unwrap()
+        state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap()
     }
 
     /// The whole picture, as typed: the graph and the versions.
@@ -1450,7 +1450,7 @@ mod tests {
     /// (`effect_edit_by_ops`): the clip's own ops for the edit, one picture
     /// edit on the history.
     fn old(state: &mut AppState, id: ClipId, edit: EffectEdit) {
-        let seq = &mut state.sequences[0];
+        let seq = &mut state.document.sequences[0];
         let c = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
         let ops = c.effect_edit_ops(edit).expect("a plain effect edit");
         let done = c.apply_picture_ops(&ops).unwrap();
@@ -1618,7 +1618,7 @@ mod tests {
         assert_eq!(list(&s), serde_json::to_value([E::GaussianBlur { radius: 7.0 }, E::Sharpen { amount: 0.9 }, invert.clone()]).unwrap(), "all three applied");
         assert_eq!(s.active_history().undo_count(), steps + 1, "one step");
         let entry = s.active_history_mut().undo().expect("the batch's step");
-        let mut doc = klipp_document::apply::DocumentView { sequences: &mut s.sequences, active: s.active_sequence_idx, media_pool: &mut s.media_pool, fps: &mut s.fps };
+        let mut doc = klipp_document::apply::DocumentView { sequences: &mut s.document.sequences, active: s.active_sequence_idx, media_pool: &mut s.document.media_pool, fps: &mut s.fps };
         doc.apply_inverse(&entry.command);
         assert_eq!(picture(&s, id), before, "undone, all three, exactly");
     }
@@ -1908,10 +1908,10 @@ mod tests {
     #[test]
     fn the_grade_group_bypasses_and_enables_its_nodes() {
         let (mut s, id) = state(&[]);
-        let v1 = s.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let v1 = s.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         let node = |enabled| klipp_nodes::Node { id: klipp_nodes::NodeId::new_v4(), kind: klipp_nodes::NodeKind::Corrector, label: "C".into(), enabled, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] };
         let (a, b, off) = (node(true), node(true), node(false));
-        s.sequences[0].tracks[v1].clips.iter_mut().find(|c| c.id == id).unwrap().edit_grade(|g| g.nodes.extend([a.clone(), b.clone(), off.clone()]));
+        s.document.sequences[0].tracks[v1].clips.iter_mut().find(|c| c.id == id).unwrap().edit_grade(|g| g.nodes.extend([a.clone(), b.clone(), off.clone()]));
         let group = picture(&s, id).picture.graph.nodes.iter().find(|n| n.group.is_some()).unwrap().id;
         let on = |s: &AppState, n: &klipp_nodes::Node| clip(s, id).grade().nodes.iter().find(|x| x.id == n.id).unwrap().enabled;
         let steps = s.active_history().undo_count();
@@ -1934,11 +1934,11 @@ mod tests {
     #[test]
     fn an_edit_lands_only_in_the_addressed_root() {
         let (mut s, a) = state(&[E::GaussianBlur { radius: 3.0 }]);
-        let v1 = s.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let v1 = s.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         let mut copy = clip(&s, a).clone();
         copy.id = ClipId::new();
         let b = copy.id;
-        s.sequences[0].tracks[v1].clips.push(copy);
+        s.document.sequences[0].tracks[v1].clips.push(copy);
         let other = picture(&s, b);
         let fx_a = effects(&s, a);
         run(&mut s, AppCommand::SetParamAt { addr: at(a, &fx_a), key: "radius".into(), value: ParamValue::Float(7.0) });
@@ -2041,7 +2041,7 @@ mod tests {
     fn keyframe_selection_by_path_matches_by_index_on_a_linear_stack() {
         let (s, id) = keyed();
         let fx = effects(&s, id);
-        let seq = &s.sequences[0];
+        let seq = &s.document.sequences[0];
         for t in [0.19, 0.21, 1.19, 1.25, 0.7] {
             let mut by_index = AppCommand::RemoveEffectKeyframe { clip_id: id, effect_index: 0, param_name: "gamma".into(), time_secs: t };
             let mut by_path = AppCommand::RemoveKeyAt { addr: at(id, &[fx[0]]), key: "gamma".into(), time_secs: t };
@@ -2583,11 +2583,11 @@ mod tests {
     #[test]
     fn two_clips_with_the_same_local_node_id_do_not_share_state() {
         let (mut s, a) = state(&[E::GaussianBlur { radius: 3.0 }]);
-        let v1 = s.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let v1 = s.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         let mut copy = clip(&s, a).clone();
         copy.id = ClipId::new();
         let b = copy.id;
-        s.sequences[0].tracks[v1].clips.push(copy);
+        s.document.sequences[0].tracks[v1].clips.push(copy);
         let node = effects(&s, a)[0];
         assert_eq!(s.path_command(&AppCommand::RevealGraph { path: at(a, &[node]), select: true }), Some(false));
         assert_eq!(s.path_command(&AppCommand::SetSplitCompareNode { clip_id: Some(a), path: Some(at(a, &[node])) }), Some(false));
@@ -2690,7 +2690,7 @@ mod tests {
         let p = c.picture_v2().unwrap();
         let group = p.picture.graph.nodes.iter().find(|n| n.group.as_ref().is_some_and(|b| b.graph.nodes.iter().any(|n| n.id == mask))).unwrap().id;
         let s = with(std::slice::from_ref(&c));
-        let outcome = graph_ops::graph_ops_edit(&s.sequences[0], &[GraphOp::RemoveNode { path: at(c.id, &[group, mask]) }]).unwrap();
+        let outcome = graph_ops::graph_ops_edit(&s.document.sequences[0], &[GraphOp::RemoveNode { path: at(c.id, &[group, mask]) }]).unwrap();
         assert_eq!(outcome.ungated.iter().map(|u| u.label.as_str()).collect::<Vec<_>>(), vec!["Corrector"]);
     }
 
@@ -2706,7 +2706,7 @@ mod tests {
         let addr = at(c.id, &[group, mask]);
         let mut s = with(std::slice::from_ref(&c));
         let before = picture(&s, c.id);
-        let outcome = graph_ops::graph_ops_edit(&s.sequences[0], &[GraphOp::RemoveNode { path: addr.clone() }]).unwrap();
+        let outcome = graph_ops::graph_ops_edit(&s.document.sequences[0], &[GraphOp::RemoveNode { path: addr.clone() }]).unwrap();
         assert_eq!(outcome.ungated, vec![klipp_graph_lift::edit_planner::Ungated { path: at(c.id, &[group, reader]), label: "Skin correction".into() }]);
         let count = s.active_history().undo_count();
         run(&mut s, AppCommand::RemoveNodeAt { addr });
@@ -2740,7 +2740,7 @@ mod tests {
         let node = addr.node().unwrap();
         for (param, value) in [("exposure", 0.7f32), ("contrast", 0.2), ("saturation", 1.4), ("exposure", 0.0), ("qual_hue_width", 40.0), ("luma_key_low", 0.2), ("wheels_log_mode", 1.0)] {
             let mut a = with(std::slice::from_ref(&c));
-            let seq = &mut a.sequences[0];
+            let seq = &mut a.document.sequences[0];
             let clip_a = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
             clip_a.edit_grade(|root| root.nodes.iter_mut().find(|n| n.id == node).unwrap().params.apply_override(param, value));
             let mut b = with(std::slice::from_ref(&c));
@@ -2750,7 +2750,7 @@ mod tests {
             assert_eq!(picture(&b, c.id), picture(&with(std::slice::from_ref(&c)), c.id), "{param}: undone");
         }
         let mut a = with(std::slice::from_ref(&c));
-        let seq = &mut a.sequences[0];
+        let seq = &mut a.document.sequences[0];
         let clip_a = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
         clip_a.edit_grade(|root| root.nodes.iter_mut().find(|n| n.id == node).unwrap().enabled = false);
         let mut b = with(std::slice::from_ref(&c));
@@ -2772,7 +2772,7 @@ mod tests {
         let node = addr.node().unwrap();
         let q = klipp_core::QualifierSettings { enabled: true, hue_center: 30.0, hue_width: 40.0, ..Default::default() };
         let mut a = with(std::slice::from_ref(&c));
-        let clip_a = a.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+        let clip_a = a.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
         clip_a.edit_grade(|root| root.nodes.iter_mut().find(|n| n.id == node).unwrap().params.qualifier = Some(q.clone()));
         let entry = |s: &AppState| {
             let p = clip(s, c.id).picture_v2().unwrap();
@@ -2797,7 +2797,7 @@ mod tests {
         let (c, addr) = graded();
         let node = addr.node().unwrap();
         let mut a = with(std::slice::from_ref(&c));
-        let clip_a = a.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+        let clip_a = a.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
         clip_a.edit_grade(|root| {
             let params = &mut root.nodes.iter_mut().find(|n| n.id == node).unwrap().params;
             params.grain = Some(klipp_core::FilmGrainSettings { amount: 0.4, ..Default::default() });
@@ -2816,14 +2816,14 @@ mod tests {
         let node = addr.node().unwrap();
         let key = klipp_core::Keyframe { time_secs: 0.5, value: 0.7, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         let mut a = with(std::slice::from_ref(&c));
-        let clip_a = a.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+        let clip_a = a.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
         clip_a.edit_grade(|root| root.nodes.iter_mut().find(|n| n.id == node).unwrap().keyframes.track_mut("exposure").set_keyframe(0.5, 0.7));
         let mut b = with(std::slice::from_ref(&c));
         run(&mut b, AppCommand::AddKeyAt { addr: addr.clone(), key: "exposure".into(), keyframe: serde_json::to_value(key).unwrap() });
         assert_eq!(picture(&a, c.id), picture(&b, c.id), "keyed by path as by id");
         let tracks = &klipp_timeline::GradeAccess::grade(clip(&b, c.id)).nodes.iter().find(|n| n.id == node).unwrap().keyframes;
         assert_eq!(tracks.evaluate_all(0.5), vec![("exposure".to_string(), 0.7)], "the key is on the node's track");
-        let clip_a = a.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+        let clip_a = a.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
         clip_a.edit_grade(|root| root.nodes.iter_mut().find(|n| n.id == node).unwrap().keyframes.track_mut("exposure").remove_keyframe(0.5));
         run(&mut b, AppCommand::RemoveKeyAt { addr: addr.clone(), key: "exposure".into(), time_secs: 0.5 });
         assert_eq!(picture(&a, c.id), picture(&b, c.id), "the key taken out by path as by id");
@@ -2844,7 +2844,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("klipp_grade_key_by_path_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        klipp_project::save_project(&dir, &s.sequences, &s.media_pool).unwrap();
+        klipp_project::save_project(&dir, &s.document.sequences, &s.document.media_pool).unwrap();
         let (sequences, ..) = klipp_project::load_project(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         let loaded = sequences[0].all_clips().find(|x| x.id == c.id).unwrap();
@@ -2947,7 +2947,7 @@ mod tests {
         let step = |s: &mut AppState, back: bool| {
             let entry = if back { s.active_history_mut().undo() } else { s.active_history_mut().redo() }.expect("a step");
             let seq = s.active_sequence_idx;
-            let mut view = klipp_document::apply::DocumentView { sequences: &mut s.sequences, active: seq, media_pool: &mut s.media_pool, fps: &mut s.fps };
+            let mut view = klipp_document::apply::DocumentView { sequences: &mut s.document.sequences, active: seq, media_pool: &mut s.document.media_pool, fps: &mut s.fps };
             if back { view.apply_inverse(&entry.command); } else { view.apply_forward(&entry.command); }
         };
         step(&mut s, true);
@@ -3074,7 +3074,7 @@ mod tests {
         // By index: the clip's own keyframe list for the effect.
         let by_index = |keys: Vec<klipp_core::Keyframe>| {
             let mut s = with(std::slice::from_ref(&c));
-            let clip = s.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+            let clip = s.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
             let id = test_clip::effect_id(clip, 0);
             clip.edit_effect_keyframes_of(id, "radius", |v| *v = keys);
             s
@@ -3108,7 +3108,7 @@ mod tests {
         // Each blur's lane laid down by path, as the picture holds it.
         let seeded = |lanes: [Vec<klipp_core::Keyframe>; 2]| {
             let mut s = with(std::slice::from_ref(&c));
-            let clip = s.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+            let clip = s.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
             let ops: Vec<GraphOp> = lanes
                 .iter()
                 .zip(&nodes)
@@ -3162,7 +3162,7 @@ mod tests {
                 for index in 1..keys.len() {
                     let seeded = |keys: Vec<klipp_core::Keyframe>| {
                         let mut s = with(std::slice::from_ref(&c));
-                        let clip = s.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+                        let clip = s.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
                         let id = test_clip::effect_id(clip, 0);
                         clip.edit_effect_keyframes_of(id, "radius", |v| *v = keys);
                         s
@@ -3273,7 +3273,7 @@ mod tests {
         run(&mut s, AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(9.0) });
         let dragged = picture(&s, c.id);
         s.close_path_drag_before_edit();
-        let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&s.sequences[0], &[GraphOp::SetEnabled { path: at(c.id, &[ids[1]]), enabled: false }]).unwrap();
+        let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&s.document.sequences[0], &[GraphOp::SetEnabled { path: at(c.id, &[ids[1]]), enabled: false }]).unwrap();
         if let EditCommand::PictureEdit { clip_id, edit: e, .. } = &edit {
             s.set_picture(*clip_id, &e.after);
         }

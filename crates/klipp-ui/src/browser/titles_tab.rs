@@ -135,7 +135,7 @@ pub fn show(
     let avail = ui.available_rect_before_wrap();
     // Cards show each template as it would be placed on this sequence's
     // frame (#2734): a 9:16 sequence previews the 9:16 layout.
-    let frame = PreviewFrame::of(state.sequences[state.active_sequence_idx].resolution);
+    let frame = PreviewFrame::of(state.document.sequences[state.active_sequence_idx].resolution);
     // By template name; a snapshot, since the cards take `state`.
     let recent = state.library_recent.titles.clone();
     // A snapshot, since the cards below take `state` mutably.
@@ -147,7 +147,7 @@ pub fn show(
         .collect();
     // A frame of the project's own footage under every card.
     let footage: Option<egui::TextureHandle> = state
-        .media_pool
+        .document.media_pool
         .all()
         .find_map(|m| state.thumbnail_textures.get(&m.id).cloned());
 
@@ -1365,7 +1365,7 @@ pub(crate) fn free_text_track(state: &mut AppState, timeline_in: klipp_core::Tim
     match free {
         Some(i) => i,
         None => {
-            let seq = &mut state.sequences[state.active_sequence_idx];
+            let seq = &mut state.document.sequences[state.active_sequence_idx];
             let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text).count() + 1;
             seq.tracks.insert(0, klipp_timeline::Track::new(&format!("Text {n}"), klipp_timeline::TrackKind::Text));
             0
@@ -1480,7 +1480,7 @@ mod tests {
         let rate = state.sequence().fps.rate();
         let media = klipp_core::MediaId::new();
         let at = |s: i64| klipp_core::Timecode::from_frames(s * rate as i64, rate);
-        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(klipp_timeline::Clip::media(media, at(0), at(16), at(0), at(16)));
+        state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(klipp_timeline::Clip::media(media, at(0), at(16), at(0), at(16)));
         state.playhead = at(12);
         let cmd = super::place_title(&mut state, klipp_timeline::TitleData::default());
         assert!(matches!(cmd, klipp_core::AppCommand::CreateTitleClip { duration_frames, .. } if duration_frames == rate * 4), "to the picture's end: {cmd:?}");

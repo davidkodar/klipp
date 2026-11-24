@@ -223,7 +223,7 @@ impl NarratePanel {
         // A take on its way into the pool is placed once it has arrived,
         // or at once if it was already there.
         if let Some((path, at)) = &self.to_place {
-            if let Some(item) = state.media_pool.find_by_path(path) {
+            if let Some(item) = state.document.media_pool.find_by_path(path) {
                 let ops = klipp_document::ops::place_narration(state.sequence(), item.id, *at);
                 state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Narrate".to_string(), ops, independent: false });
                 self.to_place = None;
@@ -413,7 +413,7 @@ impl NarratePanel {
         // A take already in the pool is not imported again: placed, or
         // said to be there.
         cmds.retain(|c| match c {
-            AppCommand::ImportMedia { path } if state.media_pool.find_by_path(path).is_some() => {
+            AppCommand::ImportMedia { path } if state.document.media_pool.find_by_path(path).is_some() => {
                 if self.to_place.is_none() {
                     state.toast.show("That take is already in the pool");
                 }

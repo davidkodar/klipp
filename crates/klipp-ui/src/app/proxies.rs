@@ -35,7 +35,7 @@ impl KlippApp {
         if self.proxy_looked_at.is_some_and(|t| t.elapsed() < LOOK_FOR_PROXIES_EVERY) {
             return;
         }
-        let made: Vec<(MediaId, PathBuf)> = self.state.media_pool.all().filter(|m| m.proxy_ready).filter_map(|m| Some((m.id, m.proxy_path.clone()?))).collect();
+        let made: Vec<(MediaId, PathBuf)> = self.state.document.media_pool.all().filter(|m| m.proxy_ready).filter_map(|m| Some((m.id, m.proxy_path.clone()?))).collect();
         let (tx, rx) = std::sync::mpsc::channel();
         self.proxy_look = Some(rx);
         std::thread::spawn(move || {
@@ -44,7 +44,7 @@ impl KlippApp {
     }
 
     pub(super) fn spawn_proxy_generation(&mut self, media_id: MediaId) {
-        let item = match self.state.media_pool.get(&media_id) {
+        let item = match self.state.document.media_pool.get(&media_id) {
             Some(item) => item.clone(),
             None => return,
         };
@@ -73,7 +73,7 @@ impl KlippApp {
                     "Proxy already exists for {}: {} ({:.1} MB)",
                     item.filename, proxy_path.display(), file_size as f64 / (1024.0 * 1024.0)
                 );
-                if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                if let Some(item) = self.state.document.media_pool.get_mut(&media_id) {
                     item.proxy_path = Some(proxy_path);
                     item.proxy_ready = true;
                 }
@@ -212,7 +212,7 @@ impl KlippApp {
             match event {
                 AppEvent::ProxyGenerationStarted { media_id } => {
                     self.note_proxy_failure(media_id, None);
-                    let filename = self.state.media_pool.get(&media_id)
+                    let filename = self.state.document.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_else(|| format!("{media_id}"));
                     tracing::info!("Proxy generation started for {}", filename);
@@ -224,7 +224,7 @@ impl KlippApp {
                         .map(|t| t.elapsed().as_secs())
                         .unwrap_or(0);
                     let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    let filename = self.state.media_pool.get(&media_id)
+                    let filename = self.state.document.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_else(|| format!("{media_id}"));
                     tracing::info!(
@@ -240,7 +240,7 @@ impl KlippApp {
                         format!("Proxy ready for {} ({:.1} MB, took {})", filename, file_size as f64 / (1024.0 * 1024.0), time_str),
                         std::time::Instant::now(),
                     ));
-                    if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(&media_id) {
                         item.proxy_path = Some(path);
                         item.proxy_ready = true;
                     }
@@ -252,7 +252,7 @@ impl KlippApp {
                     self.state.proxy_generating.remove(&media_id);
                     self.state.proxy_progress.remove(&media_id);
                     self.state.proxy_start_times.remove(&media_id);
-                    let filename = self.state.media_pool.get(&media_id)
+                    let filename = self.state.document.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_else(|| format!("{media_id}"));
                     tracing::warn!("Proxy generation failed for {}: {}", filename, error);
@@ -262,7 +262,7 @@ impl KlippApp {
                     ));
                 }
                 AppEvent::SkimTranscodeProgress { media_id, progress } => {
-                    let filename = self.state.media_pool.get(&media_id)
+                    let filename = self.state.document.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_default();
                     self.state.skim_transcode_status = Some((filename, progress));
@@ -281,7 +281,7 @@ impl KlippApp {
                         .unwrap_or_else(|| vec![media_id]);
                     for mid in &waiters {
                         self.state.skim_transcoding.remove(mid);
-                        if let Some(item) = self.state.media_pool.get_mut(mid) {
+                        if let Some(item) = self.state.document.media_pool.get_mut(mid) {
                             item.skim_file = Some(path.clone());
                         }
                     }
@@ -290,7 +290,7 @@ impl KlippApp {
                         self.state.skim_transcode_done_at = Some(std::time::Instant::now());
                     }
                     self.sync_media_pool_to_engine();
-                    let filename = self.state.media_pool.get(&media_id)
+                    let filename = self.state.document.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_default();
                     tracing::info!(
@@ -313,7 +313,7 @@ impl KlippApp {
                     if self.state.skim_transcoding.is_empty() {
                         self.state.skim_transcode_status = None;
                     }
-                    let filename = self.state.media_pool.get(&media_id)
+                    let filename = self.state.document.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_default();
                     tracing::warn!(
@@ -339,7 +339,7 @@ impl KlippApp {
                     // parent source). We need every one to stay in sync.
                     let matches: Vec<(klipp_core::MediaId, String)> = self
                         .state
-                        .media_pool
+                        .document.media_pool
                         .all()
                         .filter(|item| item.path == path)
                         .map(|item| (item.id, item.filename.clone()))
@@ -350,7 +350,7 @@ impl KlippApp {
                     } else if deleted || !path.exists() {
                         let first_filename = matches[0].1.clone();
                         for (id, _) in &matches {
-                            if let Some(item) = self.state.media_pool.get_mut(id) {
+                            if let Some(item) = self.state.document.media_pool.get_mut(id) {
                                 item.offline = true;
                             }
                             if !self.state.offline_media_ids.contains(id) {
@@ -370,7 +370,7 @@ impl KlippApp {
                         // and waveforms refresh without user action.
                         let round_trip = self.prefs.external_tools.round_trip_reload;
                         for (id, _) in &matches {
-                            if let Some(item) = self.state.media_pool.get_mut(id) {
+                            if let Some(item) = self.state.document.media_pool.get_mut(id) {
                                 item.needs_reprobe = true;
                             }
                             if round_trip {
@@ -427,7 +427,7 @@ impl KlippApp {
                     let color = self.prefs.editing.scene_detect_marker_color;
                     let mut added = 0usize;
                     let mut found_clip = false;
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(clip_id) {
                             found_clip = true;
                             // detect_scenes emits source-media time; ClipMarker.time_secs
@@ -481,7 +481,7 @@ impl KlippApp {
                 AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion, corners, lost } => {
                     self.state.tracking_in_progress.remove(&clip_id);
                     self.state.tracking_progress.remove(&clip_id);
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
                         if let Some(tp) = clip.track_points.get_mut(point_index) {
                             tp.positions = positions;

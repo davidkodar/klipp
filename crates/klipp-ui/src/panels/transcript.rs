@@ -98,12 +98,12 @@ impl TranscriptPanel {
         }
         source.sync(state.analysis_generation);
         let seq = state.sequence();
-        self.words = klipp_document::ops::heard_words(seq, &state.media_pool, source);
+        self.words = klipp_document::ops::heard_words(seq, &state.document.media_pool, source);
         self.untranscribed = heard_media(state).into_iter().filter(|id| {
-            state.media_pool.get(id).is_some_and(|item| klipp_document::ops::Transcripts::words(source, item).is_none())
+            state.document.media_pool.get(id).is_some_and(|item| klipp_document::ops::Transcripts::words(source, item).is_none())
         }).collect();
         self.transcribed = heard_media(state).into_iter().filter_map(|id| {
-            let item = state.media_pool.get(&id)?;
+            let item = state.document.media_pool.get(&id)?;
             let t = klipp_analysis::report::MediaAnalysis::load(&item.path).transcript?;
             Some((id, item.filename.clone(), t.model, t.language))
         }).collect();
@@ -444,7 +444,7 @@ fn heard_media(state: &AppState) -> Vec<klipp_core::MediaId> {
         .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Audio | klipp_timeline::TrackKind::Video) && !t.muted)
         .flat_map(|t| t.clips.iter())
         .filter_map(|c| c.media_id())
-        .filter(|id| state.media_pool.get(id).is_some_and(|m| m.has_audio && !m.offline))
+        .filter(|id| state.document.media_pool.get(id).is_some_and(|m| m.has_audio && !m.offline))
         .collect();
     ids.sort_unstable_by_key(|id| id.0);
     ids.dedup();
@@ -492,7 +492,7 @@ mod correction_tests {
         // Plays the media from 10 s, placed at 4 s on the timeline.
         let clip = klipp_timeline::Clip::media(media, tc(4), tc(8), tc(10), tc(14));
         let clip_id = clip.id;
-        state.sequences[0].tracks[0].clips.push(clip);
+        state.document.sequences[0].tracks[0].clips.push(clip);
         let word = klipp_document::ops::HeardWord { start: 5.0, end: 5.5, text: "matchy".into(), after_cut: false, clip_id, media_id: media, role: Some(klipp_core::roles::RoleRef::of("dialogue")), clip_in: 4.0, clip_out: 8.0 };
         let Some(AppCommand::CorrectTranscriptWord { media_id, source_secs, text }) = correction_for(&state, &word, " Omarchy ") else { panic!("a correction") };
         assert_eq!((media_id, text.as_str()), (media, "Omarchy"));
@@ -532,8 +532,8 @@ mod range_tests {
         let mut state = AppState::default();
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/klipp-transcript-range.mov".into(), None);
         item.duration = t(10.0);
-        let media = state.media_pool.add(item);
-        let seq = &mut state.sequences[0];
+        let media = state.document.media_pool.add(item);
+        let seq = &mut state.document.sequences[0];
         let (v, a) = (seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap(), seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap());
         let mut picture = Clip::media(media, t(0.0), t(10.0), t(0.0), t(10.0));
         let mut sound = Clip::media(media, t(0.0), t(10.0), t(0.0), t(10.0));
@@ -603,23 +603,23 @@ mod range_tests {
         frame(&ctx, &mut panel, &mut state, &source, vec![press(cut, false, false)]);
         let requests = std::mem::take(&mut state.pending_doc_ops);
         assert_eq!(requests.len(), 1, "one cut");
-        let plan = klipp_document::ops::resolve_with(state.sequence(), &state.media_pool, &requests[0].ops, &source).expect("the cut resolves");
+        let plan = klipp_document::ops::resolve_with(state.sequence(), &state.document.media_pool, &requests[0].ops, &source).expect("the cut resolves");
         let edits: Vec<_> = plan.steps.iter().map(|s| s.edit.clone()).collect();
         let active = state.active_sequence_idx;
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
         for e in &edits {
             view.apply_forward(e);
         }
         state.push_edits_as_one(&edits, &requests[0].label);
 
-        let heard: Vec<String> = klipp_document::ops::heard_words(state.sequence(), &state.media_pool, &source).into_iter().map(|w| w.text).collect();
+        let heard: Vec<String> = klipp_document::ops::heard_words(state.sequence(), &state.document.media_pool, &source).into_iter().map(|w| w.text).collect();
         assert_eq!(heard, ["one", "seven", "eight"], "exactly the five words are gone");
         let lengths: Vec<i64> = state.sequence().tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.source_out.value - c.source_in.value)).collect();
         let kept = lengths.iter().sum::<i64>();
         assert!(lengths.len() == 4 && kept < 2 * 250, "the picture and the sound are both cut, in two pieces each: {:?}", timeline(&state));
 
         let entry = state.take_undo().expect("a step to undo");
-        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+        klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
         assert_eq!(timeline(&state), before, "one undo puts it all back");
     }
 
@@ -627,7 +627,7 @@ mod range_tests {
     /// and their two sounds, each pair linked.
     fn in_two_clips(state: &mut AppState) {
         let t = |s: f64| RationalTime::from_secs_f64(s, 25);
-        let seq = &mut state.sequences[0];
+        let seq = &mut state.document.sequences[0];
         let (v, a) = (seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap(), seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap());
         let media = seq.tracks[v].clips[0].media_id().unwrap();
         let mut pairs = Vec::new();
@@ -662,18 +662,18 @@ mod range_tests {
         let requests = std::mem::take(&mut state.pending_doc_ops);
         assert_eq!(requests.len(), 1, "one request");
         assert!(requests[0].independent);
-        let (plan, refused) = klipp_document::ops::resolve_each_with(state.sequence(), &state.media_pool, &requests[0].ops, &source);
+        let (plan, refused) = klipp_document::ops::resolve_each_with(state.sequence(), &state.document.media_pool, &requests[0].ops, &source);
         assert!(refused.is_empty(), "both cuts are made: {:?} of {:?}", refused.iter().map(|r| (r.step, &r.why, &r.hint)).collect::<Vec<_>>(), requests[0].ops);
         assert_eq!(plan.steps.len(), 2);
         let edits: Vec<_> = plan.steps.iter().map(|s| s.edit.clone()).collect();
         let active = state.active_sequence_idx;
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
         for e in &edits {
             view.apply_forward(e);
         }
         state.push_edits_as_one(&edits, &requests[0].label);
 
-        let heard = klipp_document::ops::heard_words(state.sequence(), &state.media_pool, &source);
+        let heard = klipp_document::ops::heard_words(state.sequence(), &state.document.media_pool, &source);
         let texts = frame(&ctx, &mut panel, &mut state, &source, Vec::new());
         let text = |w: &[klipp_document::ops::HeardWord]| w.iter().map(|w| w.text.clone()).collect::<Vec<_>>();
         assert_eq!(text(&panel.words), text(&heard), "the panel's words are what is heard");

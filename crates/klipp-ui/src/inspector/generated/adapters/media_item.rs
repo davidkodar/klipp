@@ -21,7 +21,7 @@ pub fn pickable(pool: &klipp_media::MediaPool) -> Vec<&klipp_media::MediaItem> {
 impl CustomEditor for MediaItemEditor {
     fn show(&self, ui: &mut egui::Ui, ctx: &mut RowCtx, _desc: &ParamDesc, stored: &Value) {
         let media = stored.as_str().unwrap_or_default().to_owned();
-        let pool = ctx.app.map(|a| &a.media_pool);
+        let pool = ctx.app.map(|a| &a.document.media_pool);
         let chosen = pool.and_then(|p| klipp_compose::resolve::media_id(&media).and_then(|id| p.get(&id)));
         let shown = match (media.is_empty(), chosen) {
             (true, _) => "None chosen".to_owned(),

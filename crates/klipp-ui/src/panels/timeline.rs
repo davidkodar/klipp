@@ -2031,7 +2031,7 @@ impl TimelinePanel {
             for clip in &track.clips {
                 let filename = clip
                     .media_id()
-                    .and_then(|mid| state.media_pool.get(&mid))
+                    .and_then(|mid| state.document.media_pool.get(&mid))
                     .map(|m| m.filename.clone());
                 if clip_filename_matches(filename.as_deref(), q, cs) {
                     self.search_hits.push(SearchHit {
@@ -2043,7 +2043,7 @@ impl TimelinePanel {
                 }
                 // Lines the screen showed, at the moment each came up.
                 if track.kind == klipp_timeline::TrackKind::Video {
-                    if let Some((mid, item)) = clip.media_id().and_then(|mid| state.media_pool.get(&mid).map(|m| (mid, m))) {
+                    if let Some((mid, item)) = clip.media_id().and_then(|mid| state.document.media_pool.get(&mid).map(|m| (mid, m))) {
                         let lines = self.screen_text_cache.entry(mid).or_insert_with(|| {
                             std::rc::Rc::new(
                                 klipp_analysis::report::MediaAnalysis::load(&item.path)
@@ -3303,7 +3303,7 @@ impl TimelinePanel {
                     // goes on the video track nearest it (#2966): below,
                     // else above. It did nothing.
                     let (track_idx, track_kind) = match track_kind {
-                        TrackKind::Text if group.iter().any(|id| state.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, TrackKind::Video))) => {
+                        TrackKind::Text if group.iter().any(|id| state.document.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, TrackKind::Video))) => {
                             let tracks = &state.sequence().tracks;
                             let video = (track_idx + 1..tracks.len()).chain((0..track_idx).rev()).find(|&i| tracks[i].kind == TrackKind::Video);
                             match video {
@@ -3314,7 +3314,7 @@ impl TimelinePanel {
                         _ => (track_idx, track_kind),
                     };
                     let compatible = group.iter().any(|id| {
-                        state.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, track_kind))
+                        state.document.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, track_kind))
                     });
                     if compatible {
                         painter.rect_stroke(
@@ -3497,7 +3497,7 @@ impl TimelinePanel {
                 if track_rect.contains(pos) {
                     let zoom = state.timeline_zoom;
                     let scroll = state.timeline_scroll_x;
-                    let clips = &state.sequences[state.active_sequence_idx].tracks[track_idx].clips;
+                    let clips = &state.document.sequences[state.active_sequence_idx].tracks[track_idx].clips;
                     let mut hit_clip_id = None;
                     for clip in clips {
                         let clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
@@ -3591,7 +3591,7 @@ impl TimelinePanel {
                 if track_rect.contains(pos) {
                     let zoom = state.timeline_zoom;
                     let scroll = state.timeline_scroll_x;
-                    let clips = &state.sequences[state.active_sequence_idx].tracks[track_idx].clips;
+                    let clips = &state.document.sequences[state.active_sequence_idx].tracks[track_idx].clips;
                     let mut hit_clip_id = None;
                     for clip in clips {
                         let clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
@@ -3656,7 +3656,7 @@ impl TimelinePanel {
 
         let zoom = state.timeline_zoom;
         let scroll = state.timeline_scroll_x;
-        let clips = &state.sequences[state.active_sequence_idx].tracks[track_idx].clips;
+        let clips = &state.document.sequences[state.active_sequence_idx].tracks[track_idx].clips;
 
         // Find nearest clip boundary (within 40px) that has two adjacent clips.
         let mut best: Option<(usize, f32)> = None;
@@ -3702,7 +3702,7 @@ impl TimelinePanel {
         let any_down = ui.input(|i| i.pointer.any_down());
         if !any_down {
             // Skip if a transition already exists between these two clips.
-            let already = state.sequences[state.active_sequence_idx].tracks[track_idx]
+            let already = state.document.sequences[state.active_sequence_idx].tracks[track_idx]
                 .transitions
                 .iter()
                 .any(|t| t.clip_a_id == clip_a_id && t.clip_b_id == clip_b_id);
@@ -3752,7 +3752,7 @@ impl TimelinePanel {
                                 crate::browser::library_card::push_recent(&mut state.library_recent.titles, &list_key);
                                 let rel_x = pos.x - content_rect.left();
                                 let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
-                                let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+                                let fps_rate = state.document.sequences[state.active_sequence_idx].fps.rate();
                                 // On a snap, or the nearest frame (#3056).
                                 let timeline_in = Self::media_drop_time(state, time_secs as f64, state.timeline_zoom, ui.input(|i| i.modifiers.shift));
                                 let duration_frames = fps_rate * 5;
@@ -3863,7 +3863,7 @@ impl TimelinePanel {
 
         if handle_resp.double_clicked() {
             let new_h = {
-                let track = &mut state.sequences[state.active_sequence_idx].tracks[track_idx];
+                let track = &mut state.document.sequences[state.active_sequence_idx].tracks[track_idx];
                 if track.custom_height.is_some_and(|h| h <= MIN_TRACK_HEIGHT + 1.0) {
                     track.pre_collapse_height.take()
                 } else {
@@ -3914,11 +3914,11 @@ impl TimelinePanel {
                         let new_h = resized_track_height(orig_h, delta, &state.timeline_prefs);
                         let ctrl = ui.input(|i| i.modifiers.ctrl);
                         if ctrl {
-                            for t in &mut state.sequences[state.active_sequence_idx].tracks {
+                            for t in &mut state.document.sequences[state.active_sequence_idx].tracks {
                                 t.custom_height = Some(new_h);
                             }
                         } else {
-                            state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = Some(new_h);
+                            state.document.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = Some(new_h);
                         }
                         state.dirty = true;
                     }
@@ -4020,7 +4020,7 @@ impl TimelinePanel {
                         // command-per-frame); the final value lands
                         // through SetTrackAutomationLaneHeight on
                         // drag_stopped so undo gets a single entry.
-                        state.sequences[state.active_sequence_idx].tracks[track_idx]
+                        state.document.sequences[state.active_sequence_idx].tracks[track_idx]
                             .automation_lane_height = Some(new_h);
                         state.dirty = true;
                     }
@@ -4069,11 +4069,11 @@ impl TimelinePanel {
                             &format!("Text {track_num}"),
                             TrackKind::Text,
                         );
-                        state.sequences[state.active_sequence_idx].tracks.insert(0, track);
+                        state.document.sequences[state.active_sequence_idx].tracks.insert(0, track);
                         let track_idx = 0;
                         let rel_x = cursor_pos.x - content_rect.left();
                         let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
-                        let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+                        let fps_rate = state.document.sequences[state.active_sequence_idx].fps.rate();
                         // On a snap, or the nearest frame (#3056).
                         let timeline_in = Self::media_drop_time(state, time_secs as f64, state.timeline_zoom, ui.input(|i| i.modifiers.shift));
                         let duration_frames = fps_rate * 5;
@@ -4160,7 +4160,7 @@ impl TimelinePanel {
                 let over_timeline = ui.input(|i| i.pointer.hover_pos()).filter(|p| clip.contains(*p) || above.contains(*p));
                 if state.auto_create_tracks {
                     if let Some(cursor_pos) = over_timeline {
-                        let is_audio_only = state.media_pool.get(&drag_media_id)
+                        let is_audio_only = state.document.media_pool.get(&drag_media_id)
                             .map(|item| item.video_codec.is_empty())
                             .unwrap_or(false);
                         // Check if cursor is above topmost track or below bottommost track
@@ -4244,28 +4244,28 @@ impl TimelinePanel {
                     if ui.button("Video Track").clicked() {
                         let name = state.sequence().next_track_name(TrackKind::Video);
                         let track = klipp_timeline::Track::new(&name, TrackKind::Video);
-                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        state.document.sequences[state.active_sequence_idx].tracks.push(track);
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Audio Track").clicked() {
                         let name = state.sequence().next_track_name(TrackKind::Audio);
                         let track = klipp_timeline::Track::new(&name, TrackKind::Audio);
-                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        state.document.sequences[state.active_sequence_idx].tracks.push(track);
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Text Track").clicked() {
                         let name = format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1);
                         let track = klipp_timeline::Track::new(&name, TrackKind::Text);
-                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        state.document.sequences[state.active_sequence_idx].tracks.push(track);
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Subtitle Track").clicked() {
                         let name = format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1);
                         let track = klipp_timeline::Track::new(&name, TrackKind::Subtitle);
-                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        state.document.sequences[state.active_sequence_idx].tracks.push(track);
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_kind(egui::UiKind::Menu);
                     }
@@ -4558,10 +4558,10 @@ impl TimelinePanel {
         // Draw media drag ghost — a translucent clip preview following the cursor
         if let Some(drag_media_id) = state.dragging_media {
             if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
-                let item_name = state.media_pool.get(&drag_media_id)
+                let item_name = state.document.media_pool.get(&drag_media_id)
                     .map(|m| m.filename.clone())
                     .unwrap_or_default();
-                let item_dur = state.media_pool.get(&drag_media_id)
+                let item_dur = state.document.media_pool.get(&drag_media_id)
                     .map(|m| m.duration.to_secs_f64() as f32)
                     .unwrap_or(1.0);
 
@@ -5043,7 +5043,7 @@ impl TimelinePanel {
         let scrub_clip = Self::scrub_clip_at_playhead(state);
         let has_skim_file = scrub_clip.as_ref().is_some_and(|(media_id, _, _)| {
             state
-                .media_pool
+                .document.media_pool
                 .get(media_id)
                 .and_then(|m| m.skim_file.as_ref())
                 .is_some_and(|p| p.exists())
@@ -5150,7 +5150,7 @@ impl TimelinePanel {
         // clear the overlay so a stale title doesn't linger after dragging
         // past the clip.
         let title_clip = {
-            let seq = &state.sequences[state.active_sequence_idx];
+            let seq = &state.document.sequences[state.active_sequence_idx];
             seq.tracks.iter()
                 .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Text | klipp_timeline::TrackKind::Subtitle))
                 .find_map(|t| t.clip_at_timecode(state.playhead))
@@ -5202,7 +5202,7 @@ impl TimelinePanel {
     fn scrub_clip_at_playhead(state: &AppState) -> Option<(klipp_core::MediaId, std::path::PathBuf, f64)> {
         let playhead = state.playhead;
         let playhead_secs = playhead.to_secs_f64();
-        let seq = &state.sequences[state.active_sequence_idx];
+        let seq = &state.document.sequences[state.active_sequence_idx];
         let pick = seq.tracks.iter()
             .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video))
             .find_map(|t| t.clip_at_timecode(playhead))
@@ -5212,7 +5212,7 @@ impl TimelinePanel {
             )?;
         let (_, clip) = pick;
         let media_id = clip.media_id()?;
-        let media = state.media_pool.get(&media_id)?;
+        let media = state.document.media_pool.get(&media_id)?;
         let source_secs = (playhead_secs - clip.timeline_in.to_secs_f64()) * clip.speed
             + clip.source_in.to_secs_f64();
         Some((media_id, media.path.clone(), source_secs))
@@ -5969,7 +5969,7 @@ impl TimelinePanel {
                                 state.sequence().next_track_name(kind)
                             };
                             let track = klipp_timeline::Track::new(&name, kind);
-                            state.sequences[state.active_sequence_idx].tracks.insert(track_idx, track);
+                            state.document.sequences[state.active_sequence_idx].tracks.insert(track_idx, track);
                             cmds.push(AppCommand::SequenceUpdated);
                             ui.close_kind(egui::UiKind::Menu);
                         }
@@ -5987,8 +5987,8 @@ impl TimelinePanel {
                                 state.sequence().next_track_name(kind)
                             };
                             let track = klipp_timeline::Track::new(&name, kind);
-                            let idx = (track_idx + 1).min(state.sequences[state.active_sequence_idx].tracks.len());
-                            state.sequences[state.active_sequence_idx].tracks.insert(idx, track);
+                            let idx = (track_idx + 1).min(state.document.sequences[state.active_sequence_idx].tracks.len());
+                            state.document.sequences[state.active_sequence_idx].tracks.insert(idx, track);
                             cmds.push(AppCommand::SequenceUpdated);
                             ui.close_kind(egui::UiKind::Menu);
                         }
@@ -6044,7 +6044,7 @@ impl TimelinePanel {
         let mut left_text = format!("{} clip{}", total_clips, if total_clips != 1 { "s" } else { "" });
         if let Some(clip_id) = state.selected_clip {
             if let Some(clip) = state.sequence().tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) {
-                if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
+                if let Some(media) = clip.media_id().and_then(|mid| state.document.media_pool.get(&mid)) {
                     left_text += &format!("{sep}{}", media.filename);
                 }
                 let dur = state.timecode_display().duration(clip.duration());
@@ -6613,7 +6613,7 @@ impl TimelinePanel {
         }
 
         // The clip's role (#3211) — bottom-left, past a group's badge.
-        crate::role_badge::draw(painter, &tt, &state.media_pool.roles, clip, clip_rect);
+        crate::role_badge::draw(painter, &tt, &state.document.media_pool.roles, clip, clip_rect);
 
         // Multicam indicators (gated by multicam_show_angles pref synced to state)
         if state.multicam_show_angles && clip.multicam_group.is_some() && clip_rect.width() > 20.0 {
@@ -6779,7 +6779,7 @@ impl TimelinePanel {
 
                 // Show metadata tooltip on clip hover (only when not skimming)
                 if !state.skimming_enabled {
-                    if let Some(media) = clip_media_id.and_then(|mid| state.media_pool.get(&mid)) {
+                    if let Some(media) = clip_media_id.and_then(|mid| state.document.media_pool.get(&mid)) {
                         egui::show_tooltip_at_pointer(ui.ctx(), ui.layer_id(), egui::Id::new("clip_meta_tooltip"), |ui| {
                             ui.label(egui::RichText::new(&media.filename).strong());
                             ui.label(format!("{} x {} \u{00b7} {}", media.resolution.width, media.resolution.height, media.video_codec));
@@ -6826,14 +6826,14 @@ impl TimelinePanel {
                                 sequence_id,
                                 frac,
                                 TrackKind::Video,
-                                &state.sequences,
+                                &state.document.sequences,
                             )
                         };
                         if let Some((inner_media_id, inner_source_secs)) = resolved_video {
                             state.browser_skim_active_this_frame = true;
 
                             let has_skim_file = state
-                                .media_pool
+                                .document.media_pool
                                 .get(&inner_media_id)
                                 .and_then(|m| m.skim_file.as_ref())
                                 .is_some_and(|p| p.exists());
@@ -6870,12 +6870,12 @@ impl TimelinePanel {
                                         sequence_id,
                                         frac,
                                         TrackKind::Audio,
-                                        &state.sequences,
+                                        &state.document.sequences,
                                     )
                                 };
                                 if let Some((audio_media_id, audio_source_secs)) = resolved_audio {
                                     if let Some(source_path) = state
-                                        .media_pool
+                                        .document.media_pool
                                         .get(&audio_media_id)
                                         .map(|m| m.path.clone())
                                     {
@@ -6925,7 +6925,7 @@ impl TimelinePanel {
                         let skim_time = source_in_secs + clip_dur * frac as f64;
 
                         // Check if skim file exists for this media
-                        let has_skim_file = state.media_pool.get(&media_id)
+                        let has_skim_file = state.document.media_pool.get(&media_id)
                             .and_then(|m| m.skim_file.as_ref())
                             .is_some_and(|p| p.exists());
 
@@ -6971,7 +6971,7 @@ impl TimelinePanel {
                             state.skim_last_x = pos.x;
                             state.skim_last_update = now;
 
-                            if let Some(source_path) = state.media_pool.get(&media_id).map(|m| m.path.clone()) {
+                            if let Some(source_path) = state.document.media_pool.get(&media_id).map(|m| m.path.clone()) {
                                 let is_new = state.skim_audio_session.is_none();
                                 let elapsed = state.skim_last_audio_dispatch.elapsed().as_millis() as u64;
 
@@ -7407,7 +7407,7 @@ impl TimelinePanel {
             crate::prefs::FadeOverlayMode::AudioOnly => track_kind == TrackKind::Audio,
             crate::prefs::FadeOverlayMode::Both => {
                 track_kind == TrackKind::Audio
-                    || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio)
+                    || clip.media_id().and_then(|mid| state.document.media_pool.get(&mid)).is_some_and(|m| m.has_audio)
             }
         };
         if show_fade && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
@@ -7601,8 +7601,8 @@ impl TimelinePanel {
             // Draw waveform overlay for clips with audio peak data
             // Try waveform_data first, then fall back to audio_cache.peaks
             if let Some(mid) = clip.media_id() {
-                let wf_data = state.media_pool.get(&mid).and_then(|m| m.waveform_data.as_ref().cloned());
-                let ac_peaks = state.media_pool.get(&mid)
+                let wf_data = state.document.media_pool.get(&mid).and_then(|m| m.waveform_data.as_ref().cloned());
+                let ac_peaks = state.document.media_pool.get(&mid)
                     .and_then(|m| m.audio_cache.as_ref())
                     .map(|c| c.peaks.clone());
                 let peaks_ref = wf_data.or(ac_peaks);
@@ -7621,7 +7621,7 @@ impl TimelinePanel {
                             // Each channel apart, left above right, when the
                             // track asks for it and the cache has them (#922).
                             let apart = state.sequence().tracks.iter().find(|t| t.id == track_id).is_some_and(|t| t.channel_waveforms);
-                            let channels = state.media_pool.get(&mid).and_then(|m| m.audio_cache.as_ref()).and_then(|c| c.channel_peaks.as_ref())
+                            let channels = state.document.media_pool.get(&mid).and_then(|m| m.audio_cache.as_ref()).and_then(|c| c.channel_peaks.as_ref())
                                 .filter(|_| apart)
                                 .map(|[l, r]| (&l[first_bin.min(l.len())..last_bin.min(l.len())], &r[first_bin.min(r.len())..last_bin.min(r.len())]))
                                 .filter(|(l, r)| !l.is_empty() && !r.is_empty());
@@ -7774,15 +7774,15 @@ impl TimelinePanel {
                     strip_rect,
                     clip,
                     *sequence_id,
-                    &state.sequences,
+                    &state.document.sequences,
                     &state.filmstrip_textures,
                     filmstrip_tint,
                     content_rect,
                 );
                 trigger_inner_filmstrips(
                     *sequence_id,
-                    &state.sequences,
-                    &state.media_pool,
+                    &state.document.sequences,
+                    &state.document.media_pool,
                     &state.thumbnail_cache,
                     &state.filmstrip_in_progress,
                     &state.filmstrip_queue,
@@ -8134,7 +8134,7 @@ impl TimelinePanel {
     /// The drag under way dropped, the timeline as it was when it began.
     fn cancel_drag(&mut self, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
         if let Some((at, tracks)) = self.cancel_tracks.take().filter(|(at, _)| *at == state.active_sequence_idx) {
-            state.sequences[at].tracks = tracks;
+            state.document.sequences[at].tracks = tracks;
             cmds.push(AppCommand::SequenceUpdated);
         }
         self.dragging_clip = None;
@@ -8212,7 +8212,7 @@ impl TimelinePanel {
                         for clip in clips {
                             if clip.kind.is_gap() { continue; }
                             let clip_has_audio = track_kind == TrackKind::Audio
-                                || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
+                                || clip.media_id().and_then(|mid| state.document.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
                             if !clip_has_audio { continue; }
                             let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
                             if cr.width() < 20.0 { continue; }
@@ -8433,7 +8433,7 @@ impl TimelinePanel {
                             } else if matches!(gesture, BodyDragGesture::Slip) {
                                 tracing::debug!("drag_started SLIP: clip={:?}", hit_id);
                                 let media_dur = media_id.and_then(|mid| {
-                                    state.media_pool.get(&mid).map(|m| m.duration)
+                                    state.document.media_pool.get(&mid).map(|m| m.duration)
                                 });
                                 let (linked_src_in, linked_src_out) = linked_id
                                     .and_then(|lid| {
@@ -8512,7 +8512,7 @@ impl TimelinePanel {
                 if state.active_tool == Tool::Select {
                     let mut hit_transition: Option<klipp_core::TransitionId> = None;
                     {
-                        let track = &state.sequences[state.active_sequence_idx].tracks[track_idx];
+                        let track = &state.document.sequences[state.active_sequence_idx].tracks[track_idx];
                         for transition in &track.transitions {
                             if let Some(clip_a) = track.clips.iter().find(|c| c.id == transition.clip_a_id) {
                                 let boundary_secs = clip_a.timeline_out.to_secs_f64() as f32;
@@ -8744,7 +8744,7 @@ impl TimelinePanel {
                 };
                 let multi_selected = state.selected_clips.len() > 1 && state.selected_clips.contains(&clip_id);
                 let media_id = clip.media_id();
-                let media = media_id.and_then(|m| state.media_pool.get(&m));
+                let media = media_id.and_then(|m| state.document.media_pool.get(&m));
                 let has_sound = media.is_some_and(|m| m.has_audio);
                 let file_there = matches!(clip.kind, klipp_timeline::ClipKind::Media { .. }) && media.is_some_and(|m| m.path.exists());
                 let stereo = clip.channel_config == klipp_timeline::ChannelConfig::Default && media.is_some_and(|m| m.audio_channels == Some(2));
@@ -8967,7 +8967,7 @@ impl TimelinePanel {
                                 .max_height(max_h)
                                 .show(ui, |ui| {
                                     let entries: Vec<(klipp_core::MediaId, String)> = state
-                                        .media_pool
+                                        .document.media_pool
                                         .all()
                                         .filter(|m| m.id != cur_media_id)
                                         .map(|m| (m.id, m.filename.clone()))
@@ -9662,7 +9662,7 @@ impl TimelinePanel {
                                 egui::ScrollArea::vertical().id_salt(("audition_from_bin", clip_id.0)).max_height(max_h).show(ui, |ui| {
                                     // What this slot can play, by name.
                                     let kind = state.sequence().tracks.get(track_idx).map_or(klipp_timeline::TrackKind::Video, |t| t.kind);
-                                    let mut entries: Vec<(klipp_core::MediaId, String)> = state.media_pool.all().filter(|m| klipp_document::ops::take_fits_track(kind, m)).map(|m| (m.id, m.filename.clone())).collect();
+                                    let mut entries: Vec<(klipp_core::MediaId, String)> = state.document.media_pool.all().filter(|m| klipp_document::ops::take_fits_track(kind, m)).map(|m| (m.id, m.filename.clone())).collect();
                                     entries.sort_by(|a, b| a.1.cmp(&b.1));
                                     if entries.is_empty() {
                                         ui.label(egui::RichText::new("(no media in bin)").small().italics());
@@ -11122,13 +11122,13 @@ impl TimelinePanel {
                     let media_a_dur = state.sequence().tracks.get(roll.track_idx)
                         .and_then(|t| t.find_clip(roll.clip_a_id))
                         .and_then(|c| c.media_id())
-                        .and_then(|mid| state.media_pool.get(&mid))
+                        .and_then(|mid| state.document.media_pool.get(&mid))
                         .map(|m| m.duration)
                         .unwrap_or(RationalTime { value: i64::MAX, rate: fps.rate() });
                     let _media_b_dur = state.sequence().tracks.get(roll.track_idx)
                         .and_then(|t| t.find_clip(roll.clip_b_id))
                         .and_then(|c| c.media_id())
-                        .and_then(|mid| state.media_pool.get(&mid))
+                        .and_then(|mid| state.document.media_pool.get(&mid))
                         .map(|m| m.duration)
                         .unwrap_or(RationalTime { value: i64::MAX, rate: fps.rate() });
 
@@ -11324,7 +11324,7 @@ impl TimelinePanel {
                 let Some(trim) = self.trimming_clip.as_mut() else { return };
                 let dt = RationalTime::from_secs_f64(f64::from(pos.x - trim.start_x) / f64::from(zoom), fps.rate());
                 let Some(was) = trim.original.tracks.get(trim.track_idx).and_then(|t| t.find_clip(trim.clip_id)).cloned() else { return };
-                let (head_min, tail_max) = trim_limits(&was, &state.media_pool);
+                let (head_min, tail_max) = trim_limits(&was, &state.document.media_pool);
                 let frame = klipp_timeline::one_frame(fps).to_secs_f64();
                 // The edge as the pointer has it, snapped where it is
                 // drawn (a ripple head trim draws its end moving), then
@@ -11381,7 +11381,7 @@ impl TimelinePanel {
                 };
                 // Only a clip playing a file runs out of it; a title's
                 // start stops at the timeline's.
-                let plays = klipp_document::ops::plays_at_speed(&was, &state.media_pool);
+                let plays = klipp_document::ops::plays_at_speed(&was, &state.document.media_pool);
                 trim.at_media_end = plays && match trim.edge {
                     TrimEdge::Left => t < head_min,
                     TrimEdge::Right => t > tail_max,
@@ -11391,12 +11391,12 @@ impl TimelinePanel {
                 }
                 // Refused (a ramp, a locked partner): the last place that
                 // planned stays drawn, and release says why.
-                if let Ok(edit) = klipp_document::ops::trim_at_linked(&trim.original, &state.media_pool, trim.clip_id, edge, target, trim.ripple, trim.linked) {
+                if let Ok(edit) = klipp_document::ops::trim_at_linked(&trim.original, &state.document.media_pool, trim.clip_id, edge, target, trim.ripple, trim.linked) {
                     let mut seqs = vec![trim.original.clone()];
-                    let (mut pool, mut seq_fps) = (state.media_pool.clone(), trim.original.fps);
+                    let (mut pool, mut seq_fps) = (state.document.media_pool.clone(), trim.original.fps);
                     klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut seq_fps }.apply_forward(&edit);
                     let at = state.active_sequence_idx;
-                    state.sequences[at].tracks = seqs.remove(0).tracks;
+                    state.document.sequences[at].tracks = seqs.remove(0).tracks;
                     trim.target = Some(target);
                 }
                 if let Some(now) = state.sequence().tracks.get(trim.track_idx).and_then(|t| t.find_clip(trim.clip_id)) {
@@ -11417,7 +11417,7 @@ impl TimelinePanel {
                     let at_end = matches!(trim.edge, TrimEdge::Right);
                     let stretch = crate::timeline::stretch_drag::StretchState::begin(&trim.original, &was, trim.track_idx, at_end, trim.start_x, &state.selected_clips);
                     let at = state.active_sequence_idx;
-                    state.sequences[at].tracks = trim.original.tracks.clone();
+                    state.document.sequences[at].tracks = trim.original.tracks.clone();
                     state.stretch_offered = false;
                     self.trimming_clip = None;
                     self.stretching = Some(stretch);
@@ -11493,8 +11493,8 @@ impl TimelinePanel {
             };
             drag.hold = hold;
             let at = state.active_sequence_idx;
-            drag.preview(&mut state.sequences[at], &state.media_pool, to);
-            let lines = drag.readout(state.sequence(), &state.media_pool, &state.timecode_display());
+            drag.preview(&mut state.document.sequences[at], &state.document.media_pool, to);
+            let lines = drag.readout(state.sequence(), &state.document.media_pool, &state.timecode_display());
             Self::paint_stretch_readout(painter, content_rect, track_rect, pos, &lines);
         }
         if pointer_released {
@@ -11592,7 +11592,7 @@ impl TimelinePanel {
                 if let (Some(at_end), None) = (hit, self.stretching.as_ref()) {
                     over_grip = true;
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
-                    let hint = crate::timeline::stretch_drag::grip_hint(clip, &state.media_pool);
+                    let hint = crate::timeline::stretch_drag::grip_hint(clip, &state.document.media_pool);
                     let (x, align) = if at_end { (cr.right() - crate::timeline::stretch_drag::GRIP_W - 4.0, egui::Align2::RIGHT_CENTER) } else { (cr.left() + crate::timeline::stretch_drag::GRIP_W + 4.0, egui::Align2::LEFT_CENTER) };
                     Self::paint_hint(painter, egui::pos2(x, cr.top() + crate::timeline::stretch_drag::GRIP_H / 2.0), align, hint);
                 }
@@ -11604,7 +11604,7 @@ impl TimelinePanel {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
                 let at_end = matches!(edge, TrimEdge::Right);
                 let (x, align) = if at_end { (cr.right() - 10.0, egui::Align2::RIGHT_CENTER) } else { (cr.left() + 10.0, egui::Align2::LEFT_CENTER) };
-                Self::paint_hint(painter, egui::pos2(x, cr.center().y), align, crate::timeline::stretch_drag::grip_hint(hit_clip, &state.media_pool));
+                Self::paint_hint(painter, egui::pos2(x, cr.center().y), align, crate::timeline::stretch_drag::grip_hint(hit_clip, &state.document.media_pool));
             }
         }
         // Trim handle hover highlight — edge-first detection + roll trim junction detection.
@@ -11669,7 +11669,7 @@ impl TimelinePanel {
                             TrimEdge::Right => cr.right() - pos.x < 10.0,
                         };
                         let clip_has_audio = track_kind == TrackKind::Audio
-                            || hit_clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
+                            || hit_clip.media_id().and_then(|mid| state.document.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
                         let in_fade_zone = at_top && at_near_edge && clip_has_audio && !hit_clip.kind.is_gap();
 
                         if !in_fade_zone {
@@ -11933,7 +11933,7 @@ impl TimelinePanel {
                         let clip_a = track.find_clip(transition.clip_a_id);
                         if let (Some(clip_a), Some(clip_b)) = (clip_a, Some(clip_b)) {
                             let ha = klipp_validation::handles::compute_handle_availability(
-                                transition, clip_a, clip_b, &state.media_pool,
+                                transition, clip_a, clip_b, &state.document.media_pool,
                             );
                             if ha.has_shortfall() {
                                 let me = tt.marker_error;
@@ -12353,7 +12353,7 @@ impl TimelinePanel {
 
             let is_selected = state.selected_clip == Some(clip_id);
             let is_multi_selected = state.selected_clips.contains(&clip_id);
-            let is_offline = clip_media_id.and_then(|mid| state.media_pool.get(&mid))
+            let is_offline = clip_media_id.and_then(|mid| state.document.media_pool.get(&mid))
                 .map(|m| m.offline)
                 .unwrap_or(false);
             let is_being_dragged = self.dragging_clip.as_ref()
@@ -12574,7 +12574,7 @@ impl TimelinePanel {
         let is_hovered = state.hovered_clip == Some(clip.id);
         let is_title = clip.title_data().is_some();
         let is_disabled = !clip.enabled;
-        let is_offline = clip.media_id().and_then(|mid| state.media_pool.get(&mid))
+        let is_offline = clip.media_id().and_then(|mid| state.document.media_pool.get(&mid))
             .map(|m| m.offline)
             .unwrap_or(false);
         let is_being_dragged = self.dragging_clip.as_ref()
@@ -12583,7 +12583,7 @@ impl TimelinePanel {
         // Use per-clip role color for audio clips (and a picture in the
         // Titles role, #3211).
         let theme_colors = theme();
-        let role_color = theme_colors.role_color(&state.media_pool.roles, clip.role.as_ref());
+        let role_color = theme_colors.role_color(&state.document.media_pool.roles, clip.role.as_ref());
         let use_role_color = match track_kind {
             TrackKind::Audio => true,
             _ => clip.role.as_ref().is_some_and(|r| r.is("titles")),
@@ -15123,7 +15123,7 @@ impl TimelinePanel {
         // Pre-collect picker rows so we can pass owned data into the
         // closure without re-borrowing state mid-render.
         let (clip_kf_keys, effect_types): (Vec<String>, Vec<(usize, String)>) = {
-            let clip = &state.sequences[state.active_sequence_idx]
+            let clip = &state.document.sequences[state.active_sequence_idx]
                 .tracks[track_idx]
                 .clips[clip_index];
             let mut keys: Vec<String> = clip.audio_effect_keyframes.keys().cloned().collect();
@@ -15294,7 +15294,7 @@ impl TimelinePanel {
         // ── Fade drag handles (triangular grab handles at top-left / top-right) ──
         // Visible when clip is hovered or selected, and clip has audio (audio track or linked audio)
         let clip_has_audio = track_kind == TrackKind::Audio
-            || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
+            || clip.media_id().and_then(|mid| state.document.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
         let is_pointer_over_clip = pointer_pos.is_some_and(|p| clip_rect.contains(p) && content_rect.contains(p));
         let is_hovered_or_selected = is_pointer_over_clip || state.selected_clip == Some(clip.id);
         let is_dragging_this_fade = state.dragging_fade_handle.is_some_and(|(id, _, _)| id == clip.id);
@@ -15988,7 +15988,7 @@ impl TimelinePanel {
         let mut x = pool_rect.left() + 4.0;
         let y = pool_rect.top() + 16.0;
 
-        let items: Vec<_> = state.media_pool.all().collect();
+        let items: Vec<_> = state.document.media_pool.all().collect();
         for item in &items {
             if x + item_size > pool_rect.right() {
                 break;
@@ -17593,9 +17593,9 @@ mod linked_drag_tests {
         let rate = state.sequence().fps.rate();
         let two = RationalTime::from_secs_f64(2.0, rate);
         let media = klipp_core::MediaId::new();
-        let ids: Vec<_> = (0..3).map(|_| state.sequences[0].tracks[0].append_clip(media, two)).collect();
+        let ids: Vec<_> = (0..3).map(|_| state.document.sequences[0].tracks[0].append_clip(media, two)).collect();
         for &id in &ids {
-            crate::app::linked_audio_for_tests(&mut state.sequences[0], id);
+            crate::app::linked_audio_for_tests(&mut state.document.sequences[0], id);
         }
         (state, ids)
     }
@@ -17664,7 +17664,7 @@ mod media_drop_tests {
         let four = RationalTime::from_secs_f64(4.0, rate);
         let media = klipp_core::MediaId::new();
         for _ in 0..3 {
-            state.sequences[0].tracks[vi].append_clip(media, four);
+            state.document.sequences[0].tracks[vi].append_clip(media, four);
         }
         state.snap.master = true;
         (state, four)
@@ -17806,9 +17806,9 @@ mod tests {
         use klipp_core::automation::TrackParam;
         let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         let mut state = AppState::default();
-        let a = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).expect("an audio track");
+        let a = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).expect("an audio track");
         let from = vec![key(1.0, 1.0), key(2.0, 0.5)];
-        state.sequences[0].tracks[a].automation.lanes.insert(TrackParam::Volume, from.clone());
+        state.document.sequences[0].tracks[a].automation.lanes.insert(TrackParam::Volume, from.clone());
         let moved = vec![key(1.0, 1.0), key(2.5, 0.25)];
         let ctx = egui::Context::default();
         let run = |panel: &mut TimelinePanel, state: &AppState| {
@@ -17823,7 +17823,7 @@ mod tests {
         assert!(matches!(&cmds[..], [AppCommand::SetTrackAutomationKeys { track_index, param: TrackParam::Volume, keys }] if *track_index == a && *keys == moved), "{cmds:?}");
         assert!(panel.track_key_drag.is_none());
 
-        state.sequences[0].tracks[a].automation.lanes.insert(TrackParam::Volume, vec![key(0.0, 0.1)]);
+        state.document.sequences[0].tracks[a].automation.lanes.insert(TrackParam::Volume, vec![key(0.0, 0.1)]);
         let mut panel = TimelinePanel { track_key_drag: Some(TrackKeyDrag { track: a, param: TrackParam::Volume, index: 1, from, moved }), ..Default::default() };
         assert!(run(&mut panel, &state).is_empty(), "keys changed under it: nothing written");
         assert!(panel.track_key_drag.is_none());
@@ -17882,7 +17882,7 @@ mod tests {
         let clip_id = clip.id;
         tracks[track_idx].clips.push(clip);
         let seq_idx = state.active_sequence_idx;
-        state.sequences[seq_idx].tracks = tracks;
+        state.document.sequences[seq_idx].tracks = tracks;
         state.show_color_panel = true;
         state.selected_clip = Some(clip_id);
         (state, clip_id)
@@ -18735,14 +18735,14 @@ fn resolve_compound_at_frac(
 /// for a compound clip, or a composition laid in (a brand kit's intro,
 /// say), the name of the sequence inside it.
 fn clip_fallback_name<'a>(clip: &klipp_timeline::Clip, state: &'a AppState) -> Option<(&'a str, Option<&'a klipp_media::MediaItem>)> {
-    if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
+    if let Some(media) = clip.media_id().and_then(|mid| state.document.media_pool.get(&mid)) {
         return Some((media.filename.as_str(), Some(media)));
     }
     let inner = match &clip.kind {
         ClipKind::Sequence { sequence_id } | ClipKind::Precomposition { sequence_id } | ClipKind::TemplatePrecomposition { sequence_id, .. } => *sequence_id,
         _ => return None,
     };
-    state.sequences.iter().find(|s| s.id == inner).map(|s| (s.name.as_str(), None))
+    state.document.sequences.iter().find(|s| s.id == inner).map(|s| (s.name.as_str(), None))
 }
 
 fn draw_compound_filmstrip(
@@ -19486,13 +19486,13 @@ mod find_matte_candidate_above_tests {
     #[test]
     fn finds_video_clip_above_consumer() {
         let mut state = AppState::default();
-        state.sequences[0].add_video_track("V2".to_string());
+        state.document.sequences[0].add_video_track("V2".to_string());
         let consumer = media_clip(0, 24);
         let consumer_id = consumer.id;
         let source = media_clip(0, 24);
         let source_id = source.id;
         // Find which idx is V2 (top of panel = lower idx) and V1.
-        let video_indices: Vec<usize> = state.sequences[0].tracks.iter()
+        let video_indices: Vec<usize> = state.document.sequences[0].tracks.iter()
             .enumerate().filter(|(_, t)| matches!(t.kind, TrackKind::Video))
             .map(|(i, _)| i).collect();
         assert_eq!(video_indices.len(), 2);
@@ -19500,8 +19500,8 @@ mod find_matte_candidate_above_tests {
         let v_bot_idx = *video_indices.iter().max().unwrap(); // visually lower
         // Consumer on the LOWER track (higher idx); source above it
         // (lower idx).
-        state.sequences[0].tracks[v_bot_idx].clips.push(consumer);
-        state.sequences[0].tracks[v_top_idx].clips.push(source);
+        state.document.sequences[0].tracks[v_bot_idx].clips.push(consumer);
+        state.document.sequences[0].tracks[v_top_idx].clips.push(source);
 
         let cand = find_matte_candidate_above(&state, v_bot_idx, consumer_id);
         assert!(cand.is_some(), "expected to find video source on the track visually above consumer");
@@ -19517,7 +19517,7 @@ mod find_matte_candidate_above_tests {
     fn title_on_text_track_is_found() {
         let mut state = AppState::default();
         // Insert a Text track at idx 0 (mirrors the title shortcut path).
-        state.sequences[0].tracks.insert(
+        state.document.sequences[0].tracks.insert(
             0,
             klipp_timeline::Track::new("Text 1", TrackKind::Text),
         );
@@ -19528,9 +19528,9 @@ mod find_matte_candidate_above_tests {
         let title_id = title.id;
 
         let text_idx = 0usize;
-        let v1_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1 track");
-        state.sequences[0].tracks[text_idx].clips.push(title);
-        state.sequences[0].tracks[v1_idx].clips.push(consumer);
+        let v1_idx = state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1 track");
+        state.document.sequences[0].tracks[text_idx].clips.push(title);
+        state.document.sequences[0].tracks[v1_idx].clips.push(consumer);
 
         assert!(text_idx < v1_idx,
             "fixture: Text track must be visually above (= lower idx) the consumer");
@@ -19548,7 +19548,7 @@ mod find_matte_candidate_above_tests {
     #[test]
     fn clip_on_subtitle_track_is_found() {
         let mut state = AppState::default();
-        state.sequences[0].tracks.insert(
+        state.document.sequences[0].tracks.insert(
             0,
             klipp_timeline::Track::new("Subtitle 1", TrackKind::Subtitle),
         );
@@ -19559,9 +19559,9 @@ mod find_matte_candidate_above_tests {
         let other_id = other.id;
 
         let sub_idx = 0usize;
-        let v1_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1");
-        state.sequences[0].tracks[sub_idx].clips.push(other);
-        state.sequences[0].tracks[v1_idx].clips.push(consumer);
+        let v1_idx = state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1");
+        state.document.sequences[0].tracks[sub_idx].clips.push(other);
+        state.document.sequences[0].tracks[v1_idx].clips.push(consumer);
 
         assert!(sub_idx < v1_idx, "fixture: subtitle must be visually above (= lower idx) the consumer");
         let cand = find_matte_candidate_above(&state, v1_idx, consumer_id);
@@ -19589,19 +19589,19 @@ mod find_matte_candidate_above_tests {
         let mut state = AppState::default();
         // Named as the app adds a track: a letter-and-number name keeps
         // its style through renumbering since #2814.
-        state.sequences[0].add_video_track("Video 2".to_string());
+        state.document.sequences[0].add_video_track("Video 2".to_string());
         // Insert text track at idx 0 (= mirrors keyboard-shortcut
         // title path; matches user-reported layout).
-        state.sequences[0].tracks.insert(
+        state.document.sequences[0].tracks.insert(
             0,
             klipp_timeline::Track::new("Text 1", TrackKind::Text),
         );
 
         let text_idx = 0usize;
-        let v2_idx = state.sequences[0].tracks.iter().position(|t|
+        let v2_idx = state.document.sequences[0].tracks.iter().position(|t|
             matches!(t.kind, TrackKind::Video) && t.name == "Video 2"
         ).expect("Video 2 track");
-        let v1_idx = state.sequences[0].tracks.iter().position(|t|
+        let v1_idx = state.document.sequences[0].tracks.iter().position(|t|
             matches!(t.kind, TrackKind::Video) && t.name == "Video 1"
         ).expect("Video 1 track");
 
@@ -19611,9 +19611,9 @@ mod find_matte_candidate_above_tests {
         let v2_clip_id = v2_clip.id;
         let v1_clip = media_clip(0, 24);
         let v1_clip_id = v1_clip.id;
-        state.sequences[0].tracks[text_idx].clips.push(title);
-        state.sequences[0].tracks[v2_idx].clips.push(v2_clip);
-        state.sequences[0].tracks[v1_idx].clips.push(v1_clip);
+        state.document.sequences[0].tracks[text_idx].clips.push(title);
+        state.document.sequences[0].tracks[v2_idx].clips.push(v2_clip);
+        state.document.sequences[0].tracks[v1_idx].clips.push(v1_clip);
 
         // Right-click V1 → finds V2 (the next track up); title is
         // beyond V2 and the walk stops at the first overlap.
@@ -19641,13 +19641,13 @@ mod find_matte_candidate_above_tests {
         // Construct a fixture where audio is visually ABOVE a video
         // consumer (= audio at LOWER idx). Production never builds
         // this, but we test the kind-filter rejection directly.
-        state.sequences[0].tracks.clear();
-        state.sequences[0].tracks.push(klipp_timeline::Track::new("Audio above", TrackKind::Audio));
-        state.sequences[0].tracks.push(klipp_timeline::Track::new("V1", TrackKind::Video));
+        state.document.sequences[0].tracks.clear();
+        state.document.sequences[0].tracks.push(klipp_timeline::Track::new("Audio above", TrackKind::Audio));
+        state.document.sequences[0].tracks.push(klipp_timeline::Track::new("V1", TrackKind::Video));
         let consumer = media_clip(0, 24);
         let consumer_id = consumer.id;
-        state.sequences[0].tracks[0].clips.push(media_clip(0, 24));
-        state.sequences[0].tracks[1].clips.push(consumer);
+        state.document.sequences[0].tracks[0].clips.push(media_clip(0, 24));
+        state.document.sequences[0].tracks[1].clips.push(consumer);
 
         let cand = find_matte_candidate_above(&state, 1usize, consumer_id);
         assert!(cand.is_none(), "audio clip must not be a matte candidate");
@@ -19659,19 +19659,19 @@ mod find_matte_candidate_above_tests {
     #[test]
     fn adjustment_layer_above_is_excluded() {
         let mut state = AppState::default();
-        state.sequences[0].add_video_track("V2".to_string());
+        state.document.sequences[0].add_video_track("V2".to_string());
         let consumer = media_clip(0, 24);
         let consumer_id = consumer.id;
         let mut adj = media_clip(0, 24);
         adj.kind = ClipKind::AdjustmentLayer;
 
-        let video_indices: Vec<usize> = state.sequences[0].tracks.iter()
+        let video_indices: Vec<usize> = state.document.sequences[0].tracks.iter()
             .enumerate().filter(|(_, t)| matches!(t.kind, TrackKind::Video))
             .map(|(i, _)| i).collect();
         let above_idx    = *video_indices.iter().min().unwrap(); // visually higher
         let consumer_idx = *video_indices.iter().max().unwrap(); // visually lower
-        state.sequences[0].tracks[above_idx].clips.push(adj);
-        state.sequences[0].tracks[consumer_idx].clips.push(consumer);
+        state.document.sequences[0].tracks[above_idx].clips.push(adj);
+        state.document.sequences[0].tracks[consumer_idx].clips.push(consumer);
 
         let cand = find_matte_candidate_above(&state, consumer_idx, consumer_id);
         assert!(cand.is_none(),
@@ -19683,18 +19683,18 @@ mod find_matte_candidate_above_tests {
     #[test]
     fn non_overlapping_time_range_excluded() {
         let mut state = AppState::default();
-        state.sequences[0].add_video_track("V2".to_string());
+        state.document.sequences[0].add_video_track("V2".to_string());
         let consumer = media_clip(0, 24);
         let consumer_id = consumer.id;
         let far = media_clip(100, 148);
 
-        let video_indices: Vec<usize> = state.sequences[0].tracks.iter()
+        let video_indices: Vec<usize> = state.document.sequences[0].tracks.iter()
             .enumerate().filter(|(_, t)| matches!(t.kind, TrackKind::Video))
             .map(|(i, _)| i).collect();
         let above_idx    = *video_indices.iter().min().unwrap();
         let consumer_idx = *video_indices.iter().max().unwrap();
-        state.sequences[0].tracks[above_idx].clips.push(far);
-        state.sequences[0].tracks[consumer_idx].clips.push(consumer);
+        state.document.sequences[0].tracks[above_idx].clips.push(far);
+        state.document.sequences[0].tracks[consumer_idx].clips.push(consumer);
 
         let cand = find_matte_candidate_above(&state, consumer_idx, consumer_id);
         assert!(cand.is_none());
@@ -19707,20 +19707,20 @@ mod find_matte_candidate_above_tests {
     #[test]
     fn inspector_path_accepts_text_track_source() {
         let mut state = AppState::default();
-        state.sequences[0].add_text_track("Text 1".to_string());
+        state.document.sequences[0].add_text_track("Text 1".to_string());
         let consumer = media_clip(0, 24);
         let consumer_id = consumer.id;
         let title = title_clip(0, 24);
         let title_id = title.id;
-        let v1_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1");
-        let text_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Text)).expect("Text");
-        state.sequences[0].tracks[v1_idx].clips.push(consumer);
-        state.sequences[0].tracks[text_idx].clips.push(title);
+        let v1_idx = state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1");
+        let text_idx = state.document.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Text)).expect("Text");
+        state.document.sequences[0].tracks[v1_idx].clips.push(consumer);
+        state.document.sequences[0].tracks[text_idx].clips.push(title);
 
         // Mirror the SetClipMatte pre-check inline. The ones we care
         // about: source must exist; AdjustmentLayer rejected; no
         // self-ref; no cycle. There's NO track-kind check.
-        let seq = &state.sequences[0];
+        let seq = &state.document.sequences[0];
         let source = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == title_id);
         assert!(source.is_some(), "title clip should be locatable in sequence");
         let source = source.unwrap();
@@ -19747,9 +19747,9 @@ mod snap_tests {
     #[test]
     fn the_playhead_drag_snaps_to_a_clip_edge() {
         let mut state = AppState { timeline_zoom: 100.0, snap_threshold_px: 10.0, ..Default::default() };
-        let v = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let v = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
         let rt = |s| RationalTime::from_secs_f64(s, 24);
-        state.sequences[0].tracks[v].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), rt(5.0), rt(9.0), rt(0.0), rt(4.0)));
+        state.document.sequences[0].tracks[v].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), rt(5.0), rt(9.0), rt(0.0), rt(4.0)));
         let panel = TimelinePanel::default();
         let mut cmds = Vec::new();
         panel.scrub_to(&mut state, &mut cmds, 5.03, 0.0, false);
@@ -19832,12 +19832,12 @@ mod snap_tests {
         let mut state = AppState::default();
         let item = klipp_media::MediaItem::synthetic_for_test("/tmp/07-promenade-morning-run.mp4".into(), None);
         let file = item.filename.clone();
-        let media = state.media_pool.add(item);
+        let media = state.document.media_pool.add(item);
         let rt = |s: f64| RationalTime::from_secs_f64(s, 24);
         let mut named = klipp_timeline::Clip::media(media, rt(0.0), rt(2.0), rt(0.0), rt(2.0));
         named.name = Some("Shot 2".into());
         let plain = klipp_timeline::Clip::media(media, rt(5.0), rt(7.0), rt(0.0), rt(2.0));
-        state.sequences[0].tracks[0].clips = vec![named, plain];
+        state.document.sequences[0].tracks[0].clips = vec![named, plain];
         let label = |secs| TimelinePanel::snap_legend_label_for_kind(klipp_core::SnapTargetKind::ClipEdge, secs, &state);
         assert_eq!(label(2.0), "Clip edge: Shot 2");
         assert_eq!(label(5.0), format!("Clip edge: {file}"));
@@ -19853,14 +19853,14 @@ mod snap_tests {
         let mut inner = klipp_timeline::Sequence::new_default();
         inner.name = "Hook Card".into();
         let inner_id = inner.id;
-        state.sequences.push(inner);
+        state.document.sequences.push(inner);
         let mut intro = klipp_timeline::Clip::sequence(inner_id, rt(0.0), rt(2.0));
         let template_instance = klipp_core::TemplateInstance { template_id: uuid::Uuid::nil(), bindings: Default::default(), overrides: Default::default(), media_slots: Default::default(), links: Vec::new() };
         intro.kind = ClipKind::TemplatePrecomposition { sequence_id: inner_id, template_instance };
         assert_eq!(clip_fallback_name(&intro, &state).map(|(n, _)| n), Some("Hook Card"));
         let precomp = klipp_timeline::Clip::precomposition(inner_id, rt(0.0), rt(2.0));
         assert_eq!(clip_fallback_name(&precomp, &state).map(|(n, _)| n), Some("Hook Card"));
-        state.sequences[0].tracks[0].clips = vec![intro];
+        state.document.sequences[0].tracks[0].clips = vec![intro];
         let label = TimelinePanel::snap_legend_label_for_kind(klipp_core::SnapTargetKind::ClipEdge, 2.0, &state);
         assert_eq!(label, "Clip edge: Hook Card");
     }
@@ -19965,7 +19965,7 @@ mod scrub_preview_tests {
         item.kind = klipp_media::MediaItemKind::File;
         item.path = std::path::PathBuf::from("/klipp-test/shot.mp4");
         item.skim_file = skim.map(|p| p.to_path_buf());
-        state.media_pool.add(item);
+        state.document.media_pool.add(item);
 
         let mut track = make_video_track();
         track.clips.push(klipp_timeline::Clip::media(
@@ -19976,7 +19976,7 @@ mod scrub_preview_tests {
             Timecode::from_frames(240, 24),
         ));
         let seq_idx = state.active_sequence_idx;
-        state.sequences[seq_idx].tracks = vec![track];
+        state.document.sequences[seq_idx].tracks = vec![track];
         state
     }
 
@@ -20679,7 +20679,7 @@ pub(crate) fn key_ease_commands(state: &AppState, m: &KeyframeContextMenu, prese
 pub(crate) fn key_interpolation_commands(state: &AppState, m: &KeyframeContextMenu, interp: klipp_core::Interpolation) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let node_key_time = match &m.param_kind {
-        crate::state::KeyframeParamKind::Node { path, key } => state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == m.clip_id).and_then(|c| c.node_key_state(path, key)).and_then(|s| s.keys.get(m.keyframe_index).map(|k| k.time_secs)),
+        crate::state::KeyframeParamKind::Node { path, key } => state.document.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == m.clip_id).and_then(|c| c.node_key_state(path, key)).and_then(|s| s.keys.get(m.keyframe_index).map(|k| k.time_secs)),
         _ => None,
     };
     match &m.param_kind {

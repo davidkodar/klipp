@@ -289,7 +289,7 @@ impl KlippApp {
         // Frozen as the project says; drawn from the copy the engine plays,
         // whose tracks are the same.
         let seq = self.sequence.snapshot();
-        let tracks: Vec<TrackId> = self.state.sequences.get(self.state.active_sequence_idx).map(|s| s.tracks.iter().filter(|t| t.frozen && seq.tracks.iter().any(|x| x.id == t.id)).map(|t| t.id).collect()).unwrap_or_default();
+        let tracks: Vec<TrackId> = self.state.document.sequences.get(self.state.active_sequence_idx).map(|s| s.tracks.iter().filter(|t| t.frozen && seq.tracks.iter().any(|x| x.id == t.id)).map(|t| t.id).collect()).unwrap_or_default();
         if tracks.is_empty() && self.freeze_jobs.idle() {
             return;
         }
@@ -311,7 +311,7 @@ impl KlippApp {
         // A stem the change made stale stops playing at once (#3207): the
         // track plays live until its stem is drawn again.
         if tick.changed {
-            let pool = &self.state.media_pool;
+            let pool = &self.state.document.media_pool;
             let before = self.freeze_jobs.stems.len();
             self.freeze_jobs.stems.retain(|(t, path)| inputs.tracks.contains(t) && stem_path(&seq, pool, inputs.folder.as_deref(), *t).ok().as_ref() == Some(path));
             if self.freeze_jobs.stems.len() != before {
@@ -346,7 +346,7 @@ impl KlippApp {
         let (sound, pictures): (Vec<TrackId>, Vec<TrackId>) = inputs.tracks.iter().copied().partition(is_sound);
         let mut statuses = self.start_stem_jobs(seq, inputs, &sound);
         let playhead = self.state.playhead;
-        let pool = &self.state.media_pool;
+        let pool = &self.state.document.media_pool;
         let fj = &mut self.freeze_jobs;
         let done = fj.done.get_or_insert_with(mpsc::channel).0.clone();
         let Some((_, store)) = fj.store.clone().filter(|_| inputs.folder.is_some()) else {
@@ -411,7 +411,7 @@ impl KlippApp {
         let done = self.freeze_jobs.done.get_or_insert_with(mpsc::channel).0.clone();
         for t in sound {
             let base = FreezeStatus { sound: true, frames: 1, ..Default::default() };
-            let path = match stem_path(seq, &self.state.media_pool, inputs.folder.as_deref(), *t) {
+            let path = match stem_path(seq, &self.state.document.media_pool, inputs.folder.as_deref(), *t) {
                 Err(_) if inputs.folder.is_none() => {
                     statuses.insert(*t, FreezeStatus { unsaved: true, ..base });
                     continue;
@@ -427,7 +427,7 @@ impl KlippApp {
                 statuses.insert(*t, FreezeStatus { tally: Some(FreezeTally { current: 1, reached: 1, ..Default::default() }), ..base });
                 continue;
             }
-            let snap = match klipp_render::stem::stem_snapshot(seq, &[], &self.state.media_pool, *t) {
+            let snap = match klipp_render::stem::stem_snapshot(seq, &[], &self.state.document.media_pool, *t) {
                 Ok(Some(snap)) => snap,
                 Ok(None) | Err(_) => {
                     statuses.insert(*t, FreezeStatus { tally: Some(FreezeTally { failed: 1, ..Default::default() }), ..base });
@@ -533,7 +533,7 @@ pub(super) fn edit_freezable_track(
     edit: impl FnOnce(&mut klipp_timeline::Track),
 ) {
     let idx = state.active_sequence_idx;
-    let Some(track) = state.sequences[idx].tracks.iter_mut().find(|t| t.id == track_id && matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio)) else {
+    let Some(track) = state.document.sequences[idx].tracks.iter_mut().find(|t| t.id == track_id && matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio)) else {
         return;
     };
     edit(track);
@@ -550,7 +550,7 @@ fn clear_frozen_tracks(
     kind: klipp_timeline::TrackKind,
 ) {
     let idx = state.active_sequence_idx;
-    if let Some(step) = unfreeze_all(&mut state.sequences[idx], kind) {
+    if let Some(step) = unfreeze_all(&mut state.document.sequences[idx], kind) {
         state.push_history(step);
         state.dirty = true;
         super::engine_sync::sync_sequence(state, sequence, param_change_queue);
@@ -832,9 +832,9 @@ mod tests {
     #[test]
     fn freezing_a_track_reaches_the_copy_the_socket_reads() {
         let mut state = crate::state::AppState::default();
-        let shared = klipp_timeline::SharedSequence::new(state.sequences[0].clone());
+        let shared = klipp_timeline::SharedSequence::new(state.document.sequences[0].clone());
         let queue = crossbeam_queue::ArrayQueue::new(8);
-        let id = state.sequences[0].tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().id;
+        let id = state.document.sequences[0].tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().id;
         let read = |shared: &klipp_timeline::SharedSequence| {
             let seq = shared.snapshot();
             let t = seq.tracks.iter().find(|t| t.id == id).unwrap();

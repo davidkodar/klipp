@@ -86,14 +86,14 @@ fn media_clip() -> (Clip, AppState) {
     item.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
     let c = Clip::media(item.id, t(0.0), t(2.0), t(0.0), t(2.0));
     let mut state = AppState::default();
-    state.media_pool.add(item);
+    state.document.media_pool.add(item);
     (c, state)
 }
 
 /// `state` holding `kind`'s analysis `data` of `clip`'s media, as
 /// `ensure_analyses` keeps it once found: by the file, for every clip of it.
 fn analysed(state: &mut AppState, clip: &Clip, kind: klipp_analysis::assets::AssetKind, data: serde_json::Value) {
-    let item = state.media_pool.get(&clip.media_id().unwrap()).unwrap();
+    let item = state.document.media_pool.get(&clip.media_id().unwrap()).unwrap();
     let key = klipp_analysis::assets::asset_key(kind, item).expect("a key");
     state.analyses.insert(key, std::sync::Arc::new(data));
 }

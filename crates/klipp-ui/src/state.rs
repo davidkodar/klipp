@@ -16,7 +16,7 @@ use klipp_engine::PlaybackState;
 
 /// How long before a clip whose skim audio would not start is asked again.
 const SKIM_AUDIO_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
-use klipp_media::{MediaPool, ThumbnailCache};
+use klipp_media::ThumbnailCache;
 use klipp_timeline::Sequence;
 use std::path::PathBuf;
 
@@ -748,8 +748,8 @@ impl AppState {
     /// Every way a project is replaced comes through here, by
     /// `reset_project_state`.
     pub fn forget_project(&mut self) {
-        self.command_histories.clear();
-        self.project_history = crate::history::CommandHistory::new();
+        self.document.command_histories.clear();
+        self.document.project_history = crate::history::CommandHistory::new();
         self.history_ops_since_save = 0;
         self.selected_clip = None;
         self.selected_clips.clear();
@@ -809,15 +809,15 @@ impl AppState {
     /// app then stops playback and gives the engine the sequence).
     pub fn switch_sequence(&mut self, sequence_idx: usize, keep_view: bool) -> bool {
         // Switching to a sequence opens its tab again (#906).
-        if let Some(seq) = self.sequences.get(sequence_idx) {
+        if let Some(seq) = self.document.sequences.get(sequence_idx) {
             let id = seq.id;
             self.closed_sequence_tabs.remove(&id);
         }
-        if sequence_idx >= self.sequences.len() || sequence_idx == self.active_sequence_idx {
+        if sequence_idx >= self.document.sequences.len() || sequence_idx == self.active_sequence_idx {
             return false;
         }
         // The playhead kept on the sequence left.
-        self.sequences[self.active_sequence_idx].last_playhead = Some(klipp_core::RationalTime { value: self.playhead.value, rate: self.playhead.rate });
+        self.document.sequences[self.active_sequence_idx].last_playhead = Some(klipp_core::RationalTime { value: self.playhead.value, rate: self.playhead.rate });
         // A parameter drag in flight on the sequence left can't be
         // finished here: its pending step is abandoned, so the next push
         // there does not clobber whatever is pending on the next one.
@@ -831,14 +831,14 @@ impl AppState {
         }
         self.active_sequence_idx = sequence_idx;
         // The playhead taken back from the sequence shown.
-        let seq_rate = self.sequences[sequence_idx].fps.rate();
-        let restored = self.sequences[sequence_idx].last_playhead.unwrap_or(klipp_core::RationalTime::from_frames(0, seq_rate));
+        let seq_rate = self.document.sequences[sequence_idx].fps.rate();
+        let restored = self.document.sequences[sequence_idx].last_playhead.unwrap_or(klipp_core::RationalTime::from_frames(0, seq_rate));
         self.playhead = restored;
         self.playhead_smooth_secs = restored.to_secs_f64();
         self.playhead_anchor = restored;
         self.playhead_anchor_wall = std::time::Instant::now();
         self.playhead_speed = 1.0;
-        self.fps = self.sequences[sequence_idx].fps;
+        self.fps = self.document.sequences[sequence_idx].fps;
         // The selection cleared, unless the timeline brings its own.
         if !keep_view {
             self.selected_clip = None;
@@ -854,21 +854,21 @@ impl AppState {
         // A template's compositions, and what they nest: drawn inside its
         // clips, not sequences of the project's own (#2757).
         let mut nested: std::collections::HashSet<klipp_core::SequenceId> = std::collections::HashSet::new();
-        for root in self.sequences.iter().flat_map(|s| s.all_clips()).filter_map(|c| match &c.kind {
-            klipp_timeline::ClipKind::TemplatePrecomposition { sequence_id, .. } => self.sequences.iter().find(|s| s.id == *sequence_id),
+        for root in self.document.sequences.iter().flat_map(|s| s.all_clips()).filter_map(|c| match &c.kind {
+            klipp_timeline::ClipKind::TemplatePrecomposition { sequence_id, .. } => self.document.sequences.iter().find(|s| s.id == *sequence_id),
             _ => None,
         }) {
-            nested.extend(klipp_timeline::composition_template::composition_sequences(root, &self.sequences).iter().map(|s| s.id));
+            nested.extend(klipp_timeline::composition_template::composition_sequences(root, &self.document.sequences).iter().map(|s| s.id));
         }
-        let list = self.sequences.iter().map(|seq| klipp_core::SequenceSummary {
+        let list = self.document.sequences.iter().map(|seq| klipp_core::SequenceSummary {
             id: seq.id.to_string(),
             name: seq.name.clone(),
             clips: seq.tracks.iter().map(|t| t.clips.len()).sum(),
             duration_secs: seq.total_duration().to_secs_f64(),
-            used_in: self.sequences.iter().find(|other| {
+            used_in: self.document.sequences.iter().find(|other| {
                 other.id != seq.id && other.tracks.iter().flat_map(|t| &t.clips).any(|c| matches!(c.kind, klipp_timeline::ClipKind::Sequence { sequence_id, .. } if sequence_id == seq.id))
             }).map(|other| other.name.clone()),
-            version: seq.version_of.map(|v| klipp_core::VersionSummary { of: v.master.to_string(), stale: seq.version_is_stale(&self.sequences).unwrap_or(false) }),
+            version: seq.version_of.map(|v| klipp_core::VersionSummary { of: v.master.to_string(), stale: seq.version_is_stale(&self.document.sequences).unwrap_or(false) }),
             width: seq.resolution.width,
             height: seq.resolution.height,
             nested: nested.contains(&seq.id) && seq.id != self.sequence().id,
@@ -1395,6 +1395,10 @@ pub struct PlayToOut {
 }
 
 pub struct AppState {
+    /// The project: its sequences and media pool, and the undo history
+    /// of each (see [`klipp_document::Document`]). Which sequence is open
+    /// and its frame rate are the timeline view's, below.
+    pub document: klipp_document::Document,
     pub playback: PlaybackState,
     /// When the timeline's Play was asked for, until the engine says it
     /// started, paused or stopped: playback starts with its first picture,
@@ -1454,7 +1458,6 @@ pub struct AppState {
     pub workspace_manager_selected: Option<String>,
 
     // Project
-    pub sequences: Vec<Sequence>,
     pub active_sequence_idx: usize,
     /// Moves every time a project is opened, created or closed. A file
     /// picker opened under one epoch has its result discarded if it
@@ -1463,7 +1466,6 @@ pub struct AppState {
     /// Breadcrumb stack for navigating into compound clips. Each entry is
     /// (parent_sequence_idx, parent_playhead) so we can navigate back.
     pub compound_clip_stack: Vec<(usize, klipp_core::Timecode)>,
-    pub media_pool: MediaPool,
     /// Cache of synthesised whoosh `MediaId`s, keyed by the
     /// `WhooshVariant` u8 wire-format tag (0/1/2). Populated lazily
     /// the first time `ApplyHyperzoom { add_whoosh: true, .. }`
@@ -1555,26 +1557,11 @@ pub struct AppState {
     /// the last load or save (#2633): a track not among them when a step
     /// is recorded was made for it.
     pub recorded_tracks: std::collections::HashMap<klipp_core::SequenceId, Vec<klipp_core::TrackId>>,
-    /// Per-sequence undo stack. Keyed by `SequenceId` (stable across
-    /// reorder/delete) so an entry never points at a sequence that
-    /// shifted underneath it. Use `active_history` /
-    /// `active_history_mut` / `push_history` to access the current
-    /// sequence's stack.
-    pub command_histories: std::collections::HashMap<SequenceId, CommandHistory>,
-    /// The project's own undo history (#1986): the steps that belong to
-    /// the whole project — its colour set-up, a file's camera encoding,
-    /// the media pool's records — reachable by ctrl+z from any sequence.
-    /// Use `push_history`, `take_undo` and `take_redo`, which choose
-    /// between it and the active sequence's by when each step moved.
-    pub project_history: CommandHistory,
     /// The grade nodes a Bypass of each clip's grade group turned off,
     /// so its Enable turns those back on and leaves a node that was off
     /// before off (#2553). For this session only: after a reload, Enable
     /// turns on every node in the grade.
     pub grade_bypassed: std::collections::HashMap<klipp_core::ClipId, Vec<klipp_graph_format::NodeId>>,
-    /// The clock every history stamps its steps from, so the project's
-    /// and a sequence's compare.
-    pub history_clock: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Project-level autosave counter — incremented on every history
     /// push regardless of which sequence owned it. Cleared by the
     /// project-save path. Lives on AppState (not on CommandHistory)
@@ -4651,7 +4638,7 @@ impl AppState {
     /// `kind`'s analysis of `clip`'s media as `ensure_analyses` found it
     /// (M4 step 9): the file's, whichever clip of it asks.
     pub fn analysis_of(&self, clip: &klipp_timeline::Clip, kind: klipp_analysis::assets::AssetKind) -> Option<&std::sync::Arc<serde_json::Value>> {
-        let item = self.media_pool.get(&clip.media_id()?)?;
+        let item = self.document.media_pool.get(&clip.media_id()?)?;
         self.analyses.get(&klipp_analysis::assets::asset_key(kind, item)?)
     }
 
@@ -4864,6 +4851,7 @@ impl Default for AppState {
         // its feature flag).
         let shared_registry = build_shared_registry();
         Self {
+            document: Default::default(),
             playback: PlaybackState::Idle,
             play_starting: None,
             playhead: Timecode { value: 0, rate: 24 },
@@ -4883,11 +4871,9 @@ impl Default for AppState {
             save_hyperzoom_preset_source_clip: None,
             show_workspace_manager: false,
             workspace_manager_selected: None,
-            sequences: vec![Sequence::new_default()],
             active_sequence_idx: 0,
             project_epoch: 0,
             compound_clip_stack: Vec::new(),
-            media_pool: MediaPool::new(),
             whoosh_media_ids: std::collections::HashMap::new(),
             hyperzoom_preset_registry: crate::hyperzoom_presets::HyperzoomPresetRegistry::new(),
             title_assets: std::collections::HashMap::new(),
@@ -4903,10 +4889,7 @@ impl Default for AppState {
             unsaved: false,
             saved_digest: None,
             recorded_tracks: Default::default(),
-            command_histories: std::collections::HashMap::new(),
-            project_history: CommandHistory::new(),
             grade_bypassed: Default::default(),
-            history_clock: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             history_ops_since_save: 0,
             tracks_undo_gesture: None,
             sequence_length_seen: None,
@@ -5650,7 +5633,7 @@ impl AppState {
     /// not a clip of moving picture whose file is here, or on a locked
     /// track. `None` when it can.
     pub fn scene_cut_refusal(&self, clip_id: klipp_core::ClipId) -> Option<&'static str> {
-        klipp_document::ops::scene_cut_refusal(self.sequence(), &self.media_pool, clip_id)
+        klipp_document::ops::scene_cut_refusal(self.sequence(), &self.document.media_pool, clip_id)
     }
 
     /// Whether the clip meets a piece of its own shot after it (`next`)
@@ -5658,7 +5641,7 @@ impl AppState {
     pub fn can_join_through_edit(&self, clip_id: klipp_core::ClipId, next: bool) -> bool {
         let side = if next { klipp_document::ops::JoinSide::Next } else { klipp_document::ops::JoinSide::Previous };
         let op = klipp_document::ops::Op::Join { clip_id: klipp_document::ops::ClipRef::Id(clip_id), side };
-        klipp_document::ops::resolve(self.sequence(), &self.media_pool, std::slice::from_ref(&op)).is_ok()
+        klipp_document::ops::resolve(self.sequence(), &self.document.media_pool, std::slice::from_ref(&op)).is_ok()
     }
 
     /// The clip ending at the playhead whose edit there can be joined: on
@@ -5731,7 +5714,7 @@ impl AppState {
     /// workspace, where the timeline is hidden. Elsewhere it would take
     /// the timeline's rows, so the dock flag is ignored there.
     pub fn sequence(&self) -> &Sequence {
-        &self.sequences[self.active_sequence_idx]
+        &self.document.sequences[self.active_sequence_idx]
     }
     /// The LUT every export puts over the whole picture: the Timeline LUT,
     /// while it is on. The viewing and calibration LUTs are the screen's
@@ -5773,7 +5756,7 @@ impl AppState {
         self.sequence().timecode_display()
     }
     pub fn sequence_mut(&mut self) -> &mut Sequence {
-        &mut self.sequences[self.active_sequence_idx]
+        &mut self.document.sequences[self.active_sequence_idx]
     }
     /// One `BladeClip` per clip under the playhead, for Split at Playhead.
     /// A clip whose linked partner is already queued is left out: blading
@@ -5813,7 +5796,7 @@ impl AppState {
     /// refusal says why when there is something to say. Whether it cut.
     pub fn blade_one(&mut self, track_index: usize, clip_id: ClipId, cut_at: Timecode) -> bool {
         let magnetic: Vec<bool> = (0..self.sequence().tracks.len()).map(|ti| self.is_magnetic_track(ti)).collect();
-        let seq = &mut self.sequences[self.active_sequence_idx];
+        let seq = &mut self.document.sequences[self.active_sequence_idx];
         match klipp_document::blade::blade_linked(seq, track_index, clip_id, cut_at, |ti| magnetic.get(ti).copied().unwrap_or(false)) {
             Ok(edits) => {
                 for edit in edits {
@@ -5836,7 +5819,7 @@ impl AppState {
     pub fn is_magnetic_track(&self, track_index: usize) -> bool {
         self.magnetic_timeline_enabled
             && matches!(
-                self.sequences[self.active_sequence_idx].tracks.get(track_index).map(|t| &t.magnetic_role),
+                self.document.sequences[self.active_sequence_idx].tracks.get(track_index).map(|t| &t.magnetic_role),
                 Some(klipp_timeline::TrackRole::Primary | klipp_timeline::TrackRole::Connected | klipp_timeline::TrackRole::ConnectedStoryline)
             )
     }
@@ -5847,7 +5830,7 @@ impl AppState {
     /// what was left because the sound has its own, said once each. Not an
     /// undo step; the project is changed by it.
     pub fn move_sound_effects_on_open(&mut self) -> Vec<String> {
-        let (moved, kept) = self.sequences.iter_mut().map(|s| s.move_picture_sound_effects()).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+        let (moved, kept) = self.document.sequences.iter_mut().map(|s| s.move_picture_sound_effects()).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
         let mut said = Vec::new();
         if moved > 0 {
             said.push(format!("Moved {moved} sound effect{} to the sound clip{} {} meant for", if moved == 1 { "" } else { "s" }, if moved == 1 { "" } else { "s" }, if moved == 1 { "it was" } else { "they were" }));
@@ -5866,7 +5849,7 @@ impl AppState {
     /// so a roll on a sound cut moved the picture's cut with Linked off.
     pub fn roll_trim(&mut self, a: ClipId, b: ClipId, a_out: (Timecode, Timecode), b_in: (Timecode, Timecode), linked: bool) {
         use crate::history::EditCommand;
-        let seq = &self.sequences[self.active_sequence_idx];
+        let seq = &self.document.sequences[self.active_sequence_idx];
         let old_a = seq.all_clips().find(|c| c.id == a).map(|c| (c.source_out, c.timeline_out));
         let old_b = seq.all_clips().find(|c| c.id == b).map(|c| (c.source_in, c.timeline_in));
         let (Some((old_a_src_out, old_a_tl_out)), Some((old_b_src_in, old_b_tl_in))) = (old_a, old_b) else { return };
@@ -5887,7 +5870,7 @@ impl AppState {
             new_b_source_in: b_in.0,
             new_b_timeline_in: b_in.1,
         });
-        let seq = &mut self.sequences[self.active_sequence_idx];
+        let seq = &mut self.document.sequences[self.active_sequence_idx];
         for track in &mut seq.tracks {
             if let Some(c) = track.find_clip_mut(a) {
                 c.source_out = a_out.0;
@@ -5950,7 +5933,7 @@ impl AppState {
         fade_out_curve: klipp_timeline::FadeCurve,
         channel_config: klipp_timeline::ChannelConfig,
     ) -> Vec<crate::history::EditCommand> {
-        let seq = &mut self.sequences[self.active_sequence_idx];
+        let seq = &mut self.document.sequences[self.active_sequence_idx];
         let partner = seq.all_clips().find(|c| c.id == clip_id).and_then(|c| c.linked_clip_id);
         let mut edits = Vec::new();
         for id in std::iter::once(clip_id).chain(partner) {
@@ -6022,13 +6005,13 @@ impl AppState {
     /// yet (only happens for legacy on-disk projects loaded before the
     /// per-sequence migration).
     pub fn active_history(&self) -> &CommandHistory {
-        let id = self.sequences[self.active_sequence_idx].id;
+        let id = self.document.sequences[self.active_sequence_idx].id;
         self.history_for(id)
     }
     /// Mutable access to the active sequence's undo/redo stack. Lazily
     /// inserts an empty history sized by `history_max_size` if needed.
     pub fn active_history_mut(&mut self) -> &mut CommandHistory {
-        let id = self.sequences[self.active_sequence_idx].id;
+        let id = self.document.sequences[self.active_sequence_idx].id;
         self.history_for_mut(id)
     }
     pub fn history_for(&self, seq_id: SequenceId) -> &CommandHistory {
@@ -6036,14 +6019,14 @@ impl AppState {
         // entry indicates a project loaded before the migration —
         // return a pinned empty history rather than panic on undo.
         static EMPTY: std::sync::OnceLock<CommandHistory> = std::sync::OnceLock::new();
-        self.command_histories
+        self.document.command_histories
             .get(&seq_id)
             .unwrap_or_else(|| EMPTY.get_or_init(CommandHistory::new))
     }
     pub fn history_for_mut(&mut self, seq_id: SequenceId) -> &mut CommandHistory {
         let max = self.history_max_size;
         let shared = std::sync::Arc::clone(&self.control_shared);
-        let h = self.command_histories.entry(seq_id).or_insert_with(|| {
+        let h = self.document.command_histories.entry(seq_id).or_insert_with(|| {
             let mut h = CommandHistory::new();
             h.set_max_size(max);
             h
@@ -6055,7 +6038,7 @@ impl AppState {
             h.set_revision_shared(shared);
         }
         if !h.has_clock() {
-            h.set_clock(std::sync::Arc::clone(&self.history_clock));
+            h.set_clock(std::sync::Arc::clone(&self.document.history_clock));
         }
         h
     }
@@ -6063,13 +6046,13 @@ impl AppState {
     /// The project's history, set up as the sequences' are: their size,
     /// the document revision and the shared clock (#1986).
     pub fn project_history_mut(&mut self) -> &mut CommandHistory {
-        let h = &mut self.project_history;
+        let h = &mut self.document.project_history;
         h.set_max_size(self.history_max_size);
         if !h.has_revision_shared() {
             h.set_revision_shared(std::sync::Arc::clone(&self.control_shared));
         }
         if !h.has_clock() {
-            h.set_clock(std::sync::Arc::clone(&self.history_clock));
+            h.set_clock(std::sync::Arc::clone(&self.document.history_clock));
         }
         h
     }
@@ -6077,13 +6060,13 @@ impl AppState {
     /// Which history ctrl+z takes the next step back from (#1986): the
     /// project's or the active sequence's, whichever top step moved last.
     pub fn next_undo(&self) -> Option<crate::history::Scope> {
-        later(self.active_history().undo_stamp(), self.project_history.undo_stamp())
+        later(self.active_history().undo_stamp(), self.document.project_history.undo_stamp())
     }
 
     /// The step an undo would take next, from whichever history holds it.
     pub fn next_undo_command(&self) -> Option<&EditCommand> {
         let history = match self.next_undo()? {
-            crate::history::Scope::Project => &self.project_history,
+            crate::history::Scope::Project => &self.document.project_history,
             crate::history::Scope::Sequence => self.active_history(),
         };
         history.undo_entries().last().map(|e| &e.command)
@@ -6092,7 +6075,7 @@ impl AppState {
     /// The step a redo would put back next.
     pub fn next_redo_command(&self) -> Option<&EditCommand> {
         let history = match self.next_redo()? {
-            crate::history::Scope::Project => &self.project_history,
+            crate::history::Scope::Project => &self.document.project_history,
             crate::history::Scope::Sequence => self.active_history(),
         };
         history.redo_entries().last().map(|e| &e.command)
@@ -6159,18 +6142,18 @@ impl AppState {
     /// that edit.
     pub fn next_redo(&self) -> Option<crate::history::Scope> {
         let (seq, project) = (self.redo_fresh_sequence(), self.redo_fresh_project());
-        later(seq.then(|| self.active_history().redo_stamp()).flatten(), project.then(|| self.project_history.redo_stamp()).flatten())
+        later(seq.then(|| self.active_history().redo_stamp()).flatten(), project.then(|| self.document.project_history.redo_stamp()).flatten())
     }
 
     /// Whether the active sequence's redo is newer than every project edit.
     fn redo_fresh_sequence(&self) -> bool {
-        self.active_history().redo_stamp().is_some_and(|s| s > self.project_history.last_edit_stamp())
+        self.active_history().redo_stamp().is_some_and(|s| s > self.document.project_history.last_edit_stamp())
     }
 
     /// Whether the project's redo is newer than every sequence's edits.
     fn redo_fresh_project(&self) -> bool {
-        let last = self.command_histories.values().map(|h| h.last_edit_stamp()).max().unwrap_or(0);
-        self.project_history.redo_stamp().is_some_and(|s| s > last)
+        let last = self.document.command_histories.values().map(|h| h.last_edit_stamp()).max().unwrap_or(0);
+        self.document.project_history.redo_stamp().is_some_and(|s| s > last)
     }
 
     /// Which history the next undo and redo come from, for the control
@@ -6187,7 +6170,7 @@ impl AppState {
     /// socket name it: a project step says it is the project's.
     pub fn undo_label(&self) -> Option<String> {
         match self.next_undo()? {
-            crate::history::Scope::Project => self.project_history.undo_label().map(|l| format!("{l} (project)")),
+            crate::history::Scope::Project => self.document.project_history.undo_label().map(|l| format!("{l} (project)")),
             crate::history::Scope::Sequence => self.active_history().undo_label().map(str::to_owned),
         }
     }
@@ -6195,7 +6178,7 @@ impl AppState {
     /// What redo would put back, named as `undo_label` names it.
     pub fn redo_label(&self) -> Option<String> {
         match self.next_redo()? {
-            crate::history::Scope::Project => self.project_history.redo_label().map(|l| format!("{l} (project)")),
+            crate::history::Scope::Project => self.document.project_history.redo_label().map(|l| format!("{l} (project)")),
             crate::history::Scope::Sequence => self.active_history().redo_label().map(str::to_owned),
         }
     }
@@ -6203,15 +6186,15 @@ impl AppState {
     /// How many steps ctrl+z can take back from here: the active
     /// sequence's and the project's.
     pub fn undo_depth(&self) -> usize {
-        self.active_history().undo_count() + self.project_history.undo_count()
+        self.active_history().undo_count() + self.document.project_history.undo_count()
     }
 
     /// How many steps redo can put back from here.
     pub fn redo_depth(&self) -> usize {
-        let last_sequence_edit = self.command_histories.values().map(|h| h.last_edit_stamp()).max().unwrap_or(0);
-        let project_edit = self.project_history.last_edit_stamp();
+        let last_sequence_edit = self.document.command_histories.values().map(|h| h.last_edit_stamp()).max().unwrap_or(0);
+        let project_edit = self.document.project_history.last_edit_stamp();
         self.active_history().redo_stamped().filter(|(s, _)| *s > project_edit).count()
-            + self.project_history.redo_stamped().filter(|(s, _)| *s > last_sequence_edit).count()
+            + self.document.project_history.redo_stamped().filter(|(s, _)| *s > last_sequence_edit).count()
     }
 
     /// Drop redo steps an edit has made stale (#1986): they would never be
@@ -6219,8 +6202,8 @@ impl AppState {
     /// A stack's steps go stale from the top down, so a stale top means
     /// all of it.
     fn prune_stale_redo(&mut self) {
-        if self.project_history.redo_stamp().is_some() && !self.redo_fresh_project() {
-            self.project_history.clear_redo();
+        if self.document.project_history.redo_stamp().is_some() && !self.redo_fresh_project() {
+            self.document.project_history.clear_redo();
         }
         if self.active_history().redo_stamp().is_some() && !self.redo_fresh_sequence() {
             self.active_history_mut().clear_redo();
@@ -6232,11 +6215,11 @@ impl AppState {
     /// with its label, the next to undo last; and those redo can put
     /// back, the next to redo last. A project step's label says so.
     pub fn history_view(&self) -> (Vec<String>, Vec<String>) {
-        let (seq, project) = (self.active_history(), &self.project_history);
+        let (seq, project) = (self.active_history(), &self.document.project_history);
         let label = |e: &HistoryEntry, is_project: bool| if is_project { format!("{} (project)", e.label()) } else { e.label().to_owned() };
         let mut undo: Vec<(u64, String)> = seq.undo_stamped().map(|(s, e)| (s, label(e, false))).chain(project.undo_stamped().map(|(s, e)| (s, label(e, true)))).collect();
         undo.sort_by_key(|(s, _)| *s);
-        let last_sequence_edit = self.command_histories.values().map(|h| h.last_edit_stamp()).max().unwrap_or(0);
+        let last_sequence_edit = self.document.command_histories.values().map(|h| h.last_edit_stamp()).max().unwrap_or(0);
         let mut redo: Vec<(u64, String)> = seq.redo_stamped().filter(|(s, _)| *s > project.last_edit_stamp()).map(|(s, e)| (s, label(e, false)))
             .chain(project.redo_stamped().filter(|(s, _)| *s > last_sequence_edit).map(|(s, e)| (s, label(e, true))))
             .collect();
@@ -6271,25 +6254,25 @@ impl AppState {
     /// its pictures alongside.
     pub fn set_clip_log_format(&mut self, clip_id: klipp_core::ClipId, log_format: klipp_core::LogFormat) -> Option<klipp_core::MediaId> {
         let active = self.active_sequence_idx;
-        let media = self.sequences[active].all_clips().find(|c| c.id == clip_id)?.media_id();
-        let format_of = |state: &Self| media.and_then(|m| state.media_pool.get(&m)).map_or((Default::default(), false), |i| (i.log_format, i.log_format_user_set));
+        let media = self.document.sequences[active].all_clips().find(|c| c.id == clip_id)?.media_id();
+        let format_of = |state: &Self| media.and_then(|m| state.document.media_pool.get(&m)).map_or((Default::default(), false), |i| (i.log_format, i.log_format_user_set));
         let old = format_of(self);
         let of_file = |c: &klipp_timeline::Clip| c.id == clip_id || (media.is_some() && c.media_id() == media);
-        let before: Vec<(klipp_core::ClipId, klipp_nodes::NodeGraph)> = self.sequences.iter().flat_map(|s| s.all_clips()).filter(|c| of_file(c)).map(|c| (c.id, c.grade().clone())).collect();
-        if let Some(clip) = self.sequences[active].all_clips_mut().find(|c| c.id == clip_id) {
+        let before: Vec<(klipp_core::ClipId, klipp_nodes::NodeGraph)> = self.document.sequences.iter().flat_map(|s| s.all_clips()).filter(|c| of_file(c)).map(|c| (c.id, c.grade().clone())).collect();
+        if let Some(clip) = self.document.sequences[active].all_clips_mut().find(|c| c.id == clip_id) {
             clip.set_input_log_format(log_format);
         }
         if let Some(mid) = media {
-            if let Some(item) = self.media_pool.get_mut(&mid) {
+            if let Some(item) = self.document.media_pool.get_mut(&mid) {
                 item.log_format = log_format;
                 item.log_format_user_set = true;
             }
-            for clip in self.sequences.iter_mut().flat_map(|s| s.all_clips_mut()).filter(|c| c.media_id() == Some(mid)) {
+            for clip in self.document.sequences.iter_mut().flat_map(|s| s.all_clips_mut()).filter(|c| c.media_id() == Some(mid)) {
                 clip.set_input_log_format(log_format);
             }
         }
         let grades = before.into_iter().filter_map(|(id, was)| {
-            let now = self.sequences.iter().find_map(|s| s.all_clips().find(|c| c.id == id))?.grade().clone();
+            let now = self.document.sequences.iter().find_map(|s| s.all_clips().find(|c| c.id == id))?.grade().clone();
             Some((id, was, now))
         }).collect();
         let new = format_of(self);
@@ -6315,7 +6298,7 @@ impl AppState {
     pub(crate) fn pictures_to_remake(&self, effects: &klipp_document::apply::Effects) -> Vec<klipp_core::MediaId> {
         let mut ids: Vec<klipp_core::MediaId> = Vec::new();
         for id in &effects.refresh_media_pictures {
-            if !ids.contains(id) && self.media_pool.get(id).is_some() {
+            if !ids.contains(id) && self.document.media_pool.get(id).is_some() {
                 ids.push(*id);
             }
         }
@@ -6342,7 +6325,7 @@ impl AppState {
     pub fn set_title_field(&mut self, clip_id: klipp_core::ClipId, index: usize, value: &klipp_core::TitleFieldValue, done: bool) -> Result<(), String> {
         use klipp_core::TitleFieldValue as V;
         let seq = self.active_sequence_idx;
-        let clip = self.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("the title is gone")?;
+        let clip = self.document.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("the title is gone")?;
         let klipp_timeline::ClipKind::Title(td) = &mut clip.kind else { return Err("that clip isn't a title".into()) };
         let now = td.clone();
         let mut edited = now.clone();
@@ -6404,13 +6387,13 @@ impl AppState {
         // Its folder's bin, set before the step is recorded so undo and
         // redo carry it (#3096).
         if let (Some(bin), true) = (self.pending_import_bins.remove(&item.id), is_new) {
-            item.bin_id = Some(self.media_pool.find_or_create_bin(&bin));
+            item.bin_id = Some(self.document.media_pool.find_or_create_bin(&bin));
             item.bin = Some(bin);
         }
         if requested && is_new {
             self.push_history(EditCommand::AddMediaToPool { item: item.clone() });
         }
-        self.media_pool.add(item);
+        self.document.media_pool.add(item);
     }
 
     /// Push a single edit onto the active sequence's undo stack and
@@ -6465,7 +6448,7 @@ impl AppState {
         if !shorter || (new_in, new_out) == (old_in, old_out) || command.scope() == crate::history::Scope::Project {
             return command;
         }
-        let seq = &mut self.sequences[self.active_sequence_idx];
+        let seq = &mut self.document.sequences[self.active_sequence_idx];
         seq.in_point = new_in;
         seq.out_point = new_out;
         let (label, edit) = match command {
@@ -6502,7 +6485,7 @@ impl AppState {
         if removals.is_empty() {
             return command;
         }
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut self.sequences, active: self.active_sequence_idx, media_pool: &mut self.media_pool, fps: &mut self.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut self.document.sequences, active: self.active_sequence_idx, media_pool: &mut self.document.media_pool, fps: &mut self.fps };
         for r in &removals {
             let _ = view.apply_forward(r);
         }
@@ -6516,7 +6499,7 @@ impl AppState {
         fn with_primary_holes_filled(&mut self, command: EditCommand) -> EditCommand {
         let Some((track_index, gaps)) = self.sequence().primary_holes() else { return command };
         let fills: Vec<EditCommand> = gaps.into_iter().map(|clip| EditCommand::LegacyAppendClip { clip, track_index }).collect();
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut self.sequences, active: self.active_sequence_idx, media_pool: &mut self.media_pool, fps: &mut self.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut self.document.sequences, active: self.active_sequence_idx, media_pool: &mut self.document.media_pool, fps: &mut self.fps };
         for f in &fills {
             let _ = view.apply_forward(f);
         }
@@ -6600,12 +6583,12 @@ impl AppState {
         let mut before = vec![self.sequence().clone()];
         let (mut pool, mut fps) = (klipp_media::MediaPool::new(), self.fps);
         klipp_document::apply::DocumentView { sequences: &mut before, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&command);
-        let follow = klipp_document::matched::follow(&before[0], self.sequence(), &self.media_pool);
+        let follow = klipp_document::matched::follow(&before[0], self.sequence(), &self.document.media_pool);
         if follow.edits.is_empty() {
             return command;
         }
         let active = self.active_sequence_idx;
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut self.sequences, active, media_pool: &mut self.media_pool, fps: &mut self.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut self.document.sequences, active, media_pool: &mut self.document.media_pool, fps: &mut self.fps };
         for e in &follow.edits {
             view.apply_forward(e);
         }
@@ -6644,15 +6627,15 @@ impl AppState {
     /// the seed for sequences created later. Call from the prefs-changed path.
     pub fn set_history_max_size(&mut self, max: usize) {
         self.history_max_size = max;
-        for h in self.command_histories.values_mut() {
+        for h in self.document.command_histories.values_mut() {
             h.set_max_size(max);
         }
-        self.project_history.set_max_size(max);
+        self.document.project_history.set_max_size(max);
     }
     /// Are *any* of the per-sequence histories mid-drag? Used by the
     /// autosave timer to skip while the user is gesturing.
     pub fn any_drag_in_progress(&self) -> bool {
-        self.command_histories.values().any(|h| h.is_any_drag_in_progress()) || self.project_history.is_any_drag_in_progress()
+        self.document.command_histories.values().any(|h| h.is_any_drag_in_progress()) || self.document.project_history.is_any_drag_in_progress()
     }
 
     /// Resolve `selected_clip` to its (track_idx, &Clip) location in
@@ -6678,7 +6661,7 @@ impl AppState {
     pub fn skim_audio_may_start(&self, media: klipp_core::MediaId) -> bool {
         self.skim_audio_session.is_none()
             && !self.window_unfocused
-            && self.media_pool.get(&media).is_none_or(|m| m.has_audio)
+            && self.document.media_pool.get(&media).is_none_or(|m| m.has_audio)
             && !self.skim_audio_refused.is_some_and(|(m, at)| m == media && at.elapsed() < SKIM_AUDIO_RETRY)
     }
 
@@ -7449,7 +7432,7 @@ mod per_sequence_history_tests {
         let mut seq = Sequence::new_default();
         seq.name = name.to_string();
         let id = seq.id;
-        state.sequences.push(seq);
+        state.document.sequences.push(seq);
         id
     }
 
@@ -7467,8 +7450,8 @@ mod per_sequence_history_tests {
     fn push_targets_active_sequence() {
         let mut state = AppState::default();
         // Make sure we have a known starting active sequence.
-        assert!(!state.sequences.is_empty());
-        let seq_a_id = state.sequences[0].id;
+        assert!(!state.document.sequences.is_empty());
+        let seq_a_id = state.document.sequences[0].id;
         let seq_b_id = add_seq(&mut state, "B");
 
         state.active_sequence_idx = 0;
@@ -7486,7 +7469,7 @@ mod per_sequence_history_tests {
     #[test]
     fn switching_does_not_bleed_history() {
         let mut state = AppState::default();
-        let _seq_a = state.sequences[0].id;
+        let _seq_a = state.document.sequences[0].id;
         let _seq_b = add_seq(&mut state, "B");
         state.active_sequence_idx = 0;
         state.push_history(dummy_command());
@@ -7502,7 +7485,7 @@ mod per_sequence_history_tests {
     #[test]
     fn ops_since_save_is_project_global() {
         let mut state = AppState::default();
-        let _seq_a = state.sequences[0].id;
+        let _seq_a = state.document.sequences[0].id;
         let _seq_b = add_seq(&mut state, "B");
         state.active_sequence_idx = 0;
         state.push_history(dummy_command());
@@ -7542,7 +7525,7 @@ mod per_sequence_history_tests {
         state.push_history(seq_command("A"));
         state.push_history(project_command("P"));
         state.push_history(seq_command("B"));
-        assert!(state.project_history.can_undo() && state.active_history().undo_count() == 2, "the project's step is kept apart");
+        assert!(state.document.project_history.can_undo() && state.active_history().undo_count() == 2, "the project's step is kept apart");
         let undone: Vec<String> = std::iter::from_fn(|| undo_label_of(&mut state)).collect();
         assert_eq!(undone, ["B", "Set Tags (project)", "A"]);
         let redone: Vec<String> = std::iter::from_fn(|| redo_label_of(&mut state)).collect();
@@ -7584,7 +7567,7 @@ mod per_sequence_history_tests {
         state.active_sequence_idx = 0;
         assert_eq!(state.next_redo(), None, "an edit in B after P was undone: P is stale everywhere");
         assert_eq!(state.redo_depth(), 0);
-        assert!(!state.project_history.can_redo(), "the push dropped the stale project step");
+        assert!(!state.document.project_history.can_redo(), "the push dropped the stale project step");
         // A drag's end, recorded past push_history, does the same.
         state.push_history(project_command("Q"));
         state.take_undo();
@@ -7614,13 +7597,13 @@ mod per_sequence_history_tests {
         state.push_history(seq_command("A"));
         state.push_history(project_command("P"));
         state.active_history_mut().end_batch();
-        assert!(!state.project_history.can_undo());
+        assert!(!state.document.project_history.can_undo());
         assert_eq!(state.active_history().undo_count(), 1);
-        assert!(state.active_history().last_edit_stamp() > state.project_history.last_edit_stamp(), "the batch, project edit and all, is the sequence's last edit");
+        assert!(state.active_history().last_edit_stamp() > state.document.project_history.last_edit_stamp(), "the batch, project edit and all, is the sequence's last edit");
         assert_eq!(state.next_redo(), None, "closing the batch ended the older project redo");
         assert_eq!(state.redo_depth(), 0);
         state.push_history(seq_command("next"));
-        assert!(!state.project_history.can_redo(), "and the stale step is dropped, not kept");
+        assert!(!state.document.project_history.can_redo(), "and the stale step is dropped, not kept");
     }
 
     /// Typing on either side of a project step is two steps, not one
@@ -7653,7 +7636,7 @@ mod per_sequence_history_tests {
     #[test]
     fn set_history_max_size_propagates_to_all_existing() {
         let mut state = AppState::default();
-        let _seq_a = state.sequences[0].id;
+        let _seq_a = state.document.sequences[0].id;
         let seq_b = add_seq(&mut state, "B");
         state.active_sequence_idx = 0;
         state.push_history(dummy_command()); // seeds A's history
@@ -7700,7 +7683,7 @@ mod per_sequence_history_tests {
         assert_eq!(state.history_for(new_id).undo_count(), 0);
         // Writing creates the entry on demand.
         let _ = state.history_for_mut(new_id);
-        assert!(state.command_histories.contains_key(&new_id));
+        assert!(state.document.command_histories.contains_key(&new_id));
     }
 
     /// Avoid breaking the legacy default-resolution check — included
@@ -7720,13 +7703,13 @@ mod per_sequence_history_tests {
     #[test]
     fn a_project_opened_again_has_no_steps_from_before() {
         let mut state = AppState::default();
-        let seq = state.sequences[0].clone();
+        let seq = state.document.sequences[0].clone();
         state.push_history(seq_command("Lift Clips"));
         state.push_history(project_command("from X"));
         assert_eq!(state.undo_depth(), 2);
         state.forget_project();
         // The same project's sequences, as the file loads them.
-        state.sequences = vec![seq];
+        state.document.sequences = vec![seq];
         state.active_sequence_idx = 0;
         assert_eq!(state.undo_depth(), 0, "no step of the last opening is left");
         assert_eq!(state.undo_label(), None);
@@ -7989,7 +7972,7 @@ mod split_at_playhead_tests {
         assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
 
         let entry = state.take_undo().expect("the split to undo");
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
         view.apply_inverse(&entry.command);
         assert_eq!(shape(&state), before, "one undo puts all three back");
     }
@@ -8170,15 +8153,15 @@ mod sequence_summaries_tests {
     #[test]
     fn every_sequence_is_listed_with_its_clips_and_the_open_one() {
         let mut state = AppState::default();
-        let mut second = state.sequences[0].clone();
+        let mut second = state.document.sequences[0].clone();
         second.id = klipp_core::SequenceId::new();
         second.name = "Social cut".into();
-        state.sequences.push(second);
+        state.document.sequences.push(second);
         state.active_sequence_idx = 1;
         let (list, active) = state.sequence_summaries();
         assert_eq!(list.len(), 2);
-        assert_eq!((list[1].name.as_str(), list[1].id.clone()), ("Social cut", state.sequences[1].id.to_string()));
-        assert_eq!(list[0].clips, state.sequences[0].tracks.iter().map(|t| t.clips.len()).sum::<usize>());
+        assert_eq!((list[1].name.as_str(), list[1].id.clone()), ("Social cut", state.document.sequences[1].id.to_string()));
+        assert_eq!(list[0].clips, state.document.sequences[0].tracks.iter().map(|t| t.clips.len()).sum::<usize>());
         assert_eq!(active, 1);
     }
 }
@@ -8194,18 +8177,18 @@ mod log_format_undo_tests {
     fn a_camera_encoding_pick_is_one_step_undone_whole() {
         let mut state = AppState::default();
         let media = klipp_core::MediaId::new();
-        let fps = state.sequences[0].fps;
+        let fps = state.document.sequences[0].fps;
         let item = klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), klipp_core::RationalTime::from_secs_f64(2.0, 24), fps);
-        state.media_pool.add(item);
+        state.document.media_pool.add(item);
         let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
         let clip = || klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0));
-        state.sequences.push(state.sequences[0].clone());
+        state.document.sequences.push(state.document.sequences[0].clone());
         let (a, b) = (clip(), clip());
         let (a_id, b_id) = (a.id, b.id);
-        state.sequences[0].tracks[0].clips.push(a);
-        state.sequences[1].tracks[0].clips.push(b);
-        let picture = |s: &AppState, id| serde_json::to_value(s.sequences.iter().find_map(|q| q.all_clips().find(|c| c.id == id)).unwrap().grade()).unwrap();
-        let format = |s: &AppState| s.media_pool.get(&media).map(|i| (i.log_format, i.log_format_user_set)).unwrap();
+        state.document.sequences[0].tracks[0].clips.push(a);
+        state.document.sequences[1].tracks[0].clips.push(b);
+        let picture = |s: &AppState, id| serde_json::to_value(s.document.sequences.iter().find_map(|q| q.all_clips().find(|c| c.id == id)).unwrap().grade()).unwrap();
+        let format = |s: &AppState| s.document.media_pool.get(&media).map(|i| (i.log_format, i.log_format_user_set)).unwrap();
         let before = (picture(&state, a_id), picture(&state, b_id), format(&state));
         assert_eq!(state.set_clip_log_format(a_id, klipp_core::LogFormat::SLog3), Some(media));
         assert_eq!(format(&state), (klipp_core::LogFormat::SLog3, true));
@@ -8214,11 +8197,11 @@ mod log_format_undo_tests {
         let after = (picture(&state, a_id), picture(&state, b_id), format(&state));
         let entry = state.take_undo().unwrap();
         let active = state.active_sequence_idx;
-        let mut doc = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        let mut doc = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
         doc.apply_inverse(&entry.command);
         assert_eq!((picture(&state, a_id), picture(&state, b_id), format(&state)), before, "undo takes it all back");
         let entry = state.take_redo().unwrap();
-        let mut doc = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        let mut doc = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
         doc.apply_forward(&entry.command);
         assert_eq!((picture(&state, a_id), picture(&state, b_id), format(&state)), after, "redo puts it back");
     }
@@ -8232,12 +8215,12 @@ mod log_format_undo_tests {
     fn undoing_a_camera_encoding_remakes_the_files_pictures() {
         let mut state = AppState::default();
         let media = klipp_core::MediaId::new();
-        let fps = state.sequences[0].fps;
-        state.media_pool.add(klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), klipp_core::RationalTime::from_secs_f64(2.0, 24), fps));
+        let fps = state.document.sequences[0].fps;
+        state.document.media_pool.add(klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), klipp_core::RationalTime::from_secs_f64(2.0, 24), fps));
         let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
         let clip = klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0));
         let id = clip.id;
-        state.sequences[0].tracks[0].clips.push(clip);
+        state.document.sequences[0].tracks[0].clips.push(clip);
         state.set_clip_log_format(id, klipp_core::LogFormat::SLog3);
         let ctx = egui::Context::default();
         let texture = |name: &str| ctx.load_texture(name, egui::ColorImage::filled([1, 1], egui::Color32::BLACK), Default::default());
@@ -8250,10 +8233,10 @@ mod log_format_undo_tests {
             state.filmstrip_in_progress.insert(media);
             let effects = if undo {
                 let entry = state.take_undo().unwrap();
-                klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command)
+                klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command)
             } else {
                 let entry = state.take_redo().unwrap();
-                klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&entry.command)
+                klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(&entry.command)
             };
             let remake = state.pictures_to_remake(&effects);
             assert_eq!(remake, vec![media], "undo {undo}: the file's pictures are made again");
@@ -8399,8 +8382,8 @@ mod pool_import_undo_tests {
     fn replay(state: &mut AppState, redo: bool) {
         let entry = if redo { state.take_redo() } else { state.take_undo() }.expect("history step");
         let mut doc = klipp_document::apply::DocumentView {
-            sequences: &mut state.sequences, active: state.active_sequence_idx,
-            media_pool: &mut state.media_pool, fps: &mut state.fps,
+            sequences: &mut state.document.sequences, active: state.active_sequence_idx,
+            media_pool: &mut state.document.media_pool, fps: &mut state.fps,
         };
         let effects = if redo { doc.apply_forward(&entry.command) } else { doc.apply_inverse(&entry.command) };
         assert!(effects.sync_media_pool);
@@ -8423,11 +8406,11 @@ mod pool_import_undo_tests {
         assert!(revision.revision.load(std::sync::atomic::Ordering::Relaxed) > 0);
         assert!(!state.pending_undo_imports.contains(&id));
         replay(&mut state, false);
-        assert!(state.media_pool.get(&id).is_none());
+        assert!(state.document.media_pool.get(&id).is_none());
         assert_eq!(std::fs::read(&path).unwrap(), b"source bytes", "undo never deletes or changes source media");
         replay(&mut state, true);
-        assert_eq!(state.media_pool.get(&id).unwrap().tags, ["original"]);
-        assert_eq!(state.media_pool.get(&id).unwrap().path, path);
+        assert_eq!(state.document.media_pool.get(&id).unwrap().tags, ["original"]);
+        assert_eq!(state.document.media_pool.get(&id).unwrap().path, path);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -8443,13 +8426,13 @@ mod pool_import_undo_tests {
         state.complete_pool_import(a, true);
         assert_eq!(state.undo_depth(), 2);
         replay(&mut state, false);
-        assert!(state.media_pool.get(&a_id).is_none());
-        assert!(state.media_pool.get(&b_id).is_some());
+        assert!(state.document.media_pool.get(&a_id).is_none());
+        assert!(state.document.media_pool.get(&b_id).is_some());
         replay(&mut state, false);
-        assert!(state.media_pool.get(&b_id).is_none());
+        assert!(state.document.media_pool.get(&b_id).is_none());
         replay(&mut state, true);
         replay(&mut state, true);
-        assert!(state.media_pool.get(&a_id).is_some() && state.media_pool.get(&b_id).is_some());
+        assert!(state.document.media_pool.get(&a_id).is_some() && state.document.media_pool.get(&b_id).is_some());
     }
 
     #[test]
@@ -8477,19 +8460,19 @@ mod pool_import_undo_tests {
         state.pending_undo_imports.insert(id);
         state.pending_import_bins.insert(id, "video/day 2".into());
         state.complete_pool_import(item.clone(), true);
-        let pooled = state.media_pool.get(&id).unwrap();
+        let pooled = state.document.media_pool.get(&id).unwrap();
         assert_eq!(pooled.bin.as_deref(), Some("video/day 2"));
         let bin_id = pooled.bin_id.expect("the bin made");
-        assert!(state.media_pool.bins.iter().any(|b| b.id == bin_id && b.name == "video/day 2"));
+        assert!(state.document.media_pool.bins.iter().any(|b| b.id == bin_id && b.name == "video/day 2"));
         assert!(state.pending_import_bins.is_empty());
         replay(&mut state, false);
-        assert!(state.media_pool.get(&id).is_none());
+        assert!(state.document.media_pool.get(&id).is_none());
         replay(&mut state, true);
-        assert_eq!(state.media_pool.get(&id).unwrap().bin.as_deref(), Some("video/day 2"), "redo keeps the bin");
+        assert_eq!(state.document.media_pool.get(&id).unwrap().bin.as_deref(), Some("video/day 2"), "redo keeps the bin");
 
         state.pending_import_bins.insert(id, "elsewhere".into());
         state.complete_pool_import(item, false);
-        assert_eq!(state.media_pool.get(&id).unwrap().bin, None, "a re-probe is not put in a bin");
+        assert_eq!(state.document.media_pool.get(&id).unwrap().bin, None, "a re-probe is not put in a bin");
         assert!(state.pending_import_bins.is_empty());
     }
 }
@@ -8507,7 +8490,7 @@ mod speed_dialog_tests {
         let p = state.sequence().primary_track_index().unwrap();
         let a = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(2.0));
         let id = a.id;
-        state.sequences[state.active_sequence_idx].tracks[p].clips = vec![a];
+        state.document.sequences[state.active_sequence_idx].tracks[p].clips = vec![a];
         state.speed_dialog_ripple = false;
         state.open_speed_dialog(id);
         assert!((state.speed_dialog_content_secs - 2.0).abs() < 1e-6, "2 s of source");
@@ -8532,7 +8515,7 @@ mod switch_sequence_tests {
     #[test]
     fn a_focus_keeps_the_view_a_tab_clears() {
         let mut state = AppState::default();
-        state.sequences.push(klipp_timeline::Sequence::new_default());
+        state.document.sequences.push(klipp_timeline::Sequence::new_default());
         let clip = ClipId::new();
         let at = |s: f64| Timecode::from_secs_f64(s, 24);
         for keep in [false, true] {
@@ -8542,9 +8525,9 @@ mod switch_sequence_tests {
             state.compound_clip_stack = vec![(0, at(1.0))];
             assert!(state.switch_sequence(1, keep));
             assert_eq!(state.active_sequence_idx, 1);
-            assert_eq!(state.sequences[0].last_playhead, Some(at(3.0)));
+            assert_eq!(state.document.sequences[0].last_playhead, Some(at(3.0)));
             assert_eq!((state.selected_clip.is_some(), state.compound_clip_stack.is_empty()), (keep, !keep), "keep_view {keep}");
-            state.sequences[1].last_playhead = None;
+            state.document.sequences[1].last_playhead = None;
         }
         assert!(!state.switch_sequence(1, false), "already shown");
     }
@@ -8555,7 +8538,7 @@ impl AppState {
     /// clips by name, as the pool lists them first, else the clip in the
     /// source viewer.
     pub(crate) fn append_targets(&self) -> Vec<MediaId> {
-        let mut picked: Vec<&klipp_media::MediaItem> = self.media_pool.all().filter(|m| self.selected_media_ids.contains(&m.id)).collect();
+        let mut picked: Vec<&klipp_media::MediaItem> = self.document.media_pool.all().filter(|m| self.selected_media_ids.contains(&m.id)).collect();
         picked.sort_by(|a, b| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()).then_with(|| a.id.0.cmp(&b.id.0)));
         let selected: Vec<MediaId> = picked.into_iter().map(|m| m.id).collect();
         if !selected.is_empty() {
@@ -8619,12 +8602,12 @@ mod selection_and_skim_tests {
         let id = MediaId::new();
         let mut silent = klipp_media::MediaItem::new_synthetic_title(id, "silent.mp4".into(), klipp_core::Timecode::from_secs_f64(5.0, 25), fps);
         silent.has_audio = false;
-        state.media_pool.add(silent);
+        state.document.media_pool.add(silent);
         assert!(!state.skim_audio_may_start(id), "no sound: nothing to start");
         let heard = MediaId::new();
         let mut sound = klipp_media::MediaItem::new_synthetic_title(heard, "sound.mp4".into(), klipp_core::Timecode::from_secs_f64(5.0, 25), fps);
         sound.has_audio = true;
-        state.media_pool.add(sound);
+        state.document.media_pool.add(sound);
         assert!(state.skim_audio_may_start(heard));
     }
 }
@@ -8673,7 +8656,7 @@ mod broken_transition_tests {
         assert!(s.sequence().tracks[ti].transitions.is_empty(), "the transition off its cut is gone");
 
         let entry = s.active_history_mut().undo().expect("the move's step");
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut s.sequences, active: s.active_sequence_idx, media_pool: &mut s.media_pool, fps: &mut s.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut s.document.sequences, active: s.active_sequence_idx, media_pool: &mut s.document.media_pool, fps: &mut s.fps };
         let _ = view.apply_inverse(&entry.command);
         let t = &s.sequence().tracks[ti];
         assert_eq!(t.find_clip(b.id).map(|c| c.timeline_in), Some(tc(2.0)), "B back on the cut");
@@ -8719,10 +8702,10 @@ mod sound_effects_on_open_tests {
             s.audio_effects = sound_fx;
         }
         let dir = std::env::temp_dir().join(format!("klipp-sound-fx-{}", uuid::Uuid::new_v4())).join("Moved.klipp");
-        klipp_project::save_project(&dir, &state.sequences, &state.media_pool).unwrap();
+        klipp_project::save_project(&dir, &state.document.sequences, &state.document.media_pool).unwrap();
         let (sequences, ..) = klipp_project::load_project(&dir).unwrap();
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
-        (AppState { sequences, ..Default::default() }, v, a)
+        (AppState { document: klipp_document::Document { sequences, ..Default::default() }, ..Default::default() }, v, a)
     }
 
     /// A project saved with Hum Removal on a picture whose sound is on an
@@ -8828,9 +8811,9 @@ mod clip_audio_pair_tests {
         assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
         assert_eq!(state.active_history().undo_label(), Some("Edit Audio"));
         let entry = state.take_undo().expect("the edit");
-        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+        klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
         assert_eq!(gains(&state), [1.0, 1.0], "undone on both halves");
-        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&entry.command);
+        klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(&entry.command);
         assert_eq!(gains(&state), [2.0, 2.0], "redone on both");
     }
 }

@@ -61,7 +61,7 @@ impl TransportBar {
         // has a file loaded (Stopped/Paused/Playing) or the timeline has clips
         // (the sequence has at least one non-empty track — handles generator-only timelines
         // where the engine never leaves Idle because no media file was loaded).
-        let has_clips = state.sequences.get(state.active_sequence_idx)
+        let has_clips = state.document.sequences.get(state.active_sequence_idx)
             .map(|seq| seq.tracks.iter().any(|t| !t.clips.is_empty()))
             .unwrap_or(false);
         let enabled = state.playback != PlaybackState::Idle || has_clips;
@@ -495,7 +495,7 @@ impl TransportBar {
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
-        let has_clips = state.sequences.get(state.active_sequence_idx)
+        let has_clips = state.document.sequences.get(state.active_sequence_idx)
             .map(|seq| seq.tracks.iter().any(|t| !t.clips.is_empty()))
             .unwrap_or(false);
         if state.playback == PlaybackState::Idle && !has_clips {
@@ -765,9 +765,9 @@ mod jkl_step_tests {
     /// speed it asks for.
     fn press_l(speed: f64, step: f64) -> Option<f64> {
         let mut state = AppState::default();
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         let (zero, end) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 240, rate: 24 });
-        state.sequences[0].tracks[v1].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), zero, end, zero, end));
+        state.document.sequences[0].tracks[v1].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), zero, end, zero, end));
         state.project_path = Some(crate::project_paths::UNTITLED.into());
         state.playback = PlaybackState::Playing;
         state.playback_speed = speed;
@@ -806,9 +806,9 @@ mod jkl_step_tests {
     #[test]
     fn space_pauses_a_play_still_waiting_for_its_first_picture() {
         let mut state = AppState::default();
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         let (zero, end) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 240, rate: 24 });
-        state.sequences[0].tracks[v1].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), zero, end, zero, end));
+        state.document.sequences[0].tracks[v1].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), zero, end, zero, end));
         state.project_path = Some(crate::project_paths::UNTITLED.into());
         state.playback = PlaybackState::Paused;
         let asked = |cmds: &[AppCommand]| cmds.iter().find(|c| matches!(c, AppCommand::Play | AppCommand::Pause)).map(|c| format!("{c:?}"));

@@ -212,7 +212,7 @@ impl KlippApp {
             return;
         }
         crate::ui_util::panel_ui(ui, body, "graph_dock_body", |ui| {
-            let Some(clip) = clip_id.and_then(|id| self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == id)) else {
+            let Some(clip) = clip_id.and_then(|id| self.state.document.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == id)) else {
                 ui.centered_and_justified(|ui| { ui.label("Select a clip to show its graph"); });
                 return;
             };
@@ -222,7 +222,7 @@ impl KlippApp {
             self.node_graph_v2_panel.picture_solo = self.state.solo_node;
             self.node_graph_v2_panel.compared_node = self.state.split_compare_node.as_ref().filter(|(c, _)| *c == clip.id).and_then(|(_, p)| p.node());
             self.node_graph_v2_panel.node_feedback = self.state.node_feedback(clip.id);
-            self.node_graph_v2_panel.node_labels = super::node_labels::canvas_labels(&self.state.sequences[self.state.active_sequence_idx]);
+            self.node_graph_v2_panel.node_labels = super::node_labels::canvas_labels(&self.state.document.sequences[self.state.active_sequence_idx]);
             match self.node_graph_v2_panel.show_picture(ui, clip, &mut level, &mut self.state.selected_node_id, &mut self.state.selected_node_ids, theme, time, keyboard_enabled, &self.state.node_thumbs, self.state.node_thumbs_gen, &mut self.state.deferred_texture_drops[self.state.deferred_texture_drops_slot]) {
                 Ok(updates) => cmds.extend(updates),
                 Err(why) => { ui.label(why); }
@@ -324,14 +324,14 @@ mod tests {
         let matte_id = matte.id;
         let mut above = klipp_timeline::Track::new("V2", klipp_timeline::TrackKind::Video);
         above.clips.push(matte);
-        s.sequences[0].tracks.insert(0, above);
+        s.document.sequences[0].tracks.insert(0, above);
         s.selected_clip = None;
         s.graph_dock_root = None;
         s.playhead = t(1.0);
         s.toggle_graph_dock();
         assert_eq!(s.graph_dock_root, Some(Root::Clip { clip: id.0 }), "the footage the matte shapes");
         s.toggle_graph_dock();
-        s.sequences[0].tracks[0].clips[0].consumed_as_matte = false;
+        s.document.sequences[0].tracks[0].clips[0].consumed_as_matte = false;
         s.graph_dock_root = None;
         s.toggle_graph_dock();
         assert_eq!(s.graph_dock_root, Some(Root::Clip { clip: matte_id.0 }), "control: shown as itself, the clip above");
@@ -345,7 +345,7 @@ mod tests {
         let group = picture.picture.graph.nodes.iter().find(|n| n.group.is_some()).unwrap();
         let path = NodePath::new(Root::Clip { clip: id.0 }, [group.id, group.group.as_ref().unwrap().graph.output]);
         let mut state = AppState::default();
-        state.sequences[0].tracks[0].clips.push(clip);
+        state.document.sequences[0].tracks[0].clips.push(clip);
         state.selected_clip = Some(id);
         (state, id, path)
     }
@@ -361,7 +361,7 @@ mod tests {
         let blurs = graph.nodes.iter().filter(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).map(|n| NodePath::new(Root::Clip { clip: clip.id.0 }, [n.id])).collect::<Vec<_>>();
         assert_eq!(blurs.len(), 10);
         let mut state = AppState::default();
-        state.sequences[0].tracks[0].clips.push(clip.clone());
+        state.document.sequences[0].tracks[0].clips.push(clip.clone());
         state.selected_clip = Some(clip.id);
         (state, clip, blurs)
     }
@@ -440,7 +440,7 @@ mod tests {
         let (inner, inner_id) = wrap(Default::default());
         let (outer, outer_id) = wrap(inner);
         let (mut s, id, _) = state();
-        s.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap().set_grade(outer);
+        s.document.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap().set_grade(outer);
         s.graph_descent_path = vec![outer_id, inner_id];
         (s, id, vec![outer_id, inner_id])
     }
@@ -468,7 +468,7 @@ mod tests {
         let (mut s, id, path) = nested_grade();
         s.selected_node_id = Some(uuid::Uuid::new_v4());
         s.selected_node_ids.extend(s.selected_node_id);
-        s.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap().edit_grade(|g| {
+        s.document.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap().edit_grade(|g| {
             g.nodes.iter_mut().find(|n| n.id == path[0]).unwrap().params.compound_subgraph = Some(Default::default());
         });
         let before = s.sequence().all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap();
@@ -478,7 +478,7 @@ mod tests {
         assert!(!s.dirty);
         assert_eq!(s.active_history().undo_count(), 0);
         assert_eq!(s.sequence().all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap(), before);
-        s.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap().set_grade(Default::default());
+        s.document.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap().set_grade(Default::default());
         assert!(s.repair_grade_descent());
         assert!(s.graph_descent_path.is_empty());
         assert_eq!(s.selected_clip, Some(id));

@@ -36,7 +36,7 @@ pub fn paint_focus(ui: &egui::Ui, theme: &KlippTheme, worked: egui::Rect, other_
 /// `idx` (#2324): its header, its ruler and its tracks, never above
 /// [`MAX_HEIGHT`].
 pub fn fitting_height(state: &AppState, idx: usize) -> f32 {
-    let tracks: f32 = state.sequences.get(idx).map_or(0.0, |s| s.tracks.iter().map(crate::panels::timeline::track_row_height).sum());
+    let tracks: f32 = state.document.sequences.get(idx).map_or(0.0, |s| s.tracks.iter().map(crate::panels::timeline::track_row_height).sum());
     (HEADER + crate::theme::RULER_HEIGHT + tracks + 8.0).min(MAX_HEIGHT)
 }
 
@@ -57,19 +57,19 @@ impl Stacked {
     /// The selects at `top_idx` stacked over what the state shows: the
     /// one not being worked in parked, from its sequence's own playhead.
     fn new(state: &AppState, top_idx: usize) -> Self {
-        let parked = if state.active_sequence_idx == top_idx { (0..state.sequences.len()).find(|i| *i != top_idx).unwrap_or(top_idx) } else { top_idx };
-        let rate = state.sequences[parked].fps.rate();
-        let playhead = state.sequences[parked].last_playhead.unwrap_or(klipp_core::RationalTime::from_frames(0, rate));
+        let parked = if state.active_sequence_idx == top_idx { (0..state.document.sequences.len()).find(|i| *i != top_idx).unwrap_or(top_idx) } else { top_idx };
+        let rate = state.document.sequences[parked].fps.rate();
+        let playhead = state.document.sequences[parked].last_playhead.unwrap_or(klipp_core::RationalTime::from_frames(0, rate));
         let mut old = crate::panels::timeline::TimelinePanel::default();
         old.embedded = true;
-        Stacked { panel: NewTimelinePanel::default(), old, view: TimelineView::fresh(parked, state.sequences[parked].fps, playhead, state.timeline_zoom), top_idx }
+        Stacked { panel: NewTimelinePanel::default(), old, view: TimelineView::fresh(parked, state.document.sequences[parked].fps, playhead, state.timeline_zoom), top_idx }
     }
 
     /// Whether this still fits the state: the selects at `top_idx`, and
     /// the parked view the other of the two.
     fn fits(&self, state: &AppState, top_idx: usize) -> bool {
         let parked = self.view.active_sequence_idx;
-        self.top_idx == top_idx && parked < state.sequences.len() && parked != state.active_sequence_idx && (parked == top_idx || state.active_sequence_idx == top_idx)
+        self.top_idx == top_idx && parked < state.document.sequences.len() && parked != state.active_sequence_idx && (parked == top_idx || state.active_sequence_idx == top_idx)
     }
 }
 
@@ -105,7 +105,7 @@ pub(super) fn draw_parked(view: &mut TimelineView, state: &mut AppState, take: b
 /// the switch queued ahead of anything else.
 pub(crate) fn focus(view: &mut TimelineView, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
     let to = view.active_sequence_idx;
-    state.sequences[to].last_playhead = Some(view.playhead);
+    state.document.sequences[to].last_playhead = Some(view.playhead);
     let (from, playhead, smooth, anchor) = (state.active_sequence_idx, state.playhead, state.playhead_smooth_secs, state.playhead_anchor);
     view.swap(state);
     // Until the switch runs the state still shows the one left, so the
@@ -123,7 +123,7 @@ pub(crate) fn focus(view: &mut TimelineView, state: &mut AppState, cmds: &mut Ve
 /// one worked in this frame.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn show_top(main: &mut NewTimelinePanel, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: egui::Rect, cut: egui::Rect, kb: &crate::keybindings::KeyBindings, cmds: &mut Vec<AppCommand>) -> bool {
-    let Some(top_idx) = state.selects_sequence.and_then(|id| state.sequences.iter().position(|s| s.id == id)) else { return false };
+    let Some(top_idx) = state.selects_sequence.and_then(|id| state.document.sequences.iter().position(|s| s.id == id)) else { return false };
     let mut st = match main.stacked.take() {
         Some(st) if st.fits(state, top_idx) => st,
         _ => Box::new(Stacked::new(state, top_idx)),
@@ -161,7 +161,7 @@ pub(super) fn show_top(main: &mut NewTimelinePanel, ui: &mut egui::Ui, state: &m
 /// selected clips' span) down onto the cut.
 /// Whether Done was pressed.
 fn header_row(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: egui::Rect, top_idx: usize, parked: Option<&TimelineView>, cut: egui::Rect) -> bool {
-    let seq = &state.sequences[top_idx];
+    let seq = &state.document.sequences[top_idx];
     let (id, name) = (seq.id, seq.name.clone());
     let marked = match (seq.in_point, seq.out_point) {
         (Some(a), Some(b)) if b > a => Some((a, b)),
@@ -228,7 +228,7 @@ pub fn start_carry(state: &mut AppState, hit: klipp_core::ClipId, ctrl: bool) ->
 /// Whether the selects are stacked above the cut as a timeline of their
 /// own: switched on, still a sequence, and not on the Colour page's strip.
 pub fn stacked_edit(state: &AppState) -> bool {
-    !state.show_color_panel && state.selects_edit && state.selects_sequence.is_some_and(|id| state.sequences.iter().any(|s| s.id == id))
+    !state.show_color_panel && state.selects_edit && state.selects_sequence.is_some_and(|id| state.document.sequences.iter().any(|s| s.id == id))
 }
 
 /// How near, in points, a carried copy snaps to the playhead or a clip's
@@ -243,20 +243,20 @@ const SNAP_PX: f32 = 8.0;
 #[allow(clippy::too_many_arguments)]
 pub(super) fn carry_frame(st: &mut Stacked, ui: &egui::Ui, state: &mut AppState, theme: &KlippTheme, top: egui::Rect, cut: egui::Rect, cut_tracks: &[(usize, klipp_timeline::TrackKind, egui::Rect)], cmds: &mut Vec<AppCommand>) {
     let Some((from, ids)) = state.clip_carry.clone() else { return };
-    let top_id = state.sequences[st.top_idx].id;
+    let top_id = state.document.sequences[st.top_idx].id;
     let cut_idx = if state.active_sequence_idx == st.top_idx { st.view.active_sequence_idx } else { state.active_sequence_idx };
     let (rect, target) = if from == top_id { (cut, cut_idx) } else { (egui::Rect::from_min_max(egui::pos2(top.min.x, top.min.y + HEADER), top.max), st.top_idx) };
     let live = state.active_sequence_idx == target;
     let (zoom, scroll, playhead) = if live { (state.timeline_zoom, state.timeline_scroll_x, state.playhead) } else { (st.view.timeline_zoom, st.view.timeline_scroll_x, st.view.playhead) };
     let zoom = zoom.max(1e-3);
-    let fps = state.sequences[target].fps;
+    let fps = state.document.sequences[target].fps;
     let left = rect.min.x + state.track_header_width;
     let x_of = |secs: f64| left + secs as f32 * zoom - scroll;
     let over = ui.input(|i| i.pointer.latest_pos()).filter(|p| rect.contains(*p) && p.x >= left);
     // The target's track under the pointer, as it was drawn this frame.
     let tracks = if from == top_id { cut_tracks.to_vec() } else { st.old.frame_cache.track_rects.clone() };
     let lane = over.and_then(|p| tracks.iter().find(|(_, _, r)| r.y_range().contains(p.y)).map(|(i, _, r)| (*i, *r)));
-    let Some(source) = state.sequences.iter().find(|s| s.id == from) else {
+    let Some(source) = state.document.sequences.iter().find(|s| s.id == from) else {
         state.clip_carry = None;
         return;
     };
@@ -264,7 +264,7 @@ pub(super) fn carry_frame(st: &mut Stacked, ui: &egui::Ui, state: &mut AppState,
     let span = carried.iter().map(|c| c.timeline_out).max().zip(carried.iter().map(|c| c.timeline_in).min()).map_or(0.0, |(b, a)| (b - a).to_secs_f64());
     let at = over.map(|p| {
         let secs = (((p.x - left + scroll) / zoom) as f64).max(0.0);
-        let edges = state.sequences[target].all_clips().flat_map(|c| [c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()]);
+        let edges = state.document.sequences[target].all_clips().flat_map(|c| [c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()]);
         let near = std::iter::once(playhead.to_secs_f64()).chain(edges).map(|e| (e, (x_of(e) - p.x).abs())).filter(|(_, d)| *d <= SNAP_PX).min_by(|a, b| a.1.total_cmp(&b.1));
         match near {
             Some((e, _)) => e,
@@ -326,15 +326,15 @@ mod tests {
             let mut state = AppState::default();
             let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/stack.mov".into(), None);
             item.duration = tc(600.0);
-            let media: MediaId = state.media_pool.add(item);
-            let v = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-            state.sequences[0].tracks[v].clips.push(Clip::media(media, tc(0.0), tc(20.0), tc(0.0), tc(20.0)));
+            let media: MediaId = state.document.media_pool.add(item);
+            let v = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+            state.document.sequences[0].tracks[v].clips.push(Clip::media(media, tc(0.0), tc(20.0), tc(0.0), tc(20.0)));
             let mut selects = klipp_timeline::Sequence::new_default();
             selects.name = "Selects".into();
             let sv = selects.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
             selects.tracks[sv].clips.push(Clip::media(media, tc(0.0), tc(4.0), tc(30.0), tc(34.0)));
             state.selects_sequence = Some(selects.id);
-            state.sequences.push(selects);
+            state.document.sequences.push(selects);
             state.selects_edit = true;
             state.selects_height = 220.0;
             state.timeline_zoom = 40.0;
@@ -362,10 +362,10 @@ mod tests {
                 match cmd {
                     AppCommand::SetActiveSequence { sequence_idx } | AppCommand::FocusSequence { sequence_idx } => {
                         let from = self.state.active_sequence_idx;
-                        self.state.sequences[from].last_playhead = Some(self.state.playhead);
+                        self.state.document.sequences[from].last_playhead = Some(self.state.playhead);
                         self.state.active_sequence_idx = *sequence_idx;
-                        let rate = self.state.sequences[*sequence_idx].fps.rate();
-                        self.state.playhead = self.state.sequences[*sequence_idx].last_playhead.unwrap_or(RationalTime::from_frames(0, rate));
+                        let rate = self.state.document.sequences[*sequence_idx].fps.rate();
+                        self.state.playhead = self.state.document.sequences[*sequence_idx].last_playhead.unwrap_or(RationalTime::from_frames(0, rate));
                         if matches!(cmd, AppCommand::SetActiveSequence { .. }) {
                             self.state.selected_clip = None;
                             self.state.selected_clips.clear();
@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn a_press_trades_the_two_and_each_keeps_its_own() {
         let mut s = Stack::new();
-        let cut_clip = s.state.sequences[0].all_clips().next().unwrap().id;
+        let cut_clip = s.state.document.sequences[0].all_clips().next().unwrap().id;
         s.state.selected_clip = Some(cut_clip);
         s.panel.stacked.as_mut().unwrap().view.timeline_zoom = 120.0;
         for _ in 0..3 {
@@ -455,7 +455,7 @@ mod tests {
     fn both_timelines_draw_their_track_headers() {
         let mut s = Stack::new();
         let texts = s.frame(Vec::new());
-        let video = s.state.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap().name.clone();
+        let video = s.state.document.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap().name.clone();
         let ys: Vec<f32> = texts.iter().filter(|(t, _)| *t == video).map(|(_, p)| p.y).collect();
         assert!(ys.len() >= 2 && ys.iter().any(|y| *y < 260.0) && ys.iter().any(|y| *y > 300.0), "{video:?} in both: {ys:?}");
     }
@@ -466,8 +466,8 @@ mod tests {
     #[test]
     fn a_range_carried_down_goes_into_the_cut() {
         let mut s = Stack::new();
-        s.state.sequences[1].in_point = Some(tc(0.0));
-        s.state.sequences[1].out_point = Some(tc(4.0));
+        s.state.document.sequences[1].in_point = Some(tc(0.0));
+        s.state.document.sequences[1].out_point = Some(tc(4.0));
         let texts = s.frame(Vec::new());
         let handle = texts.iter().find(|(t, _)| t.contains("Drag into the cut")).expect("the handle").1;
         let to = egui::pos2(500.0, 345.0);
@@ -481,20 +481,20 @@ mod tests {
         assert!(s.state.selects_drag.is_some(), "carried");
         s.frame(vec![egui::Event::PointerMoved(to), b(to, false)]);
         sent.extend(s.sent.clone());
-        let id = s.state.sequences[1].id;
+        let id = s.state.document.sequences[1].id;
         let edit = sent.iter().position(|c| matches!(c, AppCommand::EditFromSelects { sequence_id, range_in, range_out, at: Some(_), overwrite: false } if *sequence_id == id && *range_in == tc(0.0) && *range_out == tc(4.0)));
         assert!(edit.is_some(), "{sent:?}");
         assert_eq!(s.state.active_sequence_idx, 0, "the cut worked in when it takes it");
 
         // The copy itself, as the app makes it from that command: one set
         // of track edits, which undone leave the cut as it was.
-        let before = s.state.sequences[0].clone();
-        let cb = crate::clip_clipboard::copy_range(&s.state.sequences[1], tc(0.0), tc(4.0)).expect("the range");
+        let before = s.state.document.sequences[0].clone();
+        let cb = crate::clip_clipboard::copy_range(&s.state.document.sequences[1], tc(0.0), tc(4.0)).expect("the range");
         let pasted = crate::clip_clipboard::paste(&before, &cb, tc(5.0), crate::clip_clipboard::PasteMode::Insert);
         assert_eq!(pasted.ids.len(), 1);
         let edits = crate::clip_clipboard::track_edits(&before, &pasted.sequence, &pasted.touched, "Insert from Selects");
         let mut after = vec![pasted.sequence.clone()];
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut after, active: 0, media_pool: &mut s.state.media_pool, fps: &mut s.state.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut after, active: 0, media_pool: &mut s.state.document.media_pool, fps: &mut s.state.fps };
         for e in edits.iter().rev() {
             view.apply_inverse(e);
         }
@@ -520,7 +520,7 @@ mod tests {
         s.frame(vec![release(cut)]);
         assert_eq!(s.state.active_sequence_idx, 0);
         assert!(s.state.playhead > Timecode::zero(), "the cut sought");
-        assert_eq!(s.state.sequences[1].last_playhead, Some(selects_at), "the selects kept theirs");
+        assert_eq!(s.state.document.sequences[1].last_playhead, Some(selects_at), "the selects kept theirs");
     }
 
     /// The selection the selects had parked is theirs again when they
@@ -528,7 +528,7 @@ mod tests {
     #[test]
     fn a_focus_keeps_the_selection_it_brings() {
         let mut s = Stack::new();
-        let selects_clip = s.state.sequences[1].all_clips().next().unwrap().id;
+        let selects_clip = s.state.document.sequences[1].all_clips().next().unwrap().id;
         s.panel.stacked.as_mut().unwrap().view.selected_clips = vec![selects_clip];
         s.panel.stacked.as_mut().unwrap().view.selected_clip = Some(selects_clip);
         // On the selects' empty track space, right of their clip.
@@ -543,7 +543,7 @@ mod tests {
     fn the_cut_reorders_its_tracks_with_the_selects_stacked() {
         let mut s = Stack::new();
         // A second video track in the cut, for the first to swap with.
-        s.state.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Video 2", TrackKind::Video));
+        s.state.document.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Video 2", TrackKind::Video));
         let texts = s.frame(Vec::new());
         let at = |name: &str| texts.iter().filter(|(t, p)| t == name && p.y > 300.0).map(|(_, p)| *p).next().unwrap_or_else(|| panic!("{name} in the cut: {texts:?}"));
         let (from, to) = (at("Video 2"), at("Video 1"));
@@ -591,13 +591,13 @@ mod tests {
     #[test]
     fn a_ctrl_drag_carries_and_a_ctrl_click_selects() {
         let mut s = Stack::new();
-        let clip = s.state.sequences[0].all_clips().next().unwrap().id;
+        let clip = s.state.document.sequences[0].all_clips().next().unwrap().id;
         let at = s.cut_clip();
         let steps = s.state.active_history().can_undo();
         let (sent, _) = s.drag(at, at + egui::vec2(120.0, 0.0), egui::Modifiers::COMMAND);
         assert_eq!((s.state.selected_clip, s.state.selected_clips.len()), (None, 0), "no toggle from the press");
         assert!(!sent.iter().any(|c| matches!(c, AppCommand::PasteClipsFrom { .. } | AppCommand::MoveClip { .. })), "{sent:?}");
-        assert_eq!(s.state.sequences[0].all_clips().next().unwrap().timeline_in, tc(0.0), "not moved");
+        assert_eq!(s.state.document.sequences[0].all_clips().next().unwrap().timeline_in, tc(0.0), "not moved");
         assert_eq!(s.state.active_history().can_undo(), steps, "no step");
         assert!(s.state.clip_carry.is_none());
         // A Ctrl-click.
@@ -615,13 +615,13 @@ mod tests {
     #[test]
     fn a_clip_carried_up_is_copied_into_the_selects() {
         let mut s = Stack::new();
-        let clip = s.state.sequences[0].all_clips().next().unwrap().id;
+        let clip = s.state.document.sequences[0].all_clips().next().unwrap().id;
         let from = s.cut_clip();
         let to = egui::pos2(700.0, 34.0 + 24.0 + HEADER + 60.0);
         let (sent, texts) = s.drag(from, to, egui::Modifiers::COMMAND);
         assert!(texts.iter().any(|t| t.starts_with("Insert 1 clip at")), "the ghost: {texts:?}");
         let focus = sent.iter().position(|c| matches!(c, AppCommand::FocusSequence { sequence_idx: 1 }));
-        let paste = sent.iter().position(|c| matches!(c, AppCommand::PasteClipsFrom { from, ids, overwrite: false, .. } if *from == s.state.sequences[0].id && ids == &vec![clip]));
+        let paste = sent.iter().position(|c| matches!(c, AppCommand::PasteClipsFrom { from, ids, overwrite: false, .. } if *from == s.state.document.sequences[0].id && ids == &vec![clip]));
         assert!(focus.is_some() && paste.is_some() && focus < paste, "{sent:?}");
     }
 
@@ -630,15 +630,15 @@ mod tests {
     #[test]
     fn a_carried_copy_is_fresh_and_undone_in_one() {
         let s = Stack::new();
-        let source = &s.state.sequences[0];
+        let source = &s.state.document.sequences[0];
         let ids: Vec<klipp_core::ClipId> = source.all_clips().map(|c| c.id).collect();
         let cb = crate::clip_clipboard::copy(source, &ids).expect("copied");
-        let before = s.state.sequences[1].clone();
+        let before = s.state.document.sequences[1].clone();
         let pasted = crate::clip_clipboard::paste(&before, &cb, tc(2.0), crate::clip_clipboard::PasteMode::Insert);
         assert!(!pasted.ids.is_empty() && pasted.ids.iter().all(|id| !ids.contains(id)), "fresh ids");
         let edits = crate::clip_clipboard::track_edits(&before, &pasted.sequence, &pasted.touched, "Insert from the Other Timeline");
         let mut seqs = vec![pasted.sequence.clone()];
-        let (mut pool, mut fps) = (s.state.media_pool.clone(), s.state.fps);
+        let (mut pool, mut fps) = (s.state.document.media_pool.clone(), s.state.fps);
         let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
         for e in edits.iter().rev() {
             view.apply_inverse(e);
@@ -652,8 +652,8 @@ mod tests {
     #[test]
     fn a_stale_carry_is_dropped_and_never_pastes() {
         let mut s = Stack::new();
-        let clip = s.state.sequences[0].all_clips().next().unwrap().id;
-        s.state.clip_carry = Some((s.state.sequences[0].id, vec![clip]));
+        let clip = s.state.document.sequences[0].all_clips().next().unwrap().id;
+        s.state.clip_carry = Some((s.state.document.sequences[0].id, vec![clip]));
         s.frame(Vec::new());
         assert!(s.state.clip_carry.is_none());
         let on = egui::pos2(700.0, 34.0 + 24.0 + HEADER + 60.0);
@@ -666,7 +666,7 @@ mod tests {
     #[test]
     fn a_carry_lands_on_the_track_it_is_let_go_over() {
         let mut s = Stack::new();
-        s.state.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Video 2", TrackKind::Video));
+        s.state.document.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Video 2", TrackKind::Video));
         s.state.linked_selection = false;
         let texts = s.frame(Vec::new());
         let lane_y = texts.iter().find(|(t, p)| t == "Video 2" && p.y > 300.0).expect("the cut's Video 2").1.y;
@@ -688,7 +688,7 @@ mod tests {
             assert!(s.state.clip_carry.is_none());
         }
         let mut s = Stack::new();
-        let clip = s.state.sequences[0].all_clips().next().unwrap().id;
+        let clip = s.state.document.sequences[0].all_clips().next().unwrap().id;
         assert!(start_carry(&mut s.state, clip, true), "Select carries");
     }
 
@@ -704,9 +704,9 @@ mod tests {
         let theme = KlippTheme::default();
         let bars = s.shapes.iter().filter(|c| matches!(&c.shape, egui::Shape::Rect(r) if r.fill == theme.accent && (r.rect.height() - FOCUS_BAR).abs() < 0.01 && r.rect.width() > 100.0)).count();
         assert_eq!(bars, 1, "one accent band, on the timeline worked in");
-        let top = s.state.sequences.iter().position(|q| q.name == "Selects").unwrap();
+        let top = s.state.document.sequences.iter().position(|q| q.name == "Selects").unwrap();
         let want = fitting_height(&s.state, top);
-        let tracks: f32 = s.state.sequences[top].tracks.iter().map(crate::panels::timeline::track_row_height).sum();
+        let tracks: f32 = s.state.document.sequences[top].tracks.iter().map(crate::panels::timeline::track_row_height).sum();
         assert!(want >= (HEADER + crate::theme::RULER_HEIGHT + tracks).min(MAX_HEIGHT) && want <= MAX_HEIGHT, "{want}");
     }
 
@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn the_focus_swaps_by_its_shortcut() {
         let mut s = Stack::new();
-        let top = s.state.sequences.iter().position(|q| q.name == "Selects").unwrap();
+        let top = s.state.document.sequences.iter().position(|q| q.name == "Selects").unwrap();
         let before = s.state.active_sequence_idx;
         s.state.stacked_focus_swap = true;
         s.frame(Vec::new());

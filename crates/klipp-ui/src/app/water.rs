@@ -59,7 +59,7 @@ impl KlippApp {
     /// Every reflection on the active sequence set to take the water's
     /// colour or darkness and never measured, measured.
     pub(super) fn measure_unmeasured_water(&mut self) {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let unmeasured: Vec<klipp_core::ClipId> = seq
             .all_clips()
             .filter(|c| {
@@ -68,7 +68,7 @@ impl KlippApp {
             .map(|c| c.id)
             .collect();
         for clip_id in unmeasured {
-            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            let seq = &self.state.document.sequences[self.state.active_sequence_idx];
             let key = klipp_render::water::footprint_key(seq, clip_id);
             if key.is_some_and(|key| self.water_tries.wanted(clip_id, key)) {
                 self.start_water_measure(clip_id, false);
@@ -81,14 +81,14 @@ impl KlippApp {
     /// person asked for it, and hears if there was nothing to measure; on
     /// its own, a reflection with nothing below it is nothing to report.
     pub(super) fn start_water_measure(&mut self, clip_id: klipp_core::ClipId, asked: bool) {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let Some(key) = klipp_render::water::footprint_key(seq, clip_id) else { return };
         if !self.water_tries.start(clip_id, key, asked) {
             return;
         }
         let snapshot = klipp_render::SequenceSnapshot::from_sequence(
             seq,
-            &self.state.media_pool,
+            &self.state.document.media_pool,
             &klipp_core::ExportSettings::default(),
             self.state.timeline_lut(),
             false,
@@ -116,7 +116,7 @@ impl KlippApp {
     /// again.
     pub(super) fn water_measured(&mut self, clip_id: klipp_core::ClipId, key: u32, water: Option<[u8; 3]>) {
         let asked = self.water_tries.finish(clip_id, key, water.is_some());
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         if klipp_render::water::footprint_key(seq, clip_id) != Some(key) {
             tracing::info!("water under {clip_id:?} measured for footage that has since changed; dropped");
             return;
@@ -149,7 +149,7 @@ impl KlippApp {
 /// `measured`, the clip with its water, in place of the clip as it was, and
 /// nothing else: no undo step, the redo list kept, an open drag left open.
 fn store_water_quietly(state: &mut crate::state::AppState, measured: klipp_timeline::Clip) {
-    let seq = &mut state.sequences[state.active_sequence_idx];
+    let seq = &mut state.document.sequences[state.active_sequence_idx];
     if let Some(clip) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(measured.id)) {
         *clip = measured;
         state.dirty = true;
@@ -189,8 +189,8 @@ mod tests {
             .build();
         let id = clip.id;
         let mut state = crate::state::AppState::default();
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        state.sequences[0].tracks[v1].clips.push(clip.clone());
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.document.sequences[0].tracks[v1].clips.push(clip.clone());
         let edit = |description| crate::history::HistoryEntry { command: EditCommand::ReplaceClip { description, old: Box::new(clip.clone()), new: Box::new(clip.clone()) } };
         state.active_history_mut().push(edit("One"));
         state.active_history_mut().push(edit("Two"));
@@ -205,7 +205,7 @@ mod tests {
         assert!(matches!(measured.apply_effect_edits(&[klipp_timeline::EffectEdit::Update(index, &updated)]), Some(Ok(_))));
         store_water_quietly(&mut state, measured);
 
-        let now = state.sequences[0].tracks[v1].clips.iter().find(|c| c.id == id).unwrap();
+        let now = state.document.sequences[0].tracks[v1].clips.iter().find(|c| c.id == id).unwrap();
         assert!(matches!(klipp_render::water::reflection_of(now), Some((_, klipp_effects::BuiltinEffect::Reflection { water_key: 7, .. }))), "stored");
         assert_eq!(state.active_history().undo_count(), undo, "no undo step");
         assert_eq!(state.active_history().redo_count(), redo, "the redo list kept");

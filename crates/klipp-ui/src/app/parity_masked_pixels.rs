@@ -210,13 +210,13 @@ fn a_masked_effect_s_card_picks_its_mask_channel() {
     masked_clip.apply_picture_ops(&masking(&plain, Kind::Beside, window).unwrap()).unwrap();
     for (c, masked) in [(plain, false), (masked_clip, true)] {
         let mut state = crate::state::AppState::default();
-        state.sequences[0].tracks[0].clips.push(c.clone());
+        state.document.sequences[0].tracks[0].clips.push(c.clone());
         let ctx = egui::Context::default();
         let mut clock = 0.0;
         let mut frame = |state: &crate::state::AppState, events: Vec<egui::Event>| {
             clock += 0.1;
             let mut cmds = Vec::new();
-            let c = state.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().clone();
+            let c = state.document.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().clone();
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 1600.0))), time: Some(clock), events, ..Default::default() };
             let out = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| crate::inspector::stack_view::show(ui, &crate::theme::KlippTheme::default(), state, &c, &mut cmds, 0.0));
@@ -249,9 +249,9 @@ fn a_masked_effect_s_card_picks_its_mask_channel() {
         let fx = c.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
         let addr = NodePath::new(Root::Clip { clip: c.id.0 }, [fx]);
         assert!(matches!(cmds.as_slice(), [klipp_core::AppCommand::SetMaskChannelAt { addr: a, channel: Some(ch) }] if *a == addr && ch == "alpha"), "{cmds:?}");
-        let before = state.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().picture_v2().unwrap().picture.clone();
+        let before = state.document.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().picture_v2().unwrap().picture.clone();
         assert_eq!(state.path_command(&cmds[0]), Some(true), "{:?}", state.toast.message_for_test());
-        let channel = |state: &crate::state::AppState| state.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.id == fx).unwrap().params.get(&klipp_graph_format::ParamKey::from("mask.channel")).cloned();
+        let channel = |state: &crate::state::AppState| state.document.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.id == fx).unwrap().params.get(&klipp_graph_format::ParamKey::from("mask.channel")).cloned();
         assert_eq!(channel(&state), Some(klipp_graph_format::ParamValue::Text("alpha".into())));
         assert_eq!(state.active_history().undo_count(), 1, "one step");
         let entry = state.active_history_mut().undo().unwrap();
@@ -261,6 +261,6 @@ fn a_masked_effect_s_card_picks_its_mask_channel() {
         }
         let klipp_document::history::EditCommand::PictureEdit { clip_id, edit, .. } = command else { panic!("a picture edit") };
         state.set_picture(clip_id, &edit.before);
-        assert_eq!(state.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().picture_v2().unwrap().picture, before, "undo takes it back");
+        assert_eq!(state.document.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().picture_v2().unwrap().picture, before, "undo takes it back");
     }
 }

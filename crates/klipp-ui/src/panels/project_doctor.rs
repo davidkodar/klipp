@@ -445,7 +445,7 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
     // 1. Missing media — every MediaItem in the pool whose path
     //    doesn't exist on disk. This is the most common project
     //    breakage (drive moved, media folder renamed, etc.).
-    for item in state.media_pool.all() {
+    for item in state.document.media_pool.all() {
         if !item.path.exists() {
             let display: String = item
                 .path
@@ -496,7 +496,7 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
         .map(|p| (format!("{}:{}", p.path.to_string_lossy(), p.label), p.unique_id))
         .collect();
 
-    let active = state.sequences.get(state.active_sequence_idx);
+    let active = state.document.sequences.get(state.active_sequence_idx);
     if let Some(seq) = active {
         for track in &seq.tracks {
             for clip in &track.clips {
@@ -782,15 +782,15 @@ mod tests {
             .build();
         let id = clip.id;
         let mut state = AppState::default();
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        state.sequences[0].tracks[v1].clips.push(clip);
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.document.sequences[0].tracks[v1].clips.push(clip);
         let fix = scan_project(&state).into_iter().flat_map(|f| f.fixes).find_map(|f| match f.action {
             a @ FixAction::RemoveBuiltinEffectFromClip { .. } => Some(a),
             _ => None,
         }).expect("the missing plug-in's fix");
-        let effects = |s: &AppState| test_clip::effects(s.sequences[0].all_clips().find(|c| c.id == id).unwrap());
+        let effects = |s: &AppState| test_clip::effects(s.document.sequences[0].all_clips().find(|c| c.id == id).unwrap());
         // An effect put before it since the scan: the plug-in is now third.
-        let first = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().effect_node_at(false, 0).unwrap();
+        let first = state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().effect_node_at(false, 0).unwrap();
         let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({ "id": uuid::Uuid::new_v4(), "type_id": klipp_graph_lift::names::effect_node_type("sharpen"), "legacy": { "payload": E::Sharpen { amount: 0.5 } } })).unwrap();
         let add = AppCommand::AddNodeAt { after: klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, [first]), node: Box::new(node) };
         assert!(state.path_command(&add).is_some());
@@ -821,14 +821,14 @@ mod tests {
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
         let with = |type_id: &str| TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(E::Frei0r { type_id: type_id.into(), params: Vec::new() }).build();
         let mut state = AppState::default();
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         // As saved on a machine with frei0r in /usr/lib64 and in ~/.frei0r-1.
-        state.sequences[0].tracks[v1].clips.extend([
+        state.document.sequences[0].tracks[v1].clips.extend([
             with("frei0r:/usr/lib64/frei0r-1/klipp3200here.so:klipp3200here"),
             with("frei0r:/home/them/.frei0r-1/lib/klipp3200gone.so:Klipp3200Gone"),
             with("frei0r:/home/them/.frei0r-1/lib/klipp3200gone.so:Klipp3200Gone"),
         ]);
-        let missing = missing_frei0r_plugins(&state.sequences);
+        let missing = missing_frei0r_plugins(&state.document.sequences);
         assert_eq!(missing, ["frei0r:/home/them/.frei0r-1/lib/klipp3200gone.so:Klipp3200Gone"], "the one here found, the missing one once");
         let said = missing_frei0r_message(&missing).expect("said on open");
         assert!(said.contains("Klipp3200Gone") && said.contains("Project Doctor"), "{said}");

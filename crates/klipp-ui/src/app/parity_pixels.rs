@@ -549,7 +549,7 @@ impl FrameSource for Held<'_> {
     }
 
     fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
-        klipp_analysis::assets::asset_key(kind, self.state.media_pool.get(&clip.media_id()?)?)
+        klipp_analysis::assets::asset_key(kind, self.state.document.media_pool.get(&clip.media_id()?)?)
     }
 
     fn media_frame(&mut self, media: &str, secs: f64, working: klipp_core::WorkingColorspace, width: u32, height: u32) -> Result<Vec<f32>, klipp_nodes::side_picture::SideMissing> {

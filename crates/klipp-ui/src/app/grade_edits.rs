@@ -191,7 +191,7 @@ impl crate::state::AppState {
             AppCommand::RenameGradeVersion { clip_id, .. } => (*clip_id, "Rename Grade Version"),
             _ => return false,
         };
-        let seq = &mut self.sequences[self.active_sequence_idx];
+        let seq = &mut self.document.sequences[self.active_sequence_idx];
         let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else { return false };
         // The clip whole either side, one undo step: a switch changed the
         // grade with none, so undo took back the edit before it instead.
@@ -625,13 +625,13 @@ mod grade_versions_and_mix {
         clip.apply_picture_ops(&[GraphOp::SetMix { path: path.clone(), mix: Some(0.25) }]).unwrap();
         let id = clip.id;
         let mut state = crate::state::AppState::default();
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        state.sequences[0].tracks[v1].clips.push(clip);
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.document.sequences[0].tracks[v1].clips.push(clip);
         (state, id, path)
     }
 
     fn clip(s: &crate::state::AppState, id: klipp_core::ClipId) -> &klipp_timeline::Clip {
-        s.sequences[0].all_clips().find(|c| c.id == id).unwrap()
+        s.document.sequences[0].all_clips().find(|c| c.id == id).unwrap()
     }
 
     /// The corrector's mix and mask channel, as the clip's picture holds them.
@@ -651,7 +651,7 @@ mod grade_versions_and_mix {
         let (mut s, id, path) = state();
         let alpha = Some(klipp_graph_format::ParamValue::Text("alpha".into()));
         assert!(s.grade_version_command(&AppCommand::SaveGradeVersion { clip_id: id, name: "A".into() }));
-        let c = s.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap();
+        let c = s.document.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap();
         c.apply_picture_ops(&[GraphOp::SetMix { path: path.clone(), mix: Some(0.75) }, GraphOp::SetMaskChannel { path: path.clone(), channel: Some("alpha".into()) }]).unwrap();
         assert!(s.grade_version_command(&AppCommand::SaveGradeVersion { clip_id: id, name: "B".into() }));
         let switch = |s: &mut crate::state::AppState, i: usize| assert!(s.grade_version_command(&AppCommand::SwitchGradeVersion { clip_id: id, version_index: i }), "{:?}", s.toast.message_for_test());
@@ -662,10 +662,10 @@ mod grade_versions_and_mix {
             assert_eq!(blend(&s, id, &path), (Some(0.75), alpha.clone()), "{round}: B's");
             if round == "in the app" {
                 let dir = std::env::temp_dir().join(format!("klipp-grade-versions-{}", uuid::Uuid::new_v4()));
-                klipp_project::save_project(&dir, &s.sequences, &s.media_pool).unwrap();
+                klipp_project::save_project(&dir, &s.document.sequences, &s.document.media_pool).unwrap();
                 let (sequences, ..) = klipp_project::load_project_strict(&dir).unwrap();
                 let _ = std::fs::remove_dir_all(&dir);
-                s.sequences = sequences;
+                s.document.sequences = sequences;
                 assert_eq!(blend(&s, id, &path), (Some(0.75), alpha.clone()), "the clip as saved");
             }
         }
@@ -681,14 +681,14 @@ mod grade_versions_and_mix {
         use klipp_timeline::GradeAccess;
         let blend = |g: &klipp_nodes::NodeGraph| g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).and_then(|n| n.params.correction_blend);
         let (mut s, _, _) = state();
-        s.sequences[0].timeline_grade_slot().set(Some(klipp_nodes::NodeGraph::default()));
-        let root = Root::TimelineGrade { sequence: s.sequences[0].id.0 };
-        let node = s.sequences[0].root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+        s.document.sequences[0].timeline_grade_slot().set(Some(klipp_nodes::NodeGraph::default()));
+        let root = Root::TimelineGrade { sequence: s.document.sequences[0].id.0 };
+        let node = s.document.sequences[0].root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
         let held = |s: &mut crate::state::AppState| {
             let mut fresh = None;
-            let id = stand_in_grade_on(&mut s.sequences[0], GradeStandIn::Timeline, &mut fresh).unwrap();
-            let proxy = s.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
-            stand_down_timeline_grade_on(&mut s.sequences[0], &mut fresh);
+            let id = stand_in_grade_on(&mut s.document.sequences[0], GradeStandIn::Timeline, &mut fresh).unwrap();
+            let proxy = s.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+            stand_down_timeline_grade_on(&mut s.document.sequences[0], &mut fresh);
             proxy
         };
         assert!(!held(&mut s).holds_grade_mix(), "no mix yet");
@@ -703,10 +703,10 @@ mod grade_versions_and_mix {
         plain.set_grade(plain.grade().with_grade_of(proxy.grade()));
         assert!(blend(&plain.grade_to_run()).is_some(), "it draws");
         let id = plain.id;
-        let v1 = s.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        s.sequences[0].tracks[v1].clips.push(plain);
+        let v1 = s.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        s.document.sequences[0].tracks[v1].clips.push(plain);
         let dir = std::env::temp_dir().join(format!("klipp-stand-in-mix-{}", uuid::Uuid::new_v4()));
-        klipp_project::save_project(&dir, &s.sequences, &s.media_pool).unwrap();
+        klipp_project::save_project(&dir, &s.document.sequences, &s.document.media_pool).unwrap();
         let (sequences, ..) = klipp_project::load_project_strict(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(blend(&sequences[0].all_clips().find(|c| c.id == id).unwrap().grade_to_run()).is_none(), "and doesn't save");
@@ -745,11 +745,11 @@ mod grade_version_tests {
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
         let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
         let id = clip.id;
-        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
+        state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
         let mut node = None;
-        state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().edit_grade(|g| node = Some(g.ensure_corrector()));
+        state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().edit_grade(|g| node = Some(g.ensure_corrector()));
         let node = node.unwrap();
-        let curve = |s: &crate::state::AppState| s.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade().nodes.iter().find(|n| n.id == node).and_then(|n| n.params.huesat.clone()).map(|h| h.hue_vs_hue).unwrap_or_default();
+        let curve = |s: &crate::state::AppState| s.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade().nodes.iter().find(|n| n.id == node).and_then(|n| n.params.huesat.clone()).map(|h| h.hue_vs_hue).unwrap_or_default();
         let set = |state: &mut crate::state::AppState, points: Vec<[f32; 2]>| {
             let cmd = AppCommand::SetNodeHueSatCurves { clip_id: id, node_id: node, huesat: klipp_core::HueSatCurves { hue_vs_hue: points, ..Default::default() } };
             super::super::colour::edit_clip_graph(state, id, &[], true, |g| { super::super::colour::write_node_settings(g, &cmd); }).unwrap().unwrap();
@@ -766,7 +766,7 @@ mod grade_version_tests {
         was.pop();
         while let Some(before) = was.pop() {
             let entry = state.active_history_mut().undo().expect("a step");
-            klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+            klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
             assert_eq!(curve(&state), before, "undone exactly");
         }
     }
@@ -785,15 +785,15 @@ mod grade_version_tests {
         let ids: Vec<_> = (0..3).map(|i| {
             let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(i as f64 * 2.0), t(i as f64 * 2.0 + 2.0), t(0.0), t(2.0));
             let id = clip.id;
-            state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
+            state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
             id
         }).collect();
-        let before: Vec<_> = ids.iter().map(|id| state.sequences[0].all_clips().find(|c| c.id == *id).unwrap().grade().clone()).collect();
-        let super::GradeApplied { edits, labels, .. } = super::apply_grade(&state.sequences[0], &look, &[], &ids, false);
+        let before: Vec<_> = ids.iter().map(|id| state.document.sequences[0].all_clips().find(|c| c.id == *id).unwrap().grade().clone()).collect();
+        let super::GradeApplied { edits, labels, .. } = super::apply_grade(&state.document.sequences[0], &look, &[], &ids, false);
         let edits: Vec<_> = edits.into_iter().chain(labels).collect();
         let steps = state.active_history().undo_count();
         fn view(state: &mut crate::state::AppState) -> klipp_document::apply::DocumentView<'_> {
-            klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }
+            klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps }
         }
         for e in &edits {
             view(&mut state).apply_forward(e);
@@ -803,7 +803,7 @@ mod grade_version_tests {
         let kinds = |g: &NodeGraph| { let mut k: Vec<String> = g.nodes.iter().map(|n| format!("{:?}", n.kind)).collect(); k.sort(); k };
         let mut seen = std::collections::HashSet::new();
         for id in &ids {
-            let g = state.sequences[0].all_clips().find(|c| c.id == *id).unwrap().grade().clone();
+            let g = state.document.sequences[0].all_clips().find(|c| c.id == *id).unwrap().grade().clone();
             assert_eq!(kinds(&g), kinds(&look), "the look's nodes");
             assert_eq!(g.edges.len(), look.edges.len(), "its wires");
             assert!(g.nodes.iter().all(|n| seen.insert(n.id)), "ids of its own");
@@ -811,7 +811,7 @@ mod grade_version_tests {
         let entry = state.active_history_mut().undo().expect("a step");
         view(&mut state).apply_inverse(&entry.command);
         for (id, was) in ids.iter().zip(&before) {
-            assert_eq!(state.sequences[0].all_clips().find(|c| c.id == *id).unwrap().grade(), was, "undone");
+            assert_eq!(state.document.sequences[0].all_clips().find(|c| c.id == *id).unwrap().grade(), was, "undone");
         }
     }
 
@@ -821,7 +821,7 @@ mod grade_version_tests {
     /// still, split-shot apply or paste alike.
     #[test]
     fn a_tracked_window_stays_only_on_its_own_shot() {
-        let mut seq = crate::state::AppState::default().sequences[0].clone();
+        let mut seq = crate::state::AppState::default().document.sequences[0].clone();
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
         let media = klipp_core::MediaId::new();
         let mut g = NodeGraph::default();
@@ -872,11 +872,11 @@ mod grade_version_tests {
         });
         let keyed = clip.grade().clone();
         assert!(keyed.nodes.iter().any(|n| n.kind == NodeKind::CombineMattes));
-        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
-        let grade = |s: &crate::state::AppState| s.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade().clone();
+        state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
+        let grade = |s: &crate::state::AppState| s.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade().clone();
 
         assert!(state.grade_version_command(&AppCommand::SaveGradeVersion { clip_id: id, name: "Keyed".into() }));
-        state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().set_grade(NodeGraph::default());
+        state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap().set_grade(NodeGraph::default());
         let plain = grade(&state);
         assert!(state.grade_version_command(&AppCommand::SaveGradeVersion { clip_id: id, name: "Plain".into() }));
 
@@ -885,9 +885,9 @@ mod grade_version_tests {
         assert_eq!(sorted(&grade(&state)), sorted(&keyed), "the keyed grade, combiner and all");
         assert_eq!(state.active_history().undo_count(), steps + 1, "one undo step");
         let entry = state.active_history_mut().undo().expect("a step");
-        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+        klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
         assert_eq!(sorted(&grade(&state)), sorted(&plain), "undo: the grade switched from");
-        assert_eq!(state.sequences[0].all_clips().find(|c| c.id == id).unwrap().active_grade_version(), Some(1), "and its version");
+        assert_eq!(state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().active_grade_version(), Some(1), "and its version");
         for cmd in [
             AppCommand::RenameGradeVersion { clip_id: id, version_index: 0, name: "Key".into() },
             AppCommand::DeleteGradeVersion { clip_id: id, version_index: 0 },
@@ -914,22 +914,22 @@ mod grade_version_tests {
         let corr = a.edit_grade(|g| g.ensure_corrector());
         let target = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(4.0), t(6.0), t(0.0), t(2.0));
         let (a_id, target_id) = (a.id, target.id);
-        let ti = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        state.sequences[0].tracks[ti].clips.extend([a, target]);
-        let (_, piece) = state.sequences[0].tracks[ti].split_at(a_id, klipp_core::Timecode::from_secs_f64(2.0, 25)).unwrap();
+        let ti = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.document.sequences[0].tracks[ti].clips.extend([a, target]);
+        let (_, piece) = state.document.sequences[0].tracks[ti].split_at(a_id, klipp_core::Timecode::from_secs_f64(2.0, 25)).unwrap();
         let path = NodePath::new(Root::Clip { clip: piece.id.0 }, [klipp_timeline::grade_group_id(piece.id), corr]);
-        state.sequences[0].node_labels = state.sequences[0].node_labels_with(&path, 1);
-        assert_eq!(state.sequences[0].node_label(&path), 1, "labelled on the piece");
+        state.document.sequences[0].node_labels = state.document.sequences[0].node_labels_with(&path, 1);
+        assert_eq!(state.document.sequences[0].node_label(&path), 1, "labelled on the piece");
 
-        let look = super::look_of(&state.sequences[0], piece.id, "Red").expect("a look");
+        let look = super::look_of(&state.document.sequences[0], piece.id, "Red").expect("a look");
         assert_eq!(look.node_labels.len(), 1, "the label saved with it");
         assert!(look.node_labels[0].nodes.iter().all(|n| look.grade().nodes.iter().any(|m| m.id == *n) || *n == corr), "{:?}", look.node_labels);
-        let super::GradeApplied { edits, labels, .. } = super::apply_grade(&state.sequences[0], look.grade(), &look.node_labels, &[target_id], false);
+        let super::GradeApplied { edits, labels, .. } = super::apply_grade(&state.document.sequences[0], look.grade(), &look.node_labels, &[target_id], false);
         let edits: Vec<_> = edits.into_iter().chain(labels).collect();
         for e in &edits {
-            klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(e);
+            klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(e);
         }
-        let seq = &state.sequences[0];
+        let seq = &state.document.sequences[0];
         let new = seq.all_clips().find(|c| c.id == target_id).unwrap().grade().nodes.iter().find(|n| n.kind == NodeKind::Corrector).expect("its corrector").id;
         let there = NodePath::new(Root::Clip { clip: target_id.0 }, [klipp_timeline::grade_group_id(target_id), new]);
         assert_eq!(seq.node_label(&there), 1, "labelled on the clip applied to: {:?}", seq.node_labels);
@@ -945,7 +945,7 @@ mod grade_version_tests {
     fn a_look_leaves_out_a_label_whose_node_is_gone() {
         use klipp_graph_format::path::{NodePath, Root};
         use klipp_timeline::GradeAccess;
-        let mut seq = crate::state::AppState::default().sequences[0].clone();
+        let mut seq = crate::state::AppState::default().document.sequences[0].clone();
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
         let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
         let old = clip.edit_grade(|g| g.ensure_corrector());
@@ -996,11 +996,11 @@ mod grade_version_tests {
         ]).expect("masked");
         assert!(target.is_picture_truth(), "the fixture is picture-truth");
         let id = target.id;
-        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(target);
+        state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(target);
 
         // Pasted as well as applied: the same picture-truth clip, its grade
         // from a clip with a label.
-        let mut pasted = state.sequences.clone();
+        let mut pasted = state.document.sequences.clone();
         let mut source = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(4.0), t(6.0), t(0.0), t(2.0));
         source.set_grade(look.grade().clone());
         let source_id = source.id;
@@ -1018,12 +1018,12 @@ mod grade_version_tests {
         let there = pasted[0].live_node_labels().into_iter().filter(|l| l.node.root == Root::Clip { clip: id.0 }).count();
         assert_eq!(there, 1, "pasted: a live label on the clip: {:?}", pasted[0].node_labels);
 
-        let super::GradeApplied { edits, labels, .. } = super::apply_grade(&state.sequences[0], look.grade(), &look.node_labels, &[id], false);
+        let super::GradeApplied { edits, labels, .. } = super::apply_grade(&state.document.sequences[0], look.grade(), &look.node_labels, &[id], false);
         let edits: Vec<_> = edits.into_iter().chain(labels).collect();
         for e in &edits {
-            klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(e);
+            klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(e);
         }
-        let seq = &state.sequences[0];
+        let seq = &state.document.sequences[0];
         assert!(!seq.live_node_labels().is_empty(), "a live label on the clip: labels {:?}, grade {:?}", seq.node_labels, seq.all_clips().find(|c| c.id == id).unwrap().grade().nodes.iter().map(|n| (n.kind, n.id)).collect::<Vec<_>>());
     }
 

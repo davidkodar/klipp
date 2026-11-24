@@ -13,7 +13,7 @@ impl KlippApp {
         // "Angle 1" cut to the second camera.
         let Some(wanted) = angle.checked_sub(1).and_then(|a| u8::try_from(a).ok()) else { return };
         let seq_idx = self.state.active_sequence_idx;
-        let Some((track_idx, primary_id, angles)) = self.state.sequences[seq_idx]
+        let Some((track_idx, primary_id, angles)) = self.state.document.sequences[seq_idx]
             .multicam_at(None, at)
             .map(|m| (m.primary_track, m.primary.id, m.angles))
         else {
@@ -23,7 +23,7 @@ impl KlippApp {
             self.state.toast.show(format!("This multicam group has no angle {angle}"));
             return;
         }
-        let Some(clip) = self.state.sequences[seq_idx].tracks[track_idx].find_clip_mut(primary_id) else { return };
+        let Some(clip) = self.state.document.sequences[seq_idx].tracks[track_idx].find_clip_mut(primary_id) else { return };
         let old = clip.clone();
         let clip_time = (at - clip.timeline_in).to_secs_f64();
         clip.multicam_cuts.retain(|(t, _)| (*t - clip_time).abs() > 0.001);
@@ -47,7 +47,7 @@ impl KlippApp {
     /// its primaries (a bladed group has several), as one undo step.
     pub(super) fn set_multicam_sound(&mut self, sound: klipp_core::MulticamSound, at: klipp_core::Timecode) {
         let seq_idx = self.state.active_sequence_idx;
-        let Some((group, angles)) = self.state.sequences[seq_idx].multicam_at(None, at).map(|m| (m.group, m.angles)) else {
+        let Some((group, angles)) = self.state.document.sequences[seq_idx].multicam_at(None, at).map(|m| (m.group, m.angles)) else {
             self.state.toast.show("There is no multicam group here");
             return;
         };
@@ -58,7 +58,7 @@ impl KlippApp {
             }
         }
         let mut steps = Vec::new();
-        for clip in self.state.sequences[seq_idx].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        for clip in self.state.document.sequences[seq_idx].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
             if clip.multicam_group == Some(group) && clip.multicam_angle == 0 && clip.multicam_sound != sound {
                 let old = clip.clone();
                 clip.multicam_sound = sound;
@@ -83,7 +83,7 @@ impl KlippApp {
         let requested = media_ids.clone();
         let mut items: Vec<klipp_media::MediaItem> = media_ids
             .iter()
-            .filter_map(|id| self.state.media_pool.get(id))
+            .filter_map(|id| self.state.document.media_pool.get(id))
             // A sound-only recording joins as the others' reference and
             // goes on an audio track; it is not an angle.
             .filter(|m| !m.offline && !m.is_still && (!m.video_codec.is_empty() || m.has_audio))
@@ -107,7 +107,7 @@ impl KlippApp {
             })
             .collect();
         let paths: Vec<std::path::PathBuf> = items.iter().map(|m| m.path.clone()).collect();
-        let sequence_id = self.state.sequences[self.state.active_sequence_idx].id;
+        let sequence_id = self.state.document.sequences[self.state.active_sequence_idx].id;
         let at_secs = self.state.playhead.to_secs_f64();
         let tx = self.proxy_event_tx.clone();
         if method != klipp_core::MulticamSync::Timecode {
@@ -176,7 +176,7 @@ impl KlippApp {
     /// place after `at_secs`, then grouped, as one undo step.
     pub(super) fn apply_multicam_plan(&mut self, plan: klipp_core::MulticamPlan, media_ids: &[klipp_core::MediaId], sequence_id: klipp_core::SequenceId, at_secs: f64) {
         let seq_idx = self.state.active_sequence_idx;
-        if self.state.sequences[seq_idx].id != sequence_id {
+        if self.state.document.sequences[seq_idx].id != sequence_id {
             self.multicam_not_made(media_ids, "The sequence changed while the angles were syncing, so the multicam was not placed");
             return;
         }
@@ -190,12 +190,12 @@ impl KlippApp {
         // from the first clip with picture placed in it, and that must
         // hold for that first clip's own position too.
         let fps = {
-            let seq = &self.state.sequences[seq_idx];
+            let seq = &self.state.document.sequences[seq_idx];
             let has_video = seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Video && !t.clips.is_empty());
             let first_picture = plan
                 .placements
                 .iter()
-                .filter_map(|p| self.state.media_pool.get(&p.media_id))
+                .filter_map(|p| self.state.document.media_pool.get(&p.media_id))
                 .find(|m| !m.video_codec.is_empty() && m.resolution.width > 0 && m.resolution.height > 0);
             match first_picture {
                 Some(m) if !has_video => m.fps,
@@ -218,7 +218,7 @@ impl KlippApp {
         // it is the sound the others were matched to.
         video_clips.sort_by_key(|(_, is_ref)| !is_ref);
         let group_id = klipp_core::GroupId::new();
-        let seq = &mut self.state.sequences[seq_idx];
+        let seq = &mut self.state.document.sequences[seq_idx];
         for (angle, (clip_id, _)) in video_clips.iter().enumerate() {
             for track in &mut seq.tracks {
                 if let Some(clip) = track.find_clip_mut(*clip_id) {

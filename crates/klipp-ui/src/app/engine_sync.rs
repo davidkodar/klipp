@@ -87,7 +87,7 @@ impl KlippApp {
                 let seq_idx = self.state.active_sequence_idx;
                 // Its grade as the render copy runs it: inside its grade
                 // group's (#237), then its track's (#1060).
-                let seq = &self.state.sequences[seq_idx];
+                let seq = &self.state.document.sequences[seq_idx];
                 if let (Some(clip), Some(graph)) = (seq.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == cid)), seq.render_grade(cid)) {
                     let graph = graph.as_ref();
                     if !graph.is_identity() {
@@ -146,14 +146,14 @@ impl KlippApp {
 
     pub(super) fn sync_media_pool_to_engine(&self) {
         let mut pool = self.media_pool_shared.write().unwrap_or_else(|e| e.into_inner());
-        *pool = self.state.media_pool.clone();
+        *pool = self.state.document.media_pool.clone();
         drop(pool);
         self.sync_log_formats_to_decoders();
         // A file replaced, relinked or proxied under a composed clip: that
         // media's footage made again, and no other's.
-        klipp_veylvik::set_media_states(self.state.media_pool.all().map(|m| (m.id, media_state(m))).collect());
+        klipp_veylvik::set_media_states(self.state.document.media_pool.all().map(|m| (m.id, media_state(m))).collect());
         // The pool's media a composition lays in, decoded as its own.
-        klipp_veylvik::set_project_media(self.state.media_pool.all().map(|m| (m.id, (m.clone(), media_state(m)))).collect());
+        klipp_veylvik::set_project_media(self.state.document.media_pool.all().map(|m| (m.id, (m.clone(), media_state(m)))).collect());
     }
 
     /// Tell every render the project's Veylvik compositions as they are now.
@@ -188,7 +188,7 @@ impl KlippApp {
         // format too. (PQ/HLG skims are tone-mapped to SDR by ffmpeg, but
         // PQ/HLG never enter this registry: their files say what they are.)
         let changed = klipp_engine::video_decoder::set_media_log_formats(
-            self.state.media_pool.all().flat_map(|m| {
+            self.state.document.media_pool.all().flat_map(|m| {
                 let f = m.effective_log_format();
                 std::iter::once(m.path.clone())
                     .chain(m.proxy_path.clone())
@@ -261,10 +261,10 @@ impl KlippApp {
                 // ops, so their handlers record nothing: a marker added,
                 // changed or removed (by hand or by an agent) is one undo step
                 // here, the whole list either side.
-                let markers_before = self.state.sequences.get(self.state.active_sequence_idx).map(|s| s.markers.clone());
+                let markers_before = self.state.document.sequences.get(self.state.active_sequence_idx).map(|s| s.markers.clone());
                 if self.handle_marker_commands(&cmd, &mut needs_refresh) {
                     if let Some(old) = markers_before {
-                        let new = self.state.sequences[self.state.active_sequence_idx].markers.clone();
+                        let new = self.state.document.sequences[self.state.active_sequence_idx].markers.clone();
                         if old != new {
                             self.state.push_history(EditCommand::SetMarkers { old, new });
                         }
@@ -357,7 +357,7 @@ impl KlippApp {
 /// the track says what the project says.
 pub(super) fn edit_track(state: &mut AppState, sequence: &klipp_timeline::SharedSequence, param_change_queue: &ArrayQueue<ParamChange>, track_id: klipp_core::TrackId, edit: impl FnOnce(&mut klipp_timeline::Track)) {
     let idx = state.active_sequence_idx;
-    let Some(track) = state.sequences[idx].tracks.iter_mut().find(|t| t.id == track_id) else { return };
+    let Some(track) = state.document.sequences[idx].tracks.iter_mut().find(|t| t.id == track_id) else { return };
     edit(track);
     state.dirty = true;
     sync_sequence(state, sequence, param_change_queue);
@@ -376,14 +376,14 @@ pub(super) fn sync_sequence(state: &AppState, sequence: &klipp_timeline::SharedS
     // place under a read-write lock the engine read for every frame,
     // and a busy frame kept the UI waiting; once, after a project
     // opened, for over a minute.
-    let active = &state.sequences[state.active_sequence_idx];
+    let active = &state.document.sequences[state.active_sequence_idx];
     // Flatten compound clips so the engine receives a plain sequence
     // with no ClipKind::Sequence clips — the engine has no compound-clip
     // awareness. This mirrors the export path exactly: viewer and export
     // are consistent by construction.
     // Each template's and precomposition's scene from the cache when
     // nothing it is made from changed (#3117).
-    let mut flat = klipp_timeline::flatten::flatten_sequence_cached(active, &state.sequences, &mut state.flatten_cache.borrow_mut());
+    let mut flat = klipp_timeline::flatten::flatten_sequence_cached(active, &state.document.sequences, &mut state.flatten_cache.borrow_mut());
     // A command in the Colour workspace can sync while the timeline
     // grade stands in as a clip: the engine gets the grade, never the
     // stand-in.
@@ -400,9 +400,9 @@ mod edit_track_tests {
     #[test]
     fn a_tracks_settings_reach_the_copy_the_socket_reads() {
         let mut state = crate::state::AppState::default();
-        let shared = klipp_timeline::SharedSequence::new(state.sequences[0].clone());
+        let shared = klipp_timeline::SharedSequence::new(state.document.sequences[0].clone());
         let queue = crossbeam_queue::ArrayQueue::new(8);
-        let id = state.sequences[0].tracks[0].id;
+        let id = state.document.sequences[0].tracks[0].id;
         super::edit_track(&mut state, &shared, &queue, id, |t| t.locked = true);
         assert!(state.dirty);
         super::edit_track(&mut state, &shared, &queue, id, |t| t.name = "Boat".into());

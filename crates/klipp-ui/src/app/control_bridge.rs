@@ -85,7 +85,7 @@ impl KlippApp {
                 // A sequence the edits copied from, changed since it was
                 // read: they would paste what it no longer holds (#2385).
                 if refused.is_none() {
-                    refused = changed_source(&self.state.sequences, &env.expected_sources);
+                    refused = changed_source(&self.state.document.sequences, &env.expected_sources);
                 }
                 if refused.is_none() {
                     self.apply_edits_as_one(&env.edits, env.label.as_deref().unwrap_or("Socket Edits"));
@@ -98,7 +98,7 @@ impl KlippApp {
                 }
             }
             if refused.is_none() {
-                let active = &self.state.sequences[self.state.active_sequence_idx];
+                let active = &self.state.document.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = param_write_outside(active, &env.commands) {
                     refused = Some(format!("clip {} is inside a compound, not on this sequence's own tracks: open its sequence to grade it", clip.0));
                 }
@@ -203,11 +203,11 @@ impl KlippApp {
         use klipp_document::ops::{self, Anchor, Op, Refusal, RefusalCode};
         for crate::state::DocOpsRequest { label, ops, independent } in std::mem::take(&mut self.state.pending_doc_ops) {
             self.transcript_source.sync(self.state.analysis_generation);
-            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            let seq = &self.state.document.sequences[self.state.active_sequence_idx];
             let resolved = if independent {
-                Ok(ops::resolve_each_with(seq, &self.state.media_pool, &ops, &self.transcript_source))
+                Ok(ops::resolve_each_with(seq, &self.state.document.media_pool, &ops, &self.transcript_source))
             } else {
-                ops::resolve_with(seq, &self.state.media_pool, &ops, &self.transcript_source).map(|plan| (plan, Vec::new()))
+                ops::resolve_with(seq, &self.state.document.media_pool, &ops, &self.transcript_source).map(|plan| (plan, Vec::new()))
             };
             // A refusal, as the person at the keyboard reads it: where, and
             // why. The document's hints are written for whoever asked, the
@@ -241,7 +241,7 @@ impl KlippApp {
                     }
                     // A refit that left pictures never looked through for
                     // people offers to look through them.
-                    let sequence = self.state.sequences[self.state.active_sequence_idx].id;
+                    let sequence = self.state.document.sequences[self.state.active_sequence_idx].id;
                     match super::aspect_version::find_people_offer(&ops, &what, sequence) {
                         Some(action) => self.state.toast.show_with_action(toast, "Find people now", action),
                         None => self.state.toast.show(toast),
@@ -280,7 +280,7 @@ impl KlippApp {
                 }
                 let (edits, summary) = {
                     let seq = self.state.sequence();
-                    let pool = &self.state.media_pool;
+                    let pool = &self.state.document.media_pool;
                     if let Err(e) = klipp_document::edit_plan::validate(&plan, pool, seq.brief.as_ref()) {
                         self.state.edit_plan_note = Some(format!("The plan no longer builds: {e}"));
                         return;
@@ -348,13 +348,13 @@ impl KlippApp {
     /// times one of them can have changed, as edits go to the open one. A
     /// publish behind its sequence is refused at apply, never pasted.
     pub(crate) fn publish_control_others(&mut self) {
-        let key = (self.state.sequences.iter().map(|s| s.id).collect::<Vec<_>>(), self.state.active_sequence_idx);
+        let key = (self.state.document.sequences.iter().map(|s| s.id).collect::<Vec<_>>(), self.state.active_sequence_idx);
         if self.state.control_others_for.as_ref() == Some(&key) {
             return;
         }
         let others = self
             .state
-            .sequences
+            .document.sequences
             .iter()
             .enumerate()
             .filter(|(i, _)| *i != self.state.active_sequence_idx)
@@ -370,10 +370,10 @@ impl KlippApp {
     pub fn set_control_shared(&mut self, shared: std::sync::Arc<klipp_core::ControlShared>) {
         self.state.control_shared = std::sync::Arc::clone(&shared);
         // Histories made before this arrived point at the default counter.
-        for h in self.state.command_histories.values_mut() {
+        for h in self.state.document.command_histories.values_mut() {
             h.set_revision_shared(std::sync::Arc::clone(&shared));
         }
-        self.state.project_history.set_revision_shared(std::sync::Arc::clone(&shared));
+        self.state.document.project_history.set_revision_shared(std::sync::Arc::clone(&shared));
     }
 
     /// Analysis that finished since the last frame, put on its media
@@ -385,7 +385,7 @@ impl KlippApp {
         }
         let reports: Vec<_> = done
             .into_iter()
-            .filter_map(|id| self.state.media_pool.get(&id).map(|i| (id, klipp_analysis::report::MediaAnalysis::load(&i.path))))
+            .filter_map(|id| self.state.document.media_pool.get(&id).map(|i| (id, klipp_analysis::report::MediaAnalysis::load(&i.path))))
             .collect();
         if self.state.take_in_analysis(&reports) {
             self.sync_media_pool_to_engine();
@@ -556,7 +556,7 @@ impl crate::state::AppState {
     }
 
     pub(crate) fn apply_analysis(&mut self, id: klipp_core::MediaId, report: &klipp_analysis::report::MediaAnalysis) -> bool {
-        let Some(item) = self.media_pool.get_mut(&id) else { return false };
+        let Some(item) = self.document.media_pool.get_mut(&id) else { return false };
         if report.is_empty() {
             return false;
         }
@@ -711,10 +711,10 @@ mod analysis_is_not_an_edit_tests {
         let mut state = crate::state::AppState::default();
         let id = klipp_core::MediaId::new();
         let fps = klipp_core::Fps::new(30, 1);
-        state.media_pool.add(klipp_media::MediaItem::new_synthetic_title(id, "shot.mp4".into(), klipp_core::Timecode::from_frames(300, 30), fps));
+        state.document.media_pool.add(klipp_media::MediaItem::new_synthetic_title(id, "shot.mp4".into(), klipp_core::Timecode::from_frames(300, 30), fps));
         let report = MediaAnalysis { shots: Some(Shots::from_boundaries(10.0, vec![2.0, 6.5])), ..Default::default() };
         assert!(state.apply_analysis(id, &report), "the markers are new: shown");
-        let cuts = state.media_pool.get(&id).unwrap().markers.iter().filter(|m| m.kind == klipp_core::MediaMarkerKind::Analysis).count();
+        let cuts = state.document.media_pool.get(&id).unwrap().markers.iter().filter(|m| m.kind == klipp_core::MediaMarkerKind::Analysis).count();
         assert_eq!(cuts, 2);
         assert!(!state.dirty, "analysis arriving is no edit");
         assert!(!state.apply_analysis(id, &report), "the same again changes nothing");
@@ -730,7 +730,7 @@ mod analysis_is_not_an_edit_tests {
         let mut state = crate::state::AppState::default();
         let id = klipp_core::MediaId::new();
         let fps = klipp_core::Fps::new(30, 1);
-        state.media_pool.add(klipp_media::MediaItem::new_synthetic_title(id, "shot.mp4".into(), klipp_core::Timecode::from_frames(300, 30), fps));
+        state.document.media_pool.add(klipp_media::MediaItem::new_synthetic_title(id, "shot.mp4".into(), klipp_core::Timecode::from_frames(300, 30), fps));
         state.mark_saved();
         let report = MediaAnalysis { shots: Some(Shots::from_boundaries(10.0, vec![2.0, 6.5])), ..Default::default() };
         assert!(state.take_in_analysis(&[(id, report)]));

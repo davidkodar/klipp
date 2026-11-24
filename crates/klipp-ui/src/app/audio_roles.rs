@@ -46,7 +46,7 @@ impl KlippApp {
         if self.state.role_sweep_key == Some(key) || self.state.active_history().redo_count() > 0 {
             return;
         }
-        let changes = role_proposals(seq, &self.state.media_pool);
+        let changes = role_proposals(seq, &self.state.document.media_pool);
         self.state.role_sweep_key = Some(key);
         if !changes.is_empty() {
             let n = changes.len();

@@ -107,7 +107,7 @@ impl super::KlippApp {
                 self.send_commands(vec![klipp_core::AppCommand::StretchClip { clip_ids: vec![clip_id], at_end, to, ripple: false, keep_pitch: true }]);
             }
             crate::widgets::toast::ToastAction::SmoothMotion(clip_id) => {
-                match klipp_document::ops::interpolation_at(self.state.sequence(), &self.state.media_pool, clip_id, "flow") {
+                match klipp_document::ops::interpolation_at(self.state.sequence(), &self.state.document.media_pool, clip_id, "flow") {
                     Ok(Some((_, edit))) => {
                         self.apply_edits_as_one(&[edit], "Smooth Motion");
                         self.state.toast.show("Smooth motion: its in-between frames follow the movement");

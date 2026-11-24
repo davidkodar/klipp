@@ -112,7 +112,7 @@ impl KlippApp {
                     if self.state.show_color_panel {
                         let s = &mut self.state;
                         let now = ctx.input(|i| i.time);
-                        s.graded_thumbs.update(ctx, now, &s.sequences[s.active_sequence_idx], &s.media_pool, klipp_engine::video_decoder::working_colorspace(), s.wipe_clip);
+                        s.graded_thumbs.update(ctx, now, &s.document.sequences[s.active_sequence_idx], &s.document.media_pool, klipp_engine::video_decoder::working_colorspace(), s.wipe_clip);
                     }
                     let crate::layout::LayoutRects {
                         full: _,
@@ -586,7 +586,7 @@ impl KlippApp {
             })
             .or_else(|| {
                 self.state.source_media_id
-                    .and_then(|mid| self.state.media_pool.get(&mid))
+                    .and_then(|mid| self.state.document.media_pool.get(&mid))
                     .map(|m| egui::vec2(m.resolution.width as f32, m.resolution.height as f32))
             })
             .unwrap_or(egui::vec2(1920.0, 1080.0));
@@ -1036,23 +1036,23 @@ impl KlippApp {
             if in_color_workspace {
                 let clip_id = self.state.selected_clip.unwrap();
                 let seq_idx = self.state.active_sequence_idx;
-                let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.sequences[seq_idx]);
+                let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.document.sequences[seq_idx]);
                 self.node_inspector_panel.input_colour_space =
                     crate::inspector::color_and_luts::clip_input_colour_space(&self.state, clip_id);
                 // A stand-in: the timeline grade or a grade group's stage.
-                let stand_in = GradeStandIn::of(&self.state.sequences[seq_idx], clip_id);
-                let stand_in_title = stand_in.map(|w| w.title(&self.state.sequences[seq_idx]));
+                let stand_in = GradeStandIn::of(&self.state.document.sequences[seq_idx], clip_id);
+                let stand_in_title = stand_in.map(|w| w.title(&self.state.document.sequences[seq_idx]));
                 // A stand-in's grade is drawn at its own root (M3 step 19),
                 // which takes the sequence to read: taken before the clip
                 // is borrowed to draw.
                 let mut stand_in_snapshot = stand_in.and_then(|w| {
-                    let seq = &self.state.sequences[seq_idx];
+                    let seq = &self.state.document.sequences[seq_idx];
                     crate::inspector::grade_view::snapshot_for_root(seq, clip_id, w.root(seq), &self.state.graph_descent_path, &mut self.state.pending_corrector, &mut self.state.root_grade_start)
                 });
                 // The shots either side of the graded one, for a wipe (#899).
                 let wiping = self.state.wipe_clip;
                 let wipe_neighbours = {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     let graded = crate::graded_thumbs::viewed_clip(seq, self.state.selected_clip, self.state.playhead);
                     let n = |forward| graded.and_then(|g| crate::graded_thumbs::neighbour(seq, g, forward));
                     (n(false), n(true))
@@ -1063,13 +1063,13 @@ impl KlippApp {
                 // A graded piece of a split shot, offering its grade to the
                 // rest (unless the preference is turned off).
                 let shot_pieces = (self.prefs.color.offer_grade_to_shot_pieces && stand_in.is_none())
-                    .then(|| super::grade_edits::shot_pieces_offer(&self.state.sequences[seq_idx], clip_id))
+                    .then(|| super::grade_edits::shot_pieces_offer(&self.state.document.sequences[seq_idx], clip_id))
                     .flatten();
                 // A press inside marks the node inspector the active panel,
                 // so its keys are its own (Ctrl+A stays out of the timeline).
                 // Taken before the clip is borrowed to draw.
                 crate::state::note_active_panel(&mut self.state, crate::state::PanelKind::NodeInspector, ui.ctx(), ui.max_rect());
-                let clip = self.state.sequences[seq_idx].tracks.iter_mut()
+                let clip = self.state.document.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
                     let theme = self.theme.clone();
@@ -1396,7 +1396,7 @@ impl KlippApp {
                         .map(|level| crate::panels::node_inspector::tracked_masks_on_page(clip, level, self.state.selected_node_id))
                         .unwrap_or_default();
                     // Where new zones go (#2767).
-                    self.node_inspector_panel.scene_referred = self.state.media_pool.scene_referred(clip.media_id());
+                    self.node_inspector_panel.scene_referred = self.state.document.media_pool.scene_referred(clip.media_id());
                     let panel_cmds = if drawn { generated_cmds } else { clip.edit_grade(|root| {
                         let graph: &mut klipp_nodes::NodeGraph =
                             match Self::resolve_graph_at_path_mut(root, &path) {
@@ -1460,7 +1460,7 @@ impl KlippApp {
                 self.new_inspector.colour_grade = None;
                 if self.layout.active_inspector_tab == crate::layout_state::InspectorTab::Color {
                     if let Some(clip_id) = self.state.selected_clip {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         if GradeStandIn::of(seq, clip_id).is_none() {
                             self.new_inspector.colour_grade = seq.all_clips().find(|c| c.id == clip_id)
                                 .and_then(|c| crate::inspector::grade_view::snapshot_for(c, &[], false, &mut self.state.pending_corrector));

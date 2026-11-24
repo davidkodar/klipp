@@ -14,7 +14,7 @@ impl KlippApp {
             AppCommand::RunEditHelper => {
                 let Some(dialog) = self.state.edit_helper.take() else { return true };
                 let op = dialog.op(self.state.sequence(), &self.state.selected_clips);
-                match klipp_document::ops::resolve(self.state.sequence(), &self.state.media_pool, std::slice::from_ref(&op)) {
+                match klipp_document::ops::resolve(self.state.sequence(), &self.state.document.media_pool, std::slice::from_ref(&op)) {
                     Ok(plan) => {
                         let what = plan.steps.first().map(|s| s.what.clone()).unwrap_or_default();
                         let edits: Vec<EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();

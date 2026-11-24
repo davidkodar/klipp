@@ -173,7 +173,7 @@ fn curve_cases(report: &mut Report, name: &str, start: &Grade, under: Option<&'s
 fn on_tab(kind: NodeKind, tab: ColorTab) -> Result<Grade, String> {
     let (mut state, clip, node) = super::grade_inspector_tests::graded(kind).ok_or("the grade won't take one")?;
     if kind != NodeKind::Corrector {
-        if let Some(c) = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
+        if let Some(c) = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
             c.edit_grade(|g| g.nodes.iter_mut().filter(|n| n.kind == NodeKind::Corrector).for_each(|n| n.enabled = false));
         }
     }
@@ -226,9 +226,9 @@ pub(super) fn run(report: &mut Report) {
             "camera_encoding" => {
                 let start = || -> Result<(Grade, klipp_core::MediaId), String> {
                     let (mut state, clip, node) = super::grade_inspector_tests::graded(ty.kind).ok_or("the grade won't take one")?;
-                    let media = state.sequences[0].all_clips().find(|c| c.id == clip).and_then(|c| c.media_id()).ok_or("a clip of a file")?;
-                    let fps = state.sequences[0].fps;
-                    state.media_pool.add(klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), klipp_core::RationalTime::from_secs_f64(2.0, 25), fps));
+                    let media = state.document.sequences[0].all_clips().find(|c| c.id == clip).and_then(|c| c.media_id()).ok_or("a clip of a file")?;
+                    let fps = state.document.sequences[0].fps;
+                    state.document.media_pool.add(klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), klipp_core::RationalTime::from_secs_f64(2.0, 25), fps));
                     Ok((Grade::new(state, clip, node).on(Page::Tabbed(ColorTab::Adjustments)), media))
                 };
                 report.case(&format!("{name} opened"), [key(Interaction::OpenWithoutWrite)], || opened(&start()?.0));
@@ -237,7 +237,7 @@ pub(super) fn run(report: &mut Report) {
                     edit_case(&s, |g| {
                         click_text(g, "Rec.709 / sRGB (no conversion)")?;
                         click_text(g, "Sony S-Log3")
-                    }, |g| match g.state.media_pool.get(&media).map(|i| i.log_format) {
+                    }, |g| match g.state.document.media_pool.get(&media).map(|i| i.log_format) {
                         Some(klipp_core::LogFormat::SLog3) => Ok(()),
                         other => Err(format!("the file's encoding is {other:?}")),
                     }).map(drop)
@@ -252,7 +252,7 @@ pub(super) fn run(report: &mut Report) {
                     // Two layers: the Corrector, turned up, on top (port 0,
                     // which it already feeds), the untouched Source below
                     // (port 1), so a blend of the top one shows.
-                    if let Some(c) = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
+                    if let Some(c) = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
                         c.edit_grade(|g| {
                             let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id);
                             for n in g.nodes.iter_mut() {
@@ -295,7 +295,7 @@ pub(super) fn run(report: &mut Report) {
                     // window round part of the frame, mixed, keying a
                     // Corrector turned up: inverting the key leaves the
                     // window alone keying, which shows.
-                    if let Some(c) = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
+                    if let Some(c) = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
                         c.edit_grade(|g| {
                             for n in g.nodes.iter_mut() {
                                 if n.kind == NodeKind::Corrector {
@@ -336,7 +336,7 @@ pub(super) fn run(report: &mut Report) {
                 let start = || -> Result<Grade, String> {
                     let (mut state, clip, node) = placed(ty.kind).ok_or("the grade won't take one")?;
                     // A Difference Key draws its plate picker once it's on.
-                    if let Some(c) = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
+                    if let Some(c) = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
                         c.edit_grade(|g| g.nodes.iter_mut().filter(|n| n.id == node || n.kind == NodeKind::Corrector).for_each(|n| {
                             if n.id == node && editor == "plate_file" {
                                 // On, and a tolerance a plate unlike the frame

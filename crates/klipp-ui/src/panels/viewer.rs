@@ -676,7 +676,7 @@ impl ViewerPanel {
         let tex_size = self.video_texture.as_ref()
             .map(|t| t.size_vec2())
             .unwrap_or_else(|| {
-                state.media_pool.all().next()
+                state.document.media_pool.all().next()
                     .map(|m| egui::vec2(m.resolution.width as f32, m.resolution.height as f32))
                     .unwrap_or(egui::vec2(1920.0, 1080.0))
             });
@@ -1197,7 +1197,7 @@ impl ViewerPanel {
         let current_media_info: Option<(u32, u32, bool)> = state.sequence().tracks.iter()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|t| t.clip_at_timecode(state.playhead))
-            .and_then(|(_, clip)| clip.media_id().and_then(|mid| state.media_pool.get(&mid)))
+            .and_then(|(_, clip)| clip.media_id().and_then(|mid| state.document.media_pool.get(&mid)))
             .map(|m| (m.resolution.width, m.resolution.height, state.proxy_shown(m)));
 
         // Anything pictured at the playhead: a project just opened is
@@ -1222,7 +1222,7 @@ impl ViewerPanel {
         } else {
             current_media_info
                 .map(|(w, h, _)| (w as f32, h as f32))
-                .or_else(|| state.media_pool.all().next().map(|m| (m.resolution.width as f32, m.resolution.height as f32)))
+                .or_else(|| state.document.media_pool.all().next().map(|m| (m.resolution.width as f32, m.resolution.height as f32)))
                 .unwrap_or((1920.0, 1080.0))
         };
 
@@ -1375,9 +1375,9 @@ impl ViewerPanel {
         let label_font = egui::FontId::proportional(11.0);
         let label_y = image_rect.min.y + 14.0;
         let (left_label, right_label) = if frame.wipe_frame.is_some() {
-            let seq = &state.sequences[state.active_sequence_idx];
+            let seq = &state.document.sequences[state.active_sequence_idx];
             let name = state.wipe_clip.and_then(|id| seq.all_clips().find(|c| c.id == id)).map(|c| {
-                let media = c.media_id().and_then(|m| state.media_pool.get(&m)).map(|m| m.filename.clone()).unwrap_or_default();
+                let media = c.media_id().and_then(|m| state.document.media_pool.get(&m)).map(|m| m.filename.clone()).unwrap_or_default();
                 c.label(&media).to_string()
             }).unwrap_or_default();
             (format!("Clip: {name}"), "Now".to_string())
@@ -2361,7 +2361,7 @@ impl ViewerPanel {
             draw_chart_tool(ui, state, image_rect, cmds);
         } else if state.show_transform_controls
             // A sound has no picture to move (#3128).
-            && !state.selected_clip.is_some_and(|id| crate::selection::is_sound_only(state.sequence(), &state.media_pool, id))
+            && !state.selected_clip.is_some_and(|id| crate::selection::is_sound_only(state.sequence(), &state.document.media_pool, id))
             && !state.show_color_panel
             // The Export page shows the picture as it goes out, no gizmo.
             && state.active_workspace != crate::state::Workspace::Export
@@ -2707,7 +2707,7 @@ impl ViewerPanel {
         // The source clip's marks: favourite stretches in green and
         // rejected ones in red along the track, notes as ticks above it.
         if viewer_kind == ViewerMode::Source {
-            if let Some(media) = state.source_media_id.and_then(|mid| state.media_pool.get(&mid)) {
+            if let Some(media) = state.source_media_id.and_then(|mid| state.document.media_pool.get(&mid)) {
                 let dur = media.duration.to_secs_f64();
                 if dur > 0.0 {
                     let x_of = |secs: f64| track_rect.min.x + (secs / dur).clamp(0.0, 1.0) as f32 * track_rect.width();
@@ -2769,7 +2769,7 @@ impl ViewerPanel {
             ViewerMode::Source => {
                 let media = state
                     .source_media_id
-                    .and_then(|mid| state.media_pool.get(&mid));
+                    .and_then(|mid| state.document.media_pool.get(&mid));
                 let dur = media.map(|m| m.duration.to_secs_f64()).unwrap_or(0.0);
                 let cur = state.source_playhead.to_secs_f64();
                 let rate = media.map(|m| m.fps.rate()).unwrap_or(state.fps.rate());
@@ -2795,7 +2795,7 @@ impl ViewerPanel {
         // no playback position to mark. Loaded stills count as content.
         let has_content = match viewer_kind {
             ViewerMode::Source => state.source_media_id
-                .and_then(|mid| state.media_pool.get(&mid))
+                .and_then(|mid| state.document.media_pool.get(&mid))
                 .is_some(),
             ViewerMode::Program => dur_secs > 0.0,
         };
@@ -2923,7 +2923,7 @@ impl ViewerPanel {
                 // drop-frame, so the rate's convention stands in.
                 let media = state
                     .source_media_id
-                    .and_then(|mid| state.media_pool.get(&mid));
+                    .and_then(|mid| state.document.media_pool.get(&mid));
                 let fps = media.map(|m| m.fps).unwrap_or(state.fps);
                 let display = klipp_core::TimecodeDisplay {
                     fps,
@@ -6720,7 +6720,7 @@ impl ViewerPanel {
                 // Show filename overlay in top-left: the skimmed file's
                 // while a skim shows, not the loaded clip's.
                 let skimming = state.browser_skim_texture.is_some();
-                if let Some(media) = source_viewer_named(state).and_then(|mid| state.media_pool.get(&mid)) {
+                if let Some(media) = source_viewer_named(state).and_then(|mid| state.document.media_pool.get(&mid)) {
                     ui.painter().text(
                         egui::pos2(viewer_rect.min.x + 12.0, viewer_rect.min.y + 28.0),
                         egui::Align2::LEFT_TOP,
@@ -6740,7 +6740,7 @@ impl ViewerPanel {
         }
 
         let media = state.source_media_id
-            .and_then(|mid| state.media_pool.get(&mid));
+            .and_then(|mid| state.document.media_pool.get(&mid));
 
         if let Some(media) = media {
             let cx = viewer_rect.center().x;
@@ -8811,10 +8811,10 @@ mod transform_gizmo_tests {
     fn the_transform_box_is_only_on_a_clip_under_the_playhead() {
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
         let mut state = AppState::default();
-        let media = state.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/a.mp4".into(), None));
+        let media = state.document.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/a.mp4".into(), None));
         let (first, third) = (klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0)), klipp_timeline::Clip::media(media, tc(4.0), tc(6.0), tc(0.0), tc(2.0)));
         let (first_id, third_id) = (first.id, third.id);
-        let track = state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let track = state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         track.clips = vec![first, third];
 
         state.playhead = tc(1.0);
@@ -8831,7 +8831,7 @@ mod transform_gizmo_tests {
         let title_id = title.id;
         let mut text = klipp_timeline::Track::new("T1", klipp_timeline::TrackKind::Text);
         text.clips = vec![title];
-        state.sequences[0].tracks.push(text);
+        state.document.sequences[0].tracks.push(text);
         state.selected_clip = Some(title_id);
         assert!(selection_is_on_screen(&state), "a title under the playhead");
         state.playhead = tc(1.0);

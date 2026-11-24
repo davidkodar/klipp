@@ -89,7 +89,7 @@ impl KlippApp {
             // it off again, which its snapshot from the drag's start would
             // undo).
             if let Some(session) = self.multi_edit.take() {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 for before in session.before.into_iter().filter(|c| c.id != primary_id) {
                     if let Some(c) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(before.id)) {
                         *c = before;
@@ -125,7 +125,7 @@ impl KlippApp {
                 }
                 self.sync_sequence_to_engine();
             } else if let Some(primary) = primary {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 for other in &post.others {
                     if let Some(c) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(*other)) {
                         crate::multi_edit::copy_to(&post.cmd, &primary, c);

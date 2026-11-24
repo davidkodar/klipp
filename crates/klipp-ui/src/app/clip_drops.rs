@@ -87,7 +87,7 @@ fn mirror_onto_linked_sound(state: &mut AppState, before: &klipp_timeline::Seque
 /// split off is the history's own, which undo then takes off. Laid over
 /// apart from its edits, the piece had another id, and undo left it.
 fn apply(state: &mut AppState, edits: &[EditCommand]) {
-    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
     for e in edits {
         view.apply_forward(e);
     }
@@ -250,13 +250,13 @@ mod tests {
 
     fn undo(state: &mut AppState) {
         let entry = state.active_history_mut().undo().expect("a step to undo");
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
         view.apply_inverse(&entry.command);
     }
 
     fn redo(state: &mut AppState) {
         let entry = state.active_history_mut().redo().expect("a step to redo");
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
         view.apply_forward(&entry.command);
     }
 

@@ -19,7 +19,7 @@ use klipp_core::AppCommand;
 /// A LUT node with `path` set (or none), as the per-node layout draws it.
 fn lut_node(path: Option<&str>) -> Result<Grade, String> {
     let (mut state, clip, node) = placed(NodeKind::Lut3D).ok_or("the grade won't take a LUT node")?;
-    let c = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+    let c = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
     klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.id == node).for_each(|n| n.params.lut_path = path.map(Into::into)));
     Ok(Grade::new(state, clip, node).on(Page::PerNode))
 }
@@ -231,7 +231,7 @@ fn mask_case(start: &Grade, check: impl Fn(&[klipp_core::Mask], &[klipp_core::Ma
 /// A Mask node, with one circle on it when `with_one`.
 fn mask_node(with_one: bool) -> Result<Grade, String> {
     let (mut state, clip, node) = placed(NodeKind::Mask).ok_or("the grade won't take a Mask node")?;
-    let c = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+    let c = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
     klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.id == node).for_each(|n| {
         let stack = n.params.masks.get_or_insert_with(Default::default);
         stack.masks.clear();
@@ -362,7 +362,7 @@ fn a_difference_key_edit_is_one_step_undone() {
 #[test]
 fn escape_takes_back_a_grade_slider_drag() {
     let (mut state, clip, node) = placed(NodeKind::SoftClip).expect("a Soft Clip node");
-    let c = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+    let c = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
     klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.id == node).for_each(|n| n.params.soft_clip = Some(klipp_core::color_grade::SoftClipSettings { enabled: true, ..Default::default() })));
     let base = Grade::new(state, clip, node).on(Page::PerNode);
     let mut g = base.twin();
@@ -391,7 +391,7 @@ fn escape_takes_back_a_grade_slider_drag() {
 fn mask_shapes_keep_their_own_tracks() {
     let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     let (mut state, clip, node) = placed(NodeKind::Mask).expect("a Mask node");
-    let c = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+    let c = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
     let second = {
         let mut m = klipp_core::Mask { shape: klipp_core::MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.4, height: 0.3, rotation: 0.0 }, ..Default::default() };
         m.keyframes.center_x = vec![key(0.0, 0.2), key(1.0, 0.8)];
@@ -448,7 +448,7 @@ fn retrack_and_untrack_click_through() {
     for (button, want) in [("\u{1F3AF} Re-track", vec!["RemoveMaskTracking", "TrackMaskRegion"]), ("\u{1F6AB} Untrack", vec!["RemoveMaskTracking"])] {
         let mut g = start.twin();
         let clip = g.clip;
-        let c = g.state.sequences[0].all_clips_mut().find(|c| c.id == clip).unwrap();
+        let c = g.state.document.sequences[0].all_clips_mut().find(|c| c.id == clip).unwrap();
         c.track_points.push(tracker.clone());
         // And the keys its track left: tracked is the two together.
         let node = start.node;
@@ -516,7 +516,7 @@ fn a_keyed_mask_slider_click_is_one_step() {
     let mut base = mask_node(true).expect("a Mask node with a circle");
     let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     let (clip, node) = (base.clip, base.node);
-    let c = base.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+    let c = base.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
     klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.id == node).for_each(|n| {
         n.params.masks.as_mut().unwrap().masks[0].keyframes.radius = vec![key(0.0, 0.2), key(1.0, 0.3)];
     }));
@@ -537,11 +537,11 @@ fn a_keyed_mask_slider_click_is_one_step() {
 fn a_camera_encoding_pick_sets_the_file_and_its_clip() {
     let (mut state, clip, node) = super::grade_inspector_tests::graded(NodeKind::InputTransform).expect("an Input Transform node");
     // The clip's file, in the pool: the encoding is the file's.
-    let media = state.sequences[0].all_clips().find(|c| c.id == clip).and_then(|c| c.media_id()).expect("a clip of a file");
-    let fps = state.sequences[0].fps;
-    state.media_pool.add(klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), klipp_core::RationalTime::from_secs_f64(2.0, 25), fps));
+    let media = state.document.sequences[0].all_clips().find(|c| c.id == clip).and_then(|c| c.media_id()).expect("a clip of a file");
+    let fps = state.document.sequences[0].fps;
+    state.document.media_pool.add(klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), klipp_core::RationalTime::from_secs_f64(2.0, 25), fps));
     let base = Grade::new(state, clip, node).on(Page::PerNode);
-    let format = |g: &Grade| g.state.media_pool.get(&media).map(|i| (i.log_format, i.log_format_user_set)).expect("the file");
+    let format = |g: &Grade| g.state.document.media_pool.get(&media).map(|i| (i.log_format, i.log_format_user_set)).expect("the file");
     let mut g = base.twin();
     g.drawn();
     let before = (format(&g), g.picture());

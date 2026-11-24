@@ -1185,18 +1185,18 @@ mod tests {
         assert!(matches!(cmds.as_slice(), [AppCommand::SetNodeEnabledAt { addr: a, enabled: false }] if *a == addr), "{cmds:?}");
 
         let mut state = crate::state::AppState::default();
-        let track = state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let track = state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         track.clips.push(c.clone());
         let before = (*p).clone();
         state.before_dispatch(&cmds[0]);
         assert_eq!(state.path_command(&cmds[0]), Some(true));
         assert_eq!(state.active_history().undo_count(), 1);
-        let changed = state.sequences[0].all_clips().find(|n| n.id == c.id).unwrap().picture_v2().unwrap();
+        let changed = state.document.sequences[0].all_clips().find(|n| n.id == c.id).unwrap().picture_v2().unwrap();
         assert!(!changed.picture.graph.nodes.iter().find(|n| n.id == addr.node().unwrap()).unwrap().enabled);
         let mut command = state.active_history_mut().undo().unwrap().command;
         while let crate::history::EditCommand::Named { edit, .. } = command { command = *edit; }
         let crate::history::EditCommand::PictureEdit { edit, .. } = command else { panic!("picture undo") };
-        let restored = state.sequences[0].all_clips_mut().find(|n| n.id == c.id).unwrap();
+        let restored = state.document.sequences[0].all_clips_mut().find(|n| n.id == c.id).unwrap();
         restored.restore_picture(&edit.before);
         assert_eq!(*restored.picture_v2().unwrap(), before);
     }
@@ -1214,7 +1214,7 @@ mod tests {
         let group = model.nodes.iter().find(|n| n.node.group.is_some()).expect("the clip's grade group");
         let (group_id, group_label) = (group.id(), group.label.clone());
         let mut state = crate::state::AppState::default();
-        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c.clone());
+        state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c.clone());
         state.selected_clip = Some(c.id);
         state.graph_dock_open = true;
         let ctx = egui::Context::default();
@@ -1334,7 +1334,7 @@ mod tests {
         control.apply_picture_ops(&[GraphOp::SetEnabled { path: model.path(node), enabled: false }]).unwrap();
         assert!(render(&control) != before, "the source and effect must exercise the renderer");
         let mut state = crate::state::AppState::default();
-        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c);
+        state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c);
         for command in [AppCommand::MoveNode { clip_id: id, node_id: node, delta_x: 100.0, delta_y: 50.0 }, AppCommand::RenameNode { clip_id: id, node_id: node, label: "Softness".into() }] {
             let command = model.command(command).unwrap();
             state.before_dispatch(&command);
@@ -1384,7 +1384,7 @@ mod tests {
             let effect = before.picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
             let label = PictureCanvas::new(&before.picture.graph, root(&c), None).unwrap().nodes.into_iter().find(|n| n.id() == effect).unwrap().label;
             let mut state = crate::state::AppState::default();
-            state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c.clone());
+            state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c.clone());
             let ctx = egui::Context::default();
             let mut panel = super::super::NodeGraphV2Panel::default();
             let mut level = root(&c);
@@ -1428,7 +1428,7 @@ mod tests {
                 let mut command = state.active_history_mut().undo().unwrap().command;
                 while let crate::history::EditCommand::Named { edit, .. } = command { command = *edit; }
                 let crate::history::EditCommand::PictureEdit { edit, .. } = command else { panic!("picture undo") };
-                state.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap().restore_picture(&edit.before);
+                state.document.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap().restore_picture(&edit.before);
             }
             assert_eq!(state.sequence().all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap(), before);
         }
@@ -1484,14 +1484,14 @@ mod tests {
         }
         fn of(c: Clip) -> Self {
             let mut state = crate::state::AppState::default();
-            state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c.clone());
+            state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c.clone());
             state.selected_clip = Some(c.id);
             let mut d = Self { ctx: Default::default(), panel: Default::default(), state, clip: c.id, selected: None, set: Default::default(), time: 0.0, texts: Vec::new(), sent: Vec::new(), mods: egui::Modifiers::NONE, cards: Vec::new(), fills: Vec::new(), swatches: Vec::new() };
             d.settle();
             d
         }
         fn clip(&self) -> Clip {
-            self.state.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap().clone()
+            self.state.document.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap().clone()
         }
         fn graph(&self) -> Graph {
             self.clip().picture_v2().unwrap().picture.graph.clone()
@@ -1505,7 +1505,7 @@ mod tests {
             self.panel.picture_solo = self.state.solo_node;
             self.panel.compared_node = self.state.split_compare_node.as_ref().map(|(_, p)| p).and_then(|p| p.node());
             self.panel.node_feedback = self.state.node_feedback(self.clip);
-            self.panel.node_labels = crate::app::node_labels::canvas_labels(&self.state.sequences[0]);
+            self.panel.node_labels = crate::app::node_labels::canvas_labels(&self.state.document.sequences[0]);
             let mut cmds = Vec::new();
             let (panel, selected, set) = (&mut self.panel, &mut self.selected, &mut self.set);
             let out = self.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(self.time), events, modifiers: self.mods, ..Default::default() }, |ctx| {
@@ -1595,7 +1595,7 @@ mod tests {
         d.click(at, egui::PointerButton::Secondary);
         let at = swatch(&d, purple);
         d.click(at, egui::PointerButton::Primary);
-        assert_eq!(d.state.sequences[0].node_label(&path), 6, "labelled: {:?}", d.sent);
+        assert_eq!(d.state.document.sequences[0].node_label(&path), 6, "labelled: {:?}", d.sent);
         assert_eq!(d.steps(), 1);
         assert_eq!(d.state.active_history().undo_label(), Some("Node Colour Label"));
         assert!(banded(&d), "the card has the colour's band");
@@ -1606,7 +1606,7 @@ mod tests {
         let red = swatch(&d, super::super::node_label_colour(1).unwrap());
         let orange = swatch(&d, super::super::node_label_colour(2).unwrap());
         d.click(red - (orange - red), egui::PointerButton::Primary);
-        assert!(d.state.sequences[0].node_labels.is_empty());
+        assert!(d.state.document.sequences[0].node_labels.is_empty());
         assert_eq!(d.steps(), 2);
         assert!(!banded(&d));
     }
@@ -1675,7 +1675,7 @@ mod tests {
         let mut command = d.state.active_history_mut().undo().unwrap().command;
         while let crate::history::EditCommand::Named { edit, .. } = command { command = *edit; }
         let crate::history::EditCommand::PictureEdit { edit, .. } = command else { panic!("a picture step") };
-        d.state.sequences[0].all_clips_mut().find(|c| c.id == d.clip).unwrap().restore_picture(&edit.before);
+        d.state.document.sequences[0].all_clips_mut().find(|c| c.id == d.clip).unwrap().restore_picture(&edit.before);
         assert_eq!(d.frames().len(), 1, "undo brings the frame back");
     }
 

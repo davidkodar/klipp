@@ -25,7 +25,7 @@ pub(crate) fn selected(state: &AppState) -> Vec<ClipId> {
 }
 
 fn apply(state: &mut AppState, edit: EditCommand) {
-    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
     let _ = view.apply_forward(&edit);
     state.push_history(edit);
 }
@@ -39,7 +39,7 @@ pub(crate) fn remove_clips(state: &mut AppState, ids: &[ClipId], lift: bool, lab
     for &id in ids {
         let Some((ti, _)) = state.sequence().find_clip(id) else { continue };
         if !state.sequence().tracks[ti].locked && !magnetic(state, ti) {
-            crate::clip_edits::remove(state.sequence(), &state.media_pool, id, !lift).map_err(|r| r.why)?;
+            crate::clip_edits::remove(state.sequence(), &state.document.media_pool, id, !lift).map_err(|r| r.why)?;
         }
     }
     let own_batch = !state.active_history_mut().is_batching();
@@ -54,7 +54,7 @@ pub(crate) fn remove_clips(state: &mut AppState, ids: &[ClipId], lift: bool, lab
         }
         removed += 1;
         if !magnetic(state, ti) {
-            if let Ok(edit) = crate::clip_edits::remove(state.sequence(), &state.media_pool, id, !lift) {
+            if let Ok(edit) = crate::clip_edits::remove(state.sequence(), &state.document.media_pool, id, !lift) {
                 apply(state, edit);
             }
             continue;
@@ -138,7 +138,7 @@ mod tests {
     /// after them on each (4–6 s on the primary, 4–5 s on the free track).
     fn state() -> (AppState, [ClipId; 5]) {
         let mut state = AppState { magnetic_timeline_enabled: true, ..Default::default() };
-        let seq = &mut state.sequences[0];
+        let seq = &mut state.document.sequences[0];
         seq.add_video_track("V2".into());
         let primary = seq.tracks.iter().position(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary).unwrap();
         let free = seq.tracks.iter().position(|t| t.name == "V2").unwrap();
@@ -155,7 +155,7 @@ mod tests {
 
     fn undo(state: &mut AppState) {
         let entry = state.active_history_mut().undo().expect("a step to undo");
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
         view.apply_inverse(&entry.command);
     }
 
@@ -223,7 +223,7 @@ mod tests {
         let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
         let (first, gap, last) = (c(0.0, 4.0), Clip::gap(t(4.0), t(14.0)), c(14.0, 18.0));
         let (first_id, gap_id, last_id) = (first.id, gap.id, last.id);
-        state.sequences[0].tracks[p].clips = vec![first, gap, last];
+        state.document.sequences[0].tracks[p].clips = vec![first, gap, last];
         let at = |state: &AppState, id: ClipId| state.sequence().find_clip(id).map(|(ti, ci)| state.sequence().tracks[ti].clips[ci].timeline_in);
 
         state.selected_clip = Some(gap_id);
@@ -249,7 +249,7 @@ mod tests {
     fn a_removal_undoes_to_the_exact_document() {
         for lift in [false, true] {
             let mut state = AppState { magnetic_timeline_enabled: true, ..Default::default() };
-            let seq = &mut state.sequences[0];
+            let seq = &mut state.document.sequences[0];
             seq.add_video_track("V2".into());
             let primary = seq.tracks.iter().position(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary).unwrap();
             let free = seq.tracks.iter().position(|t| t.name == "V2").unwrap();
@@ -264,16 +264,16 @@ mod tests {
             matted.matte_source = Some(klipp_timeline::MatteBinding::new(ids[2]));
             seq.tracks[primary].clips = prim;
             seq.tracks[free].clips.push(matted);
-            let before = serde_json::to_value(&state.sequences).unwrap();
+            let before = serde_json::to_value(&state.document.sequences).unwrap();
             assert_eq!(remove_clips(&mut state, &[ids[1], ids[2]], lift, "Remove"), Ok(2));
-            let after = serde_json::to_value(&state.sequences).unwrap();
+            let after = serde_json::to_value(&state.document.sequences).unwrap();
             assert!(state.sequence().all_clips().all(|c| c.matte_source.is_none()), "lift {lift}: the binding to a removed clip is cleared");
             undo(&mut state);
-            assert!(serde_json::to_value(&state.sequences).unwrap() == before, "lift {lift}: one undo puts the whole document back");
+            assert!(serde_json::to_value(&state.document.sequences).unwrap() == before, "lift {lift}: one undo puts the whole document back");
             let entry = state.active_history_mut().redo().expect("the step again");
-            let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+            let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
             let _ = view.apply_forward(&entry.command);
-            assert!(serde_json::to_value(&state.sequences).unwrap() == after, "lift {lift}: one redo as the removal left it");
+            assert!(serde_json::to_value(&state.document.sequences).unwrap() == after, "lift {lift}: one redo as the removal left it");
         }
     }
 
@@ -290,15 +290,15 @@ mod tests {
         let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
         let clips: Vec<Clip> = [(0.0, 2.0), (2.0, 4.0), (4.0, 6.0), (6.0, 8.0)].iter().map(|&(a, b)| c(a, b)).collect();
         let ids: Vec<ClipId> = clips.iter().map(|c| c.id).collect();
-        state.sequences[0].tracks[p].clips = clips;
-        let original = serde_json::to_value(&state.sequences).unwrap();
+        state.document.sequences[0].tracks[p].clips = clips;
+        let original = serde_json::to_value(&state.document.sequences).unwrap();
         remove_clips(&mut state, &[ids[0]], true, "Lift").unwrap();
         // Alt+. on the last clip, ten frames: the document's move.
         let ops = crate::timeline::moves::drag_move_ops(state.sequence(), &[(ids[3], t(6.0 + 10.0 / 24.0), None)], true);
-        let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &ops).expect("the nudge");
+        let plan = klipp_document::ops::resolve(state.sequence(), &state.document.media_pool, &ops).expect("the nudge");
         let edits: Vec<EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
         for e in &edits {
-            let _ = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(e);
+            let _ = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(e);
         }
         state.push_edits_as_one(&edits, "Nudge");
         assert!(state.sequence().primary_holes().is_none(), "the nudge's hole is a gap clip");
@@ -307,7 +307,7 @@ mod tests {
         for _ in 0..3 {
             undo(&mut state);
         }
-        assert!(serde_json::to_value(&state.sequences).unwrap() == original, "three undos give it back exactly");
+        assert!(serde_json::to_value(&state.document.sequences).unwrap() == original, "three undos give it back exactly");
     }
 
     /// An edit the app applies itself (not a planned op), leaving a hole
@@ -318,17 +318,17 @@ mod tests {
         let mut state = AppState::default();
         let p = state.sequence().tracks.iter().position(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary).unwrap();
         let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
-        state.sequences[0].tracks[p].clips = vec![c(0.0, 2.0), c(2.0, 4.0)];
-        let original = serde_json::to_value(&state.sequences).unwrap();
-        let old = state.sequences[0].tracks[p].clips[0].clone();
+        state.document.sequences[0].tracks[p].clips = vec![c(0.0, 2.0), c(2.0, 4.0)];
+        let original = serde_json::to_value(&state.document.sequences).unwrap();
+        let old = state.document.sequences[0].tracks[p].clips[0].clone();
         let mut new = old.clone();
         new.timeline_out = t(1.5);
         new.source_out = t(1.5);
-        state.sequences[0].tracks[p].clips[0] = new.clone();
+        state.document.sequences[0].tracks[p].clips[0] = new.clone();
         state.push_history(EditCommand::ReplaceClip { description: "Trim", old: Box::new(old), new: Box::new(new) });
         assert!(state.sequence().tracks[p].clips.iter().any(|c| c.kind.is_gap() && c.timeline_in == t(1.5) && c.timeline_out == t(2.0)), "a gap clip 1.5-2 s");
         undo(&mut state);
-        assert!(serde_json::to_value(&state.sequences).unwrap() == original);
+        assert!(serde_json::to_value(&state.document.sequences).unwrap() == original);
     }
 
     /// A refused removal says why and offers Lift, by its key; it tells

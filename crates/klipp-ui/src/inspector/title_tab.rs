@@ -1838,18 +1838,18 @@ mod template_field_tests {
         clip.kind = ClipKind::Title(td);
         let id = clip.id;
         let mut state = crate::state::AppState::default();
-        state.sequences[0].tracks[0].clips.push(clip);
+        state.document.sequences[0].tracks[0].clips.push(clip);
         (state, id)
     }
 
     fn title(state: &crate::state::AppState, id: ClipId) -> TitleData {
-        state.sequences[0].all_clips().find(|c| c.id == id).unwrap().title_data().unwrap().clone()
+        state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().title_data().unwrap().clone()
     }
 
     fn undo(state: &mut crate::state::AppState, id: ClipId) {
         let entry = state.active_history_mut().undo().expect("a step");
         let crate::history::EditCommand::EditTitle { old_data, .. } = entry.command else { panic!("a title step") };
-        let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+        let clip = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
         clip.kind = ClipKind::Title(old_data);
     }
 
@@ -1881,7 +1881,7 @@ mod template_field_tests {
         undo(&mut s, id);
         assert_eq!(title(&s, id), made);
 
-        let clip = s.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+        let clip = s.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
         let ClipKind::Title(td) = &mut clip.kind else { unreachable!() };
         td.objects.clear();
         let gone = title(&s, id);

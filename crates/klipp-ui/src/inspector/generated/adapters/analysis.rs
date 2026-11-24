@@ -57,7 +57,7 @@ mod trajectory_tests {
         let mut state = AppState::default();
         let key = klipp_analysis::assets::asset_key(klipp_analysis::assets::AssetKind::Stabilisation, &item).expect("a key");
         state.analyses.insert(key, std::sync::Arc::new(serde_json::to_value(&data).expect("serialises")));
-        state.media_pool.add(item);
+        state.document.media_pool.add(item);
         (clip, state, data)
     }
 

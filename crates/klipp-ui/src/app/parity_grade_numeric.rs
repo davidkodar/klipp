@@ -475,7 +475,7 @@ pub(super) fn run(report: &mut Report) {
         // The pages write an enabled Corrector whatever node is selected:
         // another kind's rows are its own with the Corrector off.
         if *kind != NodeKind::Corrector {
-            if let Some(c) = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
+            if let Some(c) = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
                 klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.kind == NodeKind::Corrector).for_each(|n| n.enabled = false));
             }
         }
@@ -519,7 +519,7 @@ fn grade_numeric_rows_store_what_each_edit_must_on_the_sequences_grades() {
 fn a_grade_edited_under_one_clip_id_draws_anew_on_a_kept_renderer() {
     use super::parity_pixels::{frames_at, Routes};
     let (state, clip, node) = super::grade_inspector_tests::graded(NodeKind::Corrector).unwrap();
-    let base = state.sequences[0].all_clips().find(|c| c.id == clip).unwrap().clone();
+    let base = state.document.sequences[0].all_clips().find(|c| c.id == clip).unwrap().clone();
     let with = |exposure: f32| {
         let mut c = base.clone();
         klipp_timeline::GradeAccess::set_grade_param(&mut c, node, "exposure", exposure);

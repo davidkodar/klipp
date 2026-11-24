@@ -53,12 +53,12 @@ impl Stack {
     pub(super) fn new(clip: klipp_timeline::Clip) -> Self {
         let id = clip.id;
         let mut state = AppState::default();
-        state.sequences[0].tracks[0].clips.push(clip);
+        state.document.sequences[0].tracks[0].clips.push(clip);
         Stack { state, clip: id, ctx: egui::Context::default(), time: 0.0, unapplied: Vec::new() }
     }
 
     pub(super) fn clip(&self) -> &klipp_timeline::Clip {
-        self.state.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap()
+        self.state.document.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap()
     }
 
     pub(super) fn picture(&self) -> klipp_timeline::LiftedPicture {
@@ -74,7 +74,7 @@ impl Stack {
         let (state, clip_id) = (&self.state, self.clip);
         let out = self.ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                let clip = state.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap();
+                let clip = state.document.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap();
                 crate::inspector::stack_view::show(ui, &KlippTheme::default(), state, clip, &mut cmds, 0.0);
             });
         });
@@ -136,7 +136,7 @@ impl Stack {
         self.state.before_dispatch(&if forward { AppCommand::Redo } else { AppCommand::Undo });
         // The step the app takes: the sequence's or the project's (#1986).
         let entry = if forward { self.state.take_redo() } else { self.state.take_undo() }.ok_or("no step to take")?;
-        let mut doc = klipp_document::apply::DocumentView { sequences: &mut self.state.sequences, active: self.state.active_sequence_idx, media_pool: &mut self.state.media_pool, fps: &mut self.state.fps };
+        let mut doc = klipp_document::apply::DocumentView { sequences: &mut self.state.document.sequences, active: self.state.active_sequence_idx, media_pool: &mut self.state.document.media_pool, fps: &mut self.state.fps };
         if forward { doc.apply_forward(&entry.command); } else { doc.apply_inverse(&entry.command); }
         Ok(())
     }
@@ -612,7 +612,7 @@ impl Grade {
             return self;
         }
         let grade = self.clip().grade().clone();
-        let seq = &mut self.state.sequences[0];
+        let seq = &mut self.state.document.sequences[0];
         self.clip = match root {
             GradeRoot::Timeline => {
                 seq.timeline_grade_slot().set(Some(grade));
@@ -651,9 +651,9 @@ impl Grade {
     /// has none.
     pub(super) fn with_stand_in<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         let Some(which) = self.stand_in() else { return f(self) };
-        super::timeline_grade::stand_in_grade_on(&mut self.state.sequences[0], which, &mut self.fresh);
+        super::timeline_grade::stand_in_grade_on(&mut self.state.document.sequences[0], which, &mut self.fresh);
         let out = f(self);
-        super::timeline_grade::stand_down_timeline_grade_on(&mut self.state.sequences[0], &mut self.fresh);
+        super::timeline_grade::stand_down_timeline_grade_on(&mut self.state.document.sequences[0], &mut self.fresh);
         out
     }
 
@@ -662,7 +662,7 @@ impl Grade {
         match self.stand_in() {
             None => klipp_timeline::GradeAccess::grade(self.clip()),
             Some(which) => {
-                let seq = &self.state.sequences[0];
+                let seq = &self.state.document.sequences[0];
                 seq.root_grade(which.root(seq)).ok().flatten().expect("the fixture's grade")
             }
         }
@@ -671,18 +671,18 @@ impl Grade {
     /// A fresh state, no history, holding a clone of this one's clip and files.
     pub(super) fn twin(&self) -> Self {
         let mut state = AppState::default();
-        let home = self.state.sequences[0].all_clips().find(|c| c.id == self.home).unwrap();
-        let track = self.state.sequences[0].tracks.iter().position(|t| t.clips.iter().any(|c| c.id == self.home)).unwrap();
-        state.sequences[0].tracks[track].clips.push(home.clone());
+        let home = self.state.document.sequences[0].all_clips().find(|c| c.id == self.home).unwrap();
+        let track = self.state.document.sequences[0].tracks.iter().position(|t| t.clips.iter().any(|c| c.id == self.home)).unwrap();
+        state.document.sequences[0].tracks[track].clips.push(home.clone());
         // Its files too: a clip's file settings (its camera encoding) are
         // the file's.
-        state.media_pool = self.state.media_pool.clone();
+        state.document.media_pool = self.state.document.media_pool.clone();
         // A sequence grade's: the sequence's grades and groups too, under
         // the same sequence id, which the timeline grade's stand-in id is
         // made from.
-        state.sequences[0].id = self.state.sequences[0].id;
-        state.sequences[0].timeline_grade_slot().set(self.state.sequences[0].timeline_grade().cloned());
-        state.sequences[0].grade_groups = self.state.sequences[0].grade_groups.clone();
+        state.document.sequences[0].id = self.state.document.sequences[0].id;
+        state.document.sequences[0].timeline_grade_slot().set(self.state.document.sequences[0].timeline_grade().cloned());
+        state.document.sequences[0].grade_groups = self.state.document.sequences[0].grade_groups.clone();
         let mut twin = Grade { page: self.page, root: self.root, group: self.group, clip: self.clip, ..Grade::plain(state, self.home, self.node) };
         // The zone an HDR Zones page shows, as picked on this one (#240).
         twin.panel.hdr_zone_pick = self.panel.hdr_zone_pick.clone();
@@ -711,7 +711,7 @@ impl Grade {
     }
 
     pub(super) fn clip(&self) -> &klipp_timeline::Clip {
-        self.state.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap()
+        self.state.document.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap()
     }
 
     /// What the pixel oracle draws for the node's grade: the clip it was
@@ -719,7 +719,7 @@ impl Grade {
     /// the sequence's timeline grade, or a group's stage with the clip in
     /// the group.
     pub(super) fn frame_sequence(&self) -> klipp_timeline::Sequence {
-        let mut seq = self.state.sequences[0].clone();
+        let mut seq = self.state.document.sequences[0].clone();
         let mut home = seq.all_clips().find(|c| c.id == self.home).unwrap().clone();
         home.grade_group = self.group;
         let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
@@ -749,7 +749,7 @@ impl Grade {
         let (cmds, out) = self.with_stand_in(|g| {
             // The clip drawn (a sequence grade's stand-in, stood in) starts
             // where the carets seek from.
-            let clip_start = g.state.sequences[0].all_clips().find(|c| c.id == g.clip).expect("the grade's clip").timeline_in;
+            let clip_start = g.state.document.sequences[0].all_clips().find(|c| c.id == g.clip).expect("the grade's clip").timeline_in;
             let frame = crate::inspector::keyframe_selection::FrameSelection { time_secs: 0.5, tolerance: 0.02, clip_start };
             g.draw(input, frame, &theme)
         });
@@ -779,22 +779,22 @@ impl Grade {
     /// for a sequence grade: its commands, not yet applied, and its shapes.
     fn draw(&mut self, input: egui::RawInput, frame: crate::inspector::keyframe_selection::FrameSelection, theme: &KlippTheme) -> (Vec<AppCommand>, egui::FullOutput) {
         let mut cmds = Vec::new();
-        let root = self.stand_in().map(|w| w.root(&self.state.sequences[0]));
+        let root = self.stand_in().map(|w| w.root(&self.state.document.sequences[0]));
         let Grade { state, clip, node, ctx, panel, page, .. } = self;
         let (clip_id, node, page) = (*clip, *node, *page);
         let out = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| match page {
                 Page::PerNode => match root {
                     None => {
-                        let clip = state.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().clone();
+                        let clip = state.document.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().clone();
                         crate::inspector::grade_view::show(ui, theme, &clip, &[], node, &mut cmds, frame, Some(panel));
                     }
                     Some(root) => {
-                        let snapshot = crate::inspector::grade_view::snapshot_for_root(&state.sequences[0], clip_id, root, &[], &mut state.pending_corrector, &mut state.root_grade_start);
+                        let snapshot = crate::inspector::grade_view::snapshot_for_root(&state.document.sequences[0], clip_id, root, &[], &mut state.pending_corrector, &mut state.root_grade_start);
                         let mut panel_cmds = Vec::new();
                         // A node the grade doesn't hold draws nothing, as in the app.
                         let _ = snapshot.as_ref().is_some_and(|s| s.page(ui, theme, node, &mut panel_cmds, frame, Some(panel)));
-                        let grade = state.sequences[0].root_grade(root).ok().flatten().cloned().unwrap_or_default();
+                        let grade = state.document.sequences[0].root_grade(root).ok().flatten().cloned().unwrap_or_default();
                         for mut cmd in panel_cmds {
                             crate::inspector::keyframe_selection::resolve_for_grade(&grade, frame.tolerance, &mut cmd);
                             cmds.push(cmd);
@@ -807,8 +807,8 @@ impl Grade {
                 Page::Tabbed(tab) | Page::Bottom(tab) => {
                     // A sequence grade's snapshot is taken at its root, before
                     // the stand-in is borrowed to draw, as the app takes it.
-                    let at_root = root.and_then(|root| crate::inspector::grade_view::snapshot_for_root(&state.sequences[0], clip_id, root, &[], &mut state.pending_corrector, &mut state.root_grade_start));
-                    let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
+                    let at_root = root.and_then(|root| crate::inspector::grade_view::snapshot_for_root(&state.document.sequences[0], clip_id, root, &[], &mut state.pending_corrector, &mut state.root_grade_start));
+                    let clip = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
                     panel.generated = if root.is_some() { at_root } else { crate::inspector::grade_view::snapshot_for(clip, &[], false, &mut state.pending_corrector) };
                     let (mut selected, mut tab) = (Some(node), tab);
                     let wide = matches!(page, Page::Bottom(_));
@@ -834,7 +834,7 @@ impl Grade {
         if self.root != GradeRoot::Clip {
             super::parity_manifest::touched_the_root();
         }
-        crate::inspector::keyframe_selection::resolve_command(&self.state.sequences[0], &mut cmd);
+        crate::inspector::keyframe_selection::resolve_command(&self.state.document.sequences[0], &mut cmd);
         // A seek moves the playhead, which the grade's frame doesn't follow:
         // recorded, as the app's seek would take it.
         if let AppCommand::SeekTo(at) = cmd {
@@ -983,7 +983,7 @@ impl Grade {
         self.state.before_dispatch(&if forward { AppCommand::Redo } else { AppCommand::Undo });
         // The step the app takes: the sequence's or the project's (#1986).
         let entry = if forward { self.state.take_redo() } else { self.state.take_undo() }.ok_or("no step to take")?;
-        let mut doc = klipp_document::apply::DocumentView { sequences: &mut self.state.sequences, active: self.state.active_sequence_idx, media_pool: &mut self.state.media_pool, fps: &mut self.state.fps };
+        let mut doc = klipp_document::apply::DocumentView { sequences: &mut self.state.document.sequences, active: self.state.active_sequence_idx, media_pool: &mut self.state.document.media_pool, fps: &mut self.state.fps };
         if forward { doc.apply_forward(&entry.command); } else { doc.apply_inverse(&entry.command); }
         Ok(())
     }
@@ -1173,7 +1173,7 @@ pub(super) fn with_node(start: &Grade, edit: impl FnOnce(&mut klipp_nodes::Node)
     let node = changed.node;
     let written = changed.with_stand_in(|g| -> Result<(), String> {
         let clip_id = g.clip;
-        let clip = g.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("no clip for the grade")?;
+        let clip = g.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("no clip for the grade")?;
         clip.edit_grade(|graph| edit(graph.nodes.iter_mut().find(|n| n.id == node).ok_or("no node")?))
     });
     written?;
@@ -1355,9 +1355,9 @@ pub(super) fn placed(kind: klipp_nodes::NodeKind) -> Option<(AppState, ClipId, k
     clip.set_grade(g);
     clip.picture_v2().ok()?;
     let mut state = AppState::default();
-    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
     let id = clip.id;
-    state.sequences[0].tracks[v1].clips.push(clip);
+    state.document.sequences[0].tracks[v1].clips.push(clip);
     Some((state, id, node))
 }
 
@@ -1368,7 +1368,7 @@ pub(super) fn placed(kind: klipp_nodes::NodeKind) -> Option<(AppState, ClipId, k
 fn wired(kind: klipp_nodes::NodeKind) -> Option<(AppState, ClipId, klipp_nodes::NodeId)> {
     use klipp_nodes::{Edge, Node, NodeKind};
     let (mut state, clip, node) = super::grade_inspector_tests::graded(kind)?;
-    let c = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip))?;
+    let c = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip))?;
     klipp_timeline::GradeAccess::edit_grade(c, |g| {
         let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id);
         let Some(source) = source else { return };
@@ -1582,7 +1582,7 @@ fn run_grade_pages_of(report: &mut Report, kind: klipp_nodes::NodeKind) {
         return;
     };
     if kind != klipp_nodes::NodeKind::Corrector {
-        if let Some(c) = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
+        if let Some(c) = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
             klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::Corrector).for_each(|n| n.enabled = false));
         }
     }
