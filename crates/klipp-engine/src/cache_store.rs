@@ -42,7 +42,7 @@ const MAX_CHUNKS: usize = 64;
 /// another display transform.
 pub(crate) fn encode10(c: f32) -> u32 {
     let e = if c <= 1.0 {
-        if c <= 0.003_130_8 { c.max(0.0) * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+        klipp_core::srgb::encode(c.max(0.0))
     } else {
         1.0 + c.min(16.0).log2() / 4.0
     };
@@ -52,7 +52,7 @@ pub(crate) fn encode10(c: f32) -> u32 {
 pub(crate) fn decode10(v: u32) -> f32 {
     let e = (v & 1023) as f32 / 1023.0 * 2.0;
     if e <= 1.0 {
-        if e <= 0.04045 { e / 12.92 } else { ((e + 0.055) / 1.055).powf(2.4) }
+        klipp_core::srgb::decode(e)
     } else {
         2f32.powf((e - 1.0) * 4.0)
     }
@@ -726,7 +726,7 @@ mod tests {
         s.put_frame("frames", at, &opaque).unwrap();
         let ten = s.bytes("frames");
         let back = s.get("frames", at).expect("stored");
-        let display = |c: f32| (if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }.clamp(0.0, 1.0) * 255.0).round() as i32;
+        let display = |c: f32| (klipp_core::srgb::encode(c).clamp(0.0, 1.0) * 255.0).round() as i32;
         let worst = opaque.iter().zip(&back).map(|(a, b)| (display(*a) - display(*b)).abs()).max().unwrap();
         assert!(worst <= 1, "{worst} levels");
         assert!(back.chunks_exact(4).all(|p| p[3] == 1.0), "opaque back");

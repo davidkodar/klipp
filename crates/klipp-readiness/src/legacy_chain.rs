@@ -54,11 +54,11 @@ impl Source for Still {
 }
 
 fn encode(c: f32) -> f32 {
-    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    klipp_core::srgb::encode(c)
 }
 
 fn decode(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    klipp_core::srgb::decode(c)
 }
 
 /// Equalize's rule at `strength` on `linear` (straight RGBA).

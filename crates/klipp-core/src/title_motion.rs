@@ -771,7 +771,7 @@ impl UnitPose {
 fn linear_rgba(c: [u8; 4]) -> [f32; 4] {
     let lin = |v: u8| {
         let c = v as f32 / 255.0;
-        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        crate::srgb::decode(c)
     };
     [lin(c[0]), lin(c[1]), lin(c[2]), c[3] as f32 / 255.0]
 }
@@ -779,7 +779,7 @@ fn linear_rgba(c: [u8; 4]) -> [f32; 4] {
 /// Linear light, 0..1, as an sRGB byte.
 fn srgb_byte(v: f32) -> u8 {
     let v = v.clamp(0.0, 1.0);
-    let c = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    let c = crate::srgb::encode(v);
     (c * 255.0).round() as u8
 }
 

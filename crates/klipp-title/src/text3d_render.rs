@@ -222,7 +222,7 @@ fn apply(m: &[[f32; 3]; 3], v: V3) -> V3 {
 
 fn to_linear(c: u8) -> f32 {
     let c = c as f32 / 255.0;
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    klipp_core::srgb::decode(c)
 }
 
 fn lin_rgb(c: [u8; 3]) -> V3 {
@@ -231,7 +231,7 @@ fn lin_rgb(c: [u8; 3]) -> V3 {
 
 fn to_srgb(v: f32) -> u8 {
     let v = v.clamp(0.0, 1.0);
-    let c = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    let c = klipp_core::srgb::encode(v);
     (c * 255.0).round() as u8
 }
 

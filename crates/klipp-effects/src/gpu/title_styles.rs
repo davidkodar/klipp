@@ -1298,7 +1298,7 @@ impl GpuEffectsPipeline {
         let colour=|c:[u8;4]| {
             let rgb:[f32;3]=std::array::from_fn(|i| {
                 let v=if straight {c[i] as f32}else{c[i] as f32*c[3] as f32/255.0};
-                let x=v/255.0;if x<=0.04045 {x/12.92}else{((x+0.055)/1.055).powf(2.4)}
+                let x=v/255.0;crate::srgb::decode(x)
             });
             let rgb=self.authored_to_working.map(|row|row[0]*rgb[0]+row[1]*rgb[1]+row[2]*rgb[2]);
             [rgb[0],rgb[1],rgb[2],c[3] as f32/255.0]

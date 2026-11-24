@@ -9687,7 +9687,7 @@ mod tests {
         // grey the warper leaves.
         let frame = vec![120u8, 20, 70, 255, 160, 30, 50, 255, 100, 100, 100, 255, 160, 40, 100, 255];
         let luma = klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::Rec709Linear);
-        let lin = |v: u8| { let v = v as f32 / 255.0; if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) } };
+        let lin = |v: u8| { let v = v as f32 / 255.0; klipp_core::srgb::decode(v) };
         let y = |px: &[u8]| -> f32 { (0..3).map(|c| luma[c] * lin(px[c])).sum() };
         let mut cpu = GraphExecutor::new_cpu_only();
         let (cpu_out, _) = cpu.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();

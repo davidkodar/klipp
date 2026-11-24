@@ -41,7 +41,7 @@ fn colour(ui: &mut egui::Ui, label: &str, rgb: [u8; 3]) -> Option<[u8; 3]> {
 fn to_srgb(linear: [f32; 3]) -> [u8; 3] {
     linear.map(|x| {
         let x = x.clamp(0.0, 1.0);
-        let e = if x <= 0.003_130_8 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+        let e = klipp_core::srgb::encode(x);
         (e * 255.0).round() as u8
     })
 }
@@ -49,7 +49,7 @@ fn to_srgb(linear: [f32; 3]) -> [u8; 3] {
 fn to_linear(srgb: [u8; 3]) -> [f32; 3] {
     srgb.map(|v| {
         let x = f32::from(v) / 255.0;
-        if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) }
+        klipp_core::srgb::decode(x)
     })
 }
 

@@ -98,9 +98,9 @@ pub(crate) fn rest_boxes(glyphs: &[fontdue::layout::GlyphPosition], offset: [f32
 pub fn paint_under(buf: &mut [f32], width: u32, height: u32, lines: &BackingLines, color: [u8; 4]) {
     let lin = |code: f32| {
         let c = (code / 255.0).clamp(0.0, 1.0);
-        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        klipp_core::srgb::decode(c)
     };
-    let code = |l: f32| 255.0 * if l <= 0.0031308 { l * 12.92 } else { 1.055 * l.max(0.0).powf(1.0 / 2.4) - 0.055 };
+    let code = |l: f32| 255.0 * klipp_core::srgb::encode(l);
     let under = [lin(color[0] as f32), lin(color[1] as f32), lin(color[2] as f32)];
     let w = width as usize;
     let b = lines.bounds();
