@@ -518,3 +518,25 @@ mod tests {
         let _ = GpuVendor::detect();
     }
 }
+
+/// A stream every hardware decoder must leave to software: one the GPU
+/// opens and then decodes wrongly, with no error, so nothing would fall
+/// back by itself. H.264 High 4:4:4 Predictive, as lossless encodes are,
+/// came out of NVDEC with a flat patch as a gradient (38 down to 20), where
+/// a software decode is flat (#3735). Playback, export and thumbnails ask
+/// this before trying the GPU, so a file decodes the same in each.
+/// `h264` is whether the stream is H.264, `profile` its profile number.
+pub fn must_decode_in_software(h264: bool, profile: i32) -> bool {
+    const HIGH_444_PREDICTIVE: i32 = 244;
+    h264 && profile == HIGH_444_PREDICTIVE
+}
+
+#[cfg(test)]
+mod software_only_tests {
+    #[test]
+    fn h264_high_444_is_left_to_software_and_nothing_else() {
+        assert!(super::must_decode_in_software(true, 244));
+        assert!(!super::must_decode_in_software(true, 100), "High");
+        assert!(!super::must_decode_in_software(false, 244), "another codec's number");
+    }
+}

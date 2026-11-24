@@ -13118,8 +13118,12 @@ fn open_gpu_decoder(
     // Try GPU acceleration: CUDA → VAAPI (AMD/Intel only) → Software
     use ffmpeg_next::ffi::AVHWDeviceType::{AV_HWDEVICE_TYPE_CUDA, AV_HWDEVICE_TYPE_VAAPI};
     let vendor = cached_gpu_vendor();
+    // A stream the GPU decodes wrongly goes to software, as playback and
+    // export send it (#3735).
+    let wrong_on_gpu = crate::video_decoder::gpu_decodes_wrongly(&video_stream.parameters());
     let hw_codec = unsafe {
         match hw_capable_decoder(codec_id, AV_HWDEVICE_TYPE_CUDA) {
+            _ if wrong_on_gpu => None,
             Some(c) if crate::video_decoder::try_init_cuda(codec_ctx.as_mut_ptr()) => Some(c),
             _ if vendor.should_try_vaapi() => hw_capable_decoder(codec_id, AV_HWDEVICE_TYPE_VAAPI)
                 .filter(|_| crate::video_decoder::try_init_vaapi(codec_ctx.as_mut_ptr())),
