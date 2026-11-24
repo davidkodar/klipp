@@ -82,7 +82,7 @@ fn tmp(name: &str) -> PathBuf {
 }
 
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    klipp_testing::ffmpeg::available()
 }
 
 /// A flat or per-frame-changing RGB source: `r`, `g`, `b` are lavfi `geq`

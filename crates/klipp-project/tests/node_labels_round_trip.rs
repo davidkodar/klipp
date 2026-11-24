@@ -9,10 +9,7 @@ use klipp_project::{load_project, save_project};
 use klipp_timeline::{grade_group_id, GradeAccess, NodeLabel, Sequence};
 
 fn scratch(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("klipp_node_labels_{tag}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    klipp_testing::scratch::fresh_dir(&format!("klipp_node_labels_{tag}"))
 }
 
 #[test]

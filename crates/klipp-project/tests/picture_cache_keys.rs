@@ -12,10 +12,7 @@ fn key(time_secs: f64, value: f32) -> Keyframe {
 }
 
 fn scratch(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("klipp_picture_keys_{tag}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    klipp_testing::scratch::fresh_dir(&format!("klipp_picture_keys_{tag}"))
 }
 
 fn reopen(dir: &std::path::Path, seqs: &[Sequence]) -> Vec<Sequence> {

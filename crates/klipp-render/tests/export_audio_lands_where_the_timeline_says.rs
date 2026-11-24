@@ -22,7 +22,7 @@ const RATE: u32 = 48000;
 const SECS: f64 = 8.0;
 
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    klipp_testing::ffmpeg::available()
 }
 
 /// An 8 s stereo FLAC whose sample at time `t` is `t/4 - 1` on both

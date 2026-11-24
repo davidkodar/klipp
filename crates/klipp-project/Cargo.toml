@@ -34,6 +34,7 @@ zip = { version = "2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
+klipp-testing = { workspace = true }
 # step_f_saves builds its clips with TestClip.
 klipp-timeline = { workspace = true, features = ["test-clip"] }
 # collected_fonts draws a collected project's titles (#3009).

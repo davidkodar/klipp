@@ -148,10 +148,7 @@ fn digest(p: &Project, dir: &Path) -> u64 {
 }
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("klipp_digest_agrees_{name}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    klipp_testing::scratch::fresh_dir(&format!("klipp_digest_agrees_{name}"))
 }
 
 /// The lines a save stamps afresh every time.

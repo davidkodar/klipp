@@ -7,10 +7,7 @@ use klipp_project::{load_project, save_project_with_color, ColorSettings};
 use klipp_timeline::{Sequence, Track, TrackKind};
 
 fn project_dir(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("klipp_frozen_{}_{}", label, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    klipp_testing::scratch::fresh_dir(&format!("klipp_frozen_{}", label))
 }
 
 fn saved_and_opened(label: &str, seq: &Sequence) -> (Sequence, serde_json::Value) {

@@ -108,10 +108,7 @@ mod tests {
     use super::*;
 
     fn temp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("klipp-journal-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+        klipp_testing::scratch::fresh_dir(&format!("klipp-journal-{tag}"))
     }
 
     /// The exact paths, as `klipp-convert run` (#1087) writes them.

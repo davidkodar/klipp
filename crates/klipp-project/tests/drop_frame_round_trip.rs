@@ -13,10 +13,7 @@ use klipp_project::{load_project, save_project};
 use klipp_timeline::Sequence;
 
 fn dir(label: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("klipp_df_{label}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    klipp_testing::scratch::fresh_dir(&format!("klipp_df_{label}"))
 }
 
 #[test]
