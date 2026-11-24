@@ -40,7 +40,7 @@ fn picture(parked: &common::Parked) -> Option<(Vec<f32>, f64, bool)> {
 #[test]
 fn j_shows_the_frame_on_the_viewers_texture() {
     let Some(ctx) = klipp_effects::gpu_context::GpuContext::new() else {
-        eprintln!("no GPU; skipping");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     if klipp_effects::gpu_context::GpuContext::install_shared(ctx).is_err() {

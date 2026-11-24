@@ -109,7 +109,7 @@ fn gpu_chain_thumbnails_are_the_cpu_thumbnails() {
     // From CPU pixels, and from pixels seeded onto the GPU.
     let from_cpu = gpu.execute_linear_with_thumbs(&linear, &graph, W, H, 0.0, 0, None, None, Some(&visible)).unwrap();
     if gpu.gpu_pipeline_mut().is_none() {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     }
     assert!(gpu.prime_chain_from_srgb8(&bytes, W, H), "the seed was refused");

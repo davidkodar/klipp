@@ -66,7 +66,7 @@ fn load(device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureView) ->
 #[test]
 fn the_viewer_texture_samples_as_the_linear_light_it_encodes() {
     let Some(ctx) = klipp_effects::gpu_context::GpuContext::new() else {
-        eprintln!("no GPU; skipping");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let (device, queue) = (ctx.device(), ctx.queue());
@@ -95,7 +95,7 @@ fn the_viewer_texture_samples_as_the_linear_light_it_encodes() {
 #[test]
 fn the_frame_on_screen_reads_back_from_the_viewer_texture() {
     let Some(ctx) = klipp_effects::gpu_context::GpuContext::new() else {
-        eprintln!("no GPU; skipping");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let (device, queue) = (ctx.device(), ctx.queue());

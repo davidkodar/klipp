@@ -4428,7 +4428,7 @@ mod sw_frames_on_gpu_tests {
             let baseline = klipp_core::SourceColorspace::resolve(0, 2, 2, 2, frame.width(), frame.height());
             let (mut repack, mut nv12, mut p010) = (None, None, None);
             let Some(mut gpu) = sw_frame_on_gpu(&frame, &mut repack, &mut nv12, &mut p010, 0, baseline) else {
-                eprintln!("skipping: no GPU");
+                klipp_testing::gpu::missing("no GPU");
                 return;
             };
             assert_eq!((nv12.is_some(), p010.is_some()), (pix_fmt == "yuv420p", pix_fmt == "yuv420p10le"), "{pix_fmt}: the converter for its depth");

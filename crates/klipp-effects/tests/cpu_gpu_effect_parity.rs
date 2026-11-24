@@ -240,7 +240,7 @@ fn checker(w: u32, h: u32) -> Vec<f32> {
 fn route_knife_edges_agree() {
     use BuiltinEffect::*;
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let radial = RadialBlur { center_x: 0.5, center_y: 0.5, amount: 10.0, samples: 12, mode: 0 };
@@ -275,7 +275,7 @@ fn route_knife_edges_agree() {
 #[test]
 fn posterize_band_edges_agree() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let (w, h) = (320u32, 180u32);
@@ -299,7 +299,7 @@ fn posterize_band_edges_agree() {
 #[test]
 fn every_effect_matches_between_cpu_and_gpu() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let input = frame();
@@ -346,7 +346,7 @@ fn the_widest_light_wrap_costs_what_a_narrow_one_does() {
     eprintln!("CPU light wrap at 1080p: narrow {cpu_narrow:.0} ms, widest {cpu_widest:.0} ms");
     assert!(cpu_widest < cpu_narrow * 3.0 + 200.0, "the widest took {cpu_widest:.0} ms on the CPU, the narrow {cpu_narrow:.0} ms");
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping the GPU: none");
+        klipp_testing::gpu::missing("the GPU: none");
         return;
     };
     // On the GPU a narrow box is summed from the workgroup's tile, up to a
@@ -426,7 +426,7 @@ fn the_interpolations_agree_on_the_grid_and_differ_between_it() {
 #[test]
 fn the_lut_matches_between_cpu_and_gpu() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let n = 17usize;
@@ -484,7 +484,7 @@ fn the_lut_matches_between_cpu_and_gpu() {
 fn the_brightness_gated_effects_follow_the_working_space() {
     use BuiltinEffect::*;
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let input = frame();
@@ -580,7 +580,7 @@ fn the_brightness_gated_effects_follow_the_working_space() {
 #[test]
 fn a_blur_matches_the_cpu_on_any_frame_shape() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let mut failures = Vec::new();

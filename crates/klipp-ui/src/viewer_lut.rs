@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn the_gpu_pass_matches_the_cpu_lookup() {
         let Some((device, queue)) = device() else {
-            eprintln!("skipping: no GPU adapter");
+            klipp_testing::gpu::missing("no GPU adapter");
             return;
         };
         let (w, h) = (64u32, 4u32);

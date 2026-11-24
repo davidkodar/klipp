@@ -130,7 +130,7 @@ fn same_both_ways(name: &str, g: &NodeGraph, ws: WorkingColorspace) -> Option<Ve
     let (cpu, _) = run(g, ws, false);
     let (gpu, stats) = run(g, ws, true);
     if stats.extends == 0 && stats.flushes == 0 {
-        eprintln!("skipping {name}: no usable GPU");
+        klipp_testing::gpu::missing(&format!("{name}: no usable GPU"));
         return None;
     }
     let w = worst_levels(&cpu, &gpu);

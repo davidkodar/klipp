@@ -78,7 +78,7 @@ fn gpu_linear(conv: &mut GpuNv12Converter, y: &[u16], u: &[u16], v: &[u16]) -> V
 #[test]
 fn the_display_converter_matches_the_nv12_shader() {
     let Some(mut conv) = GpuNv12Converter::new() else {
-        eprintln!("skipping: no GPU NV12 converter");
+        klipp_testing::gpu::missing("no GPU NV12 converter");
         return;
     };
     let (y, u, v) = samples_8bit();

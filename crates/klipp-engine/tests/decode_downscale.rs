@@ -89,7 +89,7 @@ fn p010() -> (Vec<u8>, Vec<u8>) {
 #[test]
 fn a_downscale_is_the_box_average_of_the_full_size_frame_at_every_rotation() {
     let (Some(mut nv), Some(mut p10)) = (GpuNv12Converter::new(), GpuP010Converter::new()) else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let (ny, nuv) = nv12();
@@ -123,7 +123,7 @@ fn a_downscale_is_the_box_average_of_the_full_size_frame_at_every_rotation() {
 #[test]
 fn a_fine_checker_halves_to_its_linear_mean() {
     let Some(mut nv) = GpuNv12Converter::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let y: Vec<u8> = (0..H).flat_map(|r| (0..W).map(move |c| if (c + r) % 2 == 0 { 16 } else { 235 })).collect();

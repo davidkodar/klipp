@@ -25,7 +25,7 @@ fn colourful() -> Vec<f32> {
 fn gpu() -> Option<klipp_effects::gpu::GpuEffectsPipeline> {
     let g = klipp_effects::gpu::GpuEffectsPipeline::new();
     if g.is_none() {
-        eprintln!("no GPU: checking the CPU path only");
+        klipp_testing::gpu::missing("no GPU: checking the CPU path only");
     }
     g
 }

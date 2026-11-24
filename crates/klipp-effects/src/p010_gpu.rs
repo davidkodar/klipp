@@ -828,7 +828,7 @@ mod tests {
     #[test]
     fn p010_white_sdr_yields_near_white_rgba() {
         let Some(mut conv) = GpuP010Converter::new() else {
-            eprintln!("skipping p010_white_sdr_yields_near_white_rgba: no GPU");
+            klipp_testing::gpu::missing("p010_white_sdr_yields_near_white_rgba: no GPU");
             return;
         };
         let (w, h) = (4u32, 4u32);

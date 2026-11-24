@@ -54,7 +54,7 @@ fn both_ways(w: u32, h: u32, step: u32) -> Option<u8> {
 #[test]
 fn every_pixel_measured_the_two_are_the_same_picture() {
     let Some(worst) = both_ways(640, 360, 1) else {
-        eprintln!("no GPU; skipping");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     assert_eq!(worst, 0, "the scopes from the GPU input differ from the read-back ones");
@@ -66,7 +66,7 @@ fn every_pixel_measured_the_two_are_the_same_picture() {
 #[test]
 fn sampled_while_playing_the_two_measure_the_same_pixels() {
     let Some(worst) = both_ways(3840, 2160, 2) else {
-        eprintln!("no GPU; skipping");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     eprintln!("4K at step 2: worst difference {worst} levels");

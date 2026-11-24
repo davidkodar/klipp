@@ -2186,7 +2186,7 @@ fn a_blur_entrance_is_the_same_on_cpu_and_gpu_under_an_effect() {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
     let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(0.4), 480, 270, &mut White, RenderOptions::default()) else {
-        eprintln!("skipping: no GPU stack");
+        klipp_testing::gpu::missing("no GPU stack");
         return;
     };
     let mut c = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());

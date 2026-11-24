@@ -82,7 +82,7 @@ fn worst(a: &[f32], b: &[f32]) -> f32 {
 #[test]
 fn a_huesat_grade_followed_by_equalize_matches_the_cpu() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let input = frame();
@@ -126,7 +126,7 @@ fn a_huesat_grade_followed_by_equalize_matches_the_cpu() {
 #[test]
 fn the_two_passes_survive_each_other_in_either_order() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let input = frame();

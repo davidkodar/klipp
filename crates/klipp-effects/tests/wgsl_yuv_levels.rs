@@ -73,7 +73,7 @@ fn run(ctx: &klipp_effects::gpu_context::GpuContext, range: u32, max: f32, sampl
 #[test]
 fn limited_range_anchors_land_where_the_standards_put_them() {
     let Some(ctx) = klipp_effects::gpu_context::GpuContext::shared() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     // (bit depth max, black Y, white Y, zero chroma)
