@@ -85,7 +85,7 @@ pub(crate) fn show_color_and_luts(
         // mask-edit site.
         if let Some(clip_id) = state.selected_clip {
             let mask_entry: Option<(klipp_nodes::NodeId, klipp_core::MaskStack, f64, Vec<usize>, klipp_core::Timecode)> = state
-                .sequences
+                .document.sequences
                 .get(state.active_sequence_idx)
                 .and_then(|seq| seq.tracks.iter()
                     .flat_map(|t| t.clips.iter())
@@ -391,9 +391,9 @@ fn find_bundled_luts_dir() -> Option<std::path::PathBuf> {
 /// clip's InputTransform node only carries a copy made when the clip was
 /// added. Falls back to that copy for a clip with no media item.
 pub(crate) fn clip_input_colour_space(state: &AppState, clip_id: klipp_core::ClipId) -> (klipp_core::LogFormat, bool) {
-    let clip = state.sequences.get(state.active_sequence_idx)
+    let clip = state.document.sequences.get(state.active_sequence_idx)
         .and_then(|seq| seq.all_clips().find(|c| c.id == clip_id));
-    let media = clip.and_then(|c| c.media_id()).and_then(|id| state.media_pool.get(&id));
+    let media = clip.and_then(|c| c.media_id()).and_then(|id| state.document.media_pool.get(&id));
     if let Some(m) = media {
         let format = m.effective_log_format();
         let detected = !m.log_format_user_set && format != klipp_core::LogFormat::Srgb;
@@ -473,11 +473,11 @@ mod tests {
         let mut item = klipp_media::MediaItem::synthetic_for_test(std::path::PathBuf::from("/tmp/a6700.mp4"), None);
         edit(&mut item);
         let media_id = item.id;
-        state.media_pool.add(item);
+        state.document.media_pool.add(item);
         let t = |v| RationalTime { value: v, rate: 24 };
         let clip = klipp_timeline::Clip::media(media_id, t(0), t(24), t(0), t(24));
         let clip_id = clip.id;
-        state.sequences[0].tracks[0].clips.push(clip);
+        state.document.sequences[0].tracks[0].clips.push(clip);
         (state, clip_id)
     }
 

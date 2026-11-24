@@ -29,7 +29,7 @@ impl KlippApp {
     /// Connect `clip_id` to the primary clip nearest its start. False when
     /// it is on the primary track, or there is no primary clip.
     pub(super) fn connect_to_primary(&mut self, clip_id: ClipId) -> bool {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let Some(ti) = seq.tracks.iter().position(|t| t.clips.iter().any(|c| c.id == clip_id)) else { return false };
         if seq.tracks[ti].magnetic_role == klipp_timeline::TrackRole::Primary {
             return false;
@@ -46,7 +46,7 @@ impl KlippApp {
             return false;
         };
         let result = klipp_timeline::magnetic::MagneticEditor::connect_clip(
-            &mut self.state.sequences[self.state.active_sequence_idx],
+            &mut self.state.document.sequences[self.state.active_sequence_idx],
             clip_id,
             anchor_id,
             klipp_timeline::AnchorAlignment::StartAligned,
@@ -60,13 +60,13 @@ impl KlippApp {
     /// Disconnect `clip_id` from the primary clip it is connected to.
     /// False when it is not connected.
     pub(super) fn disconnect_from_primary(&mut self, clip_id: ClipId) -> bool {
-        let connected = self.state.sequences[self.state.active_sequence_idx]
+        let connected = self.state.document.sequences[self.state.active_sequence_idx]
             .all_clips()
             .any(|c| c.id == clip_id && c.magnetic_anchor.is_some());
         if !connected {
             return false;
         }
-        let result = klipp_timeline::magnetic::MagneticEditor::disconnect_clip(&mut self.state.sequences[self.state.active_sequence_idx], clip_id);
+        let result = klipp_timeline::magnetic::MagneticEditor::disconnect_clip(&mut self.state.document.sequences[self.state.active_sequence_idx], clip_id);
         self.state.push_history(EditCommand::Magnetic(result.command));
         self.sync_sequence_to_engine();
         self.state.dirty = true;
@@ -76,7 +76,7 @@ impl KlippApp {
     /// The track `clip_id` is on promoted to a connected storyline, or a
     /// storyline broken apart again. False when the track is neither.
     pub(super) fn toggle_storyline(&mut self, clip_id: ClipId) -> bool {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let Some(ti) = seq.tracks.iter().position(|t| t.clips.iter().any(|c| c.id == clip_id)) else { return false };
         let result = match seq.tracks[ti].magnetic_role {
             klipp_timeline::TrackRole::Connected => {
@@ -91,10 +91,10 @@ impl KlippApp {
                 else {
                     return false;
                 };
-                klipp_timeline::magnetic::MagneticEditor::promote_to_storyline(&mut self.state.sequences[self.state.active_sequence_idx], ti, anchor_id)
+                klipp_timeline::magnetic::MagneticEditor::promote_to_storyline(&mut self.state.document.sequences[self.state.active_sequence_idx], ti, anchor_id)
             }
             klipp_timeline::TrackRole::ConnectedStoryline => {
-                klipp_timeline::magnetic::MagneticEditor::break_apart_storyline(&mut self.state.sequences[self.state.active_sequence_idx], ti)
+                klipp_timeline::magnetic::MagneticEditor::break_apart_storyline(&mut self.state.document.sequences[self.state.active_sequence_idx], ti)
             }
             _ => return false,
         };

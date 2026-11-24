@@ -19,10 +19,10 @@ fn project(picture: bool) -> (AppState, MediaId) {
     song.video_codec = String::new();
     song.has_audio = true;
     song.duration = RationalTime::from_secs_f64(180.0, 44_100);
-    let song = state.media_pool.add(song);
+    let song = state.document.media_pool.add(song);
     if picture {
-        let v = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
-        state.sequences[0].tracks[v].clips.push(Clip::media(MediaId::new(), tc(0.0), tc(20.0), tc(0.0), tc(20.0)));
+        let v = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        state.document.sequences[0].tracks[v].clips.push(Clip::media(MediaId::new(), tc(0.0), tc(20.0), tc(0.0), tc(20.0)));
     }
     (state, song)
 }
@@ -30,10 +30,10 @@ fn project(picture: bool) -> (AppState, MediaId) {
 /// The song dropped on the audio track at `at`, as a drop places it, one
 /// step: the clip.
 fn drop_song(state: &mut AppState, song: MediaId, at: f64) -> ClipId {
-    let item = state.media_pool.get(&song).unwrap().clone();
+    let item = state.document.media_pool.get(&song).unwrap().clone();
     let start = RationalTime { value: 0, rate: item.duration.rate };
     let clip = Clip::media(song, start, item.duration, start, item.duration);
-    let a = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+    let a = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
     let (edits, id) = super::placement::media_drop_edits(state.sequence(), clip, a, None, tc(at), PasteMode::Overwrite, "Overwrite").unwrap();
     apply(state, &edits, "Overwrite");
     id
@@ -41,7 +41,7 @@ fn drop_song(state: &mut AppState, song: MediaId, at: f64) -> ClipId {
 
 fn apply(state: &mut AppState, edits: &[crate::history::EditCommand], label: &str) {
     let active = state.active_sequence_idx;
-    let mut view = DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+    let mut view = DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
     for e in edits {
         view.apply_forward(e);
     }
@@ -79,7 +79,7 @@ fn a_song_under_a_short_cut_ends_with_the_picture() {
     assert!(undo_step_is_last(&state, stamp));
     let entry = state.take_undo().unwrap();
     let active = state.active_sequence_idx;
-    DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+    DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
     let c = clip(&state, id);
     assert!((c.timeline_out.to_secs_f64() - 180.0).abs() < 0.01 && c.fade_out_secs == 0.0, "full length back, no fade: {:?}", c.timeline_out);
     assert!(!undo_step_is_last(&state, stamp), "and the button does nothing more");
@@ -135,7 +135,7 @@ fn the_note_offers_undo_trim() {
 fn a_reversed_song_keeps_the_part_it_plays_first() {
     let (mut state, song) = project(true);
     let id = drop_song(&mut state, song, 0.0);
-    for t in &mut state.sequences[0].tracks {
+    for t in &mut state.document.sequences[0].tracks {
         for c in t.clips.iter_mut().filter(|c| c.id == id) {
             c.speed = -1.0;
         }

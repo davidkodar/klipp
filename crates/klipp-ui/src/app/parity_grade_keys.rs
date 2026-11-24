@@ -98,7 +98,7 @@ fn with_track(start: &Grade, key: &str, edit: impl FnOnce(&mut Vec<Keyframe>)) -
     let node = g.node;
     g.with_stand_in(|g| -> Result<(), String> {
         let clip_id = g.clip;
-        let clip = g.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("no clip for the grade")?;
+        let clip = g.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("no clip for the grade")?;
         clip.edit_grade(|graph| -> Result<(), String> {
             let node = graph.nodes.iter_mut().find(|n| n.id == node).ok_or("no node")?;
             edit(&mut node.keyframes.track_mut(key).keyframes);
@@ -193,7 +193,7 @@ fn key_case(start: &Grade, r: &Row, action: Action) -> Result<(), String> {
         let want = if matches!(action, Action::Previous) { 0.25 } else { 1.25 };
         // The seek is in the timeline's time: the key's clip time from
         // where the clip starts.
-        let lands = |s: f64| g.state.sequences[0].all_clips().any(|c| (s - c.timeline_in.to_secs_f64() - want).abs() < 0.02);
+        let lands = |s: f64| g.state.document.sequences[0].all_clips().any(|c| (s - c.timeline_in.to_secs_f64() - want).abs() < 0.02);
         if g.seeks.len() != 1 || !lands(g.seeks[0].to_secs_f64()) || g.state.active_history().undo_count() != 0 {
             return Err(format!("navigation: seeks {:?}, undo {}", g.seeks, g.state.active_history().undo_count()));
         }

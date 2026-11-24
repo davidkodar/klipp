@@ -12,7 +12,7 @@ impl KlippApp {
     /// up to put right and continue.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_surface_track(&mut self, clip_id: klipp_core::ClipId, surface: klipp_timeline::Surface, held_secs: (f64, f64), direction: i8, interactive: bool, wider_area: bool, ended: [Option<(u8, f32)>; 2]) {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let fps = seq.fps.as_f64();
         let Some(old) = seq.all_clips().find(|c| c.id == clip_id).cloned() else {
             self.state.toast.show("The tracked clip is gone; the track was dropped");
@@ -89,7 +89,7 @@ impl KlippApp {
     /// `at`: its size as shown and its own placement then. `None` for a
     /// clip not from a file.
     fn clip_picture_at(&self, clip: &klipp_timeline::Clip, at: f64) -> Option<([u32; 2], klipp_timeline::surface::Placement)> {
-        let item = clip.media_id().and_then(|m| self.state.media_pool.get(&m))?;
+        let item = clip.media_id().and_then(|m| self.state.document.media_pool.get(&m))?;
         let (w, h) = (item.resolution.width, item.resolution.height);
         let shown = if item.source_rotation.rem_euclid(180) == 90 { [h, w] } else { [w, h] };
         let fps = self.state.sequence().fps.as_f64();
@@ -110,7 +110,7 @@ impl KlippApp {
         let frame = [seq.resolution.width, seq.resolution.height];
         let fps = seq.fps.as_f64();
         let Some(clip) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
-        let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).cloned() else {
+        let Some(item) = clip.media_id().and_then(|m| self.state.document.media_pool.get(&m)).cloned() else {
             self.state.toast.show("Only a clip from a file has a surface to find");
             return;
         };
@@ -203,7 +203,7 @@ impl KlippApp {
     pub(super) fn open_surface_tool(&mut self, clip_id: klipp_core::ClipId, surface: Option<uuid::Uuid>) {
         let seq = self.state.sequence();
         let Some(clip) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
-        let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).cloned() else {
+        let Some(item) = clip.media_id().and_then(|m| self.state.document.media_pool.get(&m)).cloned() else {
             self.state.toast.show("Only a clip from a file can be tracked");
             return;
         };
@@ -393,7 +393,7 @@ impl KlippApp {
             self.state.toast.show("A correction goes on a surface the clip already has: track it first");
             return;
         };
-        let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).cloned() else { return };
+        let Some(item) = clip.media_id().and_then(|m| self.state.document.media_pool.get(&m)).cloned() else { return };
         let Some((shown, placed)) = self.clip_picture_at(&clip, at) else { return };
         let on_source = klipp_timeline::surface::frame_quad_in_source(&corners, shown, frame, Some(placed));
         if !klipp_timeline::surface::quad_is_usable(&on_source) {
@@ -531,7 +531,7 @@ impl KlippApp {
     /// re-solved and where it is still uncertain or lost.
     #[allow(clippy::type_complexity)]
     pub(super) fn apply_surface_correction(&mut self, clip_id: klipp_core::ClipId, surface: uuid::Uuid, source_secs: f64, corners: [[f32; 2]; 4], spans: Vec<(Option<f64>, Option<f64>, Vec<(f64, [f64; 9], f32, u8, Option<f32>)>)>, sure: Option<f32>) {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let fps = seq.fps.as_f64();
         let Some(old) = seq.all_clips().find(|c| c.id == clip_id).cloned() else {
             self.state.toast.show("The corrected clip is gone; the correction was dropped");

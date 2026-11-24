@@ -163,7 +163,7 @@ impl CompositionControls {
 /// Where Klipp's playhead is in `clip`'s composition: its media time, as
 /// the Veylvik page counts it.
 fn composition_time(state: &AppState, clip: &Clip) -> Option<klipp_veylvik::Time> {
-    let media_fps = state.media_pool.get(&clip.media_id()?)?.fps.as_f64();
+    let media_fps = state.document.media_pool.get(&clip.media_id()?)?.fps.as_f64();
     let fps = state.sequence().fps.as_f64();
     (fps > 0.0 && media_fps > 0.0).then(|| klipp_veylvik::clip_time::ClipTime { clip, fps, media_fps }.composition_time(state.playhead))
 }

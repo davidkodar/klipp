@@ -119,12 +119,12 @@ fn a_look_on_two_clips_is_one_step_by_path() {
     let mut second = run.clip().clone();
     second.id = klipp_core::ClipId::new();
     let other = second.id;
-    let v1 = run.state.sequences[0].tracks.iter().position(|t| t.clips.iter().any(|c| c.id == run.clip)).unwrap();
-    run.state.sequences[0].tracks[v1].clips.push(second);
+    let v1 = run.state.document.sequences[0].tracks.iter().position(|t| t.clips.iter().any(|c| c.id == run.clip)).unwrap();
+    run.state.document.sequences[0].tracks[v1].clips.push(second);
     let ids = [run.clip, other];
     let targets = crate::effect_targets::Targets { clips: ids.to_vec(), skipped: 0 };
-    let pictures = |r: &Run| ids.map(|id| r.state.sequences[0].all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap());
-    let lists = |r: &Run| ids.map(|id| test_clip::effects(r.state.sequences[0].all_clips().find(|c| c.id == id).unwrap()));
+    let pictures = |r: &Run| ids.map(|id| r.state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap());
+    let lists = |r: &Run| ids.map(|id| test_clip::effects(r.state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap()));
     let before = pictures(&run);
     let cmds = crate::effect_targets::all_or_none(&targets, &name, |id| crate::browser::effects_tab::effect_commands_in(&run.state, &chain, id)).unwrap();
     assert!(cmds.iter().all(|c| matches!(c, AppCommand::AddNodeAt { .. } | AppCommand::BeginHistoryBatch | AppCommand::EndHistoryBatchAs { .. })), "{name}: by path: {cmds:?}");
@@ -725,12 +725,12 @@ fn three_effects(sharpen_off: bool) -> Run {
     if sharpen_off {
         let id = clip.id;
         let mut s = crate::state::AppState::default();
-        s.sequences[0].tracks[0].clips.push(clip.clone());
+        s.document.sequences[0].tracks[0].clips.push(clip.clone());
         let graph = clip.picture_v2().unwrap().picture.graph.clone();
         let sharpen = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("sharpen")).unwrap().id;
         let addr = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, [sharpen]);
         s.path_command(&AppCommand::SetNodeEnabledAt { addr, enabled: false });
-        clip = s.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+        clip = s.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
     }
     Run::new(clip)
 }

@@ -25,7 +25,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand>
             ui.separator();
             ui.strong(format!("Missing media at import: {}", report.missing_media.len()));
             for media in &report.missing_media { ui.label(&media.name).on_hover_text(media.path.display().to_string()); }
-            let missing_now = report.missing_media.iter().any(|m| state.media_pool.get(&m.id).is_some_and(|item| item.offline));
+            let missing_now = report.missing_media.iter().any(|m| state.document.media_pool.get(&m.id).is_some_and(|item| item.offline));
             if ui.add_enabled(missing_now, egui::Button::new("Relink…")).clicked() { commands.push(AppCommand::ShowRelinkDialog); }
         });
     });
@@ -42,7 +42,7 @@ mod tests {
         std::fs::write(&path, include_str!("../../klipp-project/tests/fixtures/import_report.otio")).unwrap();
         let result = klipp_project::import_report::load(&path, klipp_core::Fps::film_24(), &klipp_media::MediaPool::new()).unwrap();
         let report = klipp_project::import_report::ImportReport::from_import(&path, &result);
-        let mut state = AppState { last_import_report: Some(report), show_import_report: true, media_pool: result.media_pool, ..Default::default() };
+        let mut state = AppState { document: klipp_document::Document { media_pool: result.media_pool, ..Default::default() }, last_import_report: Some(report), show_import_report: true, ..Default::default() };
         let ctx = egui::Context::default();
         let mut frame = |events| {
             let mut commands = Vec::new();

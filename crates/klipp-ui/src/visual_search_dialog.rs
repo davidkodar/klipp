@@ -94,7 +94,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
                         ui.allocate_exact_size(egui::vec2(96.0, 54.0), egui::Sense::hover());
                     }
                     ui.vertical(|ui| {
-                        let name = state.media_pool.get(&hit.media_id).map_or("(removed)".to_string(), |m| m.filename.clone());
+                        let name = state.document.media_pool.get(&hit.media_id).map_or("(removed)".to_string(), |m| m.filename.clone());
                         ui.label(name);
                         ui.label(egui::RichText::new(format!("{:.1}\u{2013}{:.1} s \u{00b7} match {:.0}%", hit.start_secs, hit.end_secs, hit.score * 100.0)).small().weak());
                         ui.horizontal(|ui| {

@@ -5775,7 +5775,7 @@ mod breadcrumb_tests {
                 let roots: Vec<_> = cmds.iter().filter_map(|cmd| if let AppCommand::SetGraphDockRoot { root } = cmd { Some(*root) } else { None }).collect();
                 assert_eq!(roots, [klipp_graph_format::path::Root::Clip { clip: id.0 }]);
                 let mut state = crate::state::AppState::default();
-                state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
+                state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
                 state.selected_clip = Some(id);
                 state.active_workspace = crate::state::Workspace::Color;
                 state.show_color_panel = true;

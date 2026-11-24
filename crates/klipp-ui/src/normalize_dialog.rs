@@ -67,9 +67,9 @@ pub fn apply_gains(state: &mut crate::state::AppState, gains: &[(ClipId, f32)]) 
     let mut edits = Vec::new();
     let seq_idx = state.active_sequence_idx;
     for &(clip_id, gain) in gains {
-        let partner = state.sequences[seq_idx].all_clips().find(|c| c.id == clip_id).and_then(|c| c.linked_clip_id);
+        let partner = state.document.sequences[seq_idx].all_clips().find(|c| c.id == clip_id).and_then(|c| c.linked_clip_id);
         for id in std::iter::once(clip_id).chain(partner) {
-            let Some(clip) = state.sequences[seq_idx].all_clips_mut().find(|c| c.id == id) else { continue };
+            let Some(clip) = state.document.sequences[seq_idx].all_clips_mut().find(|c| c.id == id) else { continue };
             if clip.gain == gain {
                 continue;
             }
@@ -288,25 +288,25 @@ mod tests {
     fn gains_are_one_undo_step_with_the_partners() {
         let mut state = AppState::default();
         let t = |f| klipp_core::RationalTime { value: f, rate: 24 };
-        let media = state.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/normalize.wav".into(), None));
+        let media = state.document.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/normalize.wav".into(), None));
         let (mut a, b) = (klipp_timeline::Clip::media(media, t(0), t(48), t(0), t(48)), klipp_timeline::Clip::media(media, t(48), t(96), t(0), t(48)));
         let mut partner = klipp_timeline::Clip::media(media, t(0), t(48), t(0), t(48));
         a.linked_clip_id = Some(partner.id);
         partner.linked_clip_id = Some(a.id);
         let (ia, ib, ip) = (a.id, b.id, partner.id);
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        let a1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
-        state.sequences[0].tracks[v1].clips.extend([a, b]);
-        state.sequences[0].tracks[a1].clips.push(partner);
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let a1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
+        state.document.sequences[0].tracks[v1].clips.extend([a, b]);
+        state.document.sequences[0].tracks[a1].clips.push(partner);
         let before = state.active_history().undo_count();
         assert!(apply_gains(&mut state, &[(ia, 2.0), (ib, 0.5)]));
-        let gain = |s: &AppState, id| s.sequences[0].all_clips().find(|c| c.id == id).unwrap().gain;
+        let gain = |s: &AppState, id| s.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().gain;
         assert_eq!((gain(&state, ia), gain(&state, ib), gain(&state, ip)), (2.0, 0.5, 2.0));
         assert_eq!(state.active_history().undo_count(), before + 1, "one undo step");
         let entry = state.active_history_mut().undo().unwrap();
         assert_eq!(entry.command.label(), "Edit Audio");
         let (mut fps, idx) = (state.fps, state.active_sequence_idx);
-        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: idx, media_pool: &mut state.media_pool, fps: &mut fps }.apply_inverse(&entry.command);
+        klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: idx, media_pool: &mut state.document.media_pool, fps: &mut fps }.apply_inverse(&entry.command);
         assert_eq!((gain(&state, ia), gain(&state, ib), gain(&state, ip)), (1.0, 1.0, 1.0), "undone, the partner too");
     }
 

@@ -77,7 +77,7 @@ pub fn show(
 
     let track_count = state.sequence().tracks.len();
     for track_idx in 0..track_count {
-        let track = &state.sequences[state.active_sequence_idx].tracks[track_idx];
+        let track = &state.document.sequences[state.active_sequence_idx].tracks[track_idx];
         // The rows as the clip area stacks them: squeezed by Fit's scale,
         // the automation lane under the clips counted in. A header at the
         // authored height drifted below its lane, and the last tracks fell
@@ -174,7 +174,7 @@ pub fn show(
                 klipp_timeline::TrackKind::Text => "T",
                 klipp_timeline::TrackKind::Subtitle => "S",
             };
-            let num = badge_number(&state.sequences[state.active_sequence_idx].tracks, track_idx);
+            let num = badge_number(&state.document.sequences[state.active_sequence_idx].tracks, track_idx);
             if num > 0 { format!("{}{}", prefix, num) } else { prefix.to_string() }
         };
         let badge_color = match track.kind {
@@ -625,7 +625,7 @@ pub fn show(
                     if ui.button(label).clicked() {
                         // One undo step (#907).
                         let before = crate::tracks_undo::before_labelled(state, "Add Track");
-                        let seq = &mut state.sequences[state.active_sequence_idx];
+                        let seq = &mut state.document.sequences[state.active_sequence_idx];
                         let name = seq.next_track_name(kind);
                         let new_track = klipp_timeline::Track::new(&name, kind);
                         seq.tracks.insert(track_idx, new_track);
@@ -642,7 +642,7 @@ pub fn show(
                 for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                     if ui.button(label).clicked() {
                         let before = crate::tracks_undo::before_labelled(state, "Add Track");
-                        let seq = &mut state.sequences[state.active_sequence_idx];
+                        let seq = &mut state.document.sequences[state.active_sequence_idx];
                         let name = seq.next_track_name(kind);
                         let new_track = klipp_timeline::Track::new(&name, kind);
                         let idx = (track_idx + 1).min(seq.tracks.len());
@@ -783,7 +783,7 @@ pub fn show(
             // clips already there keep theirs.
             {
                 let current = state.sequence().tracks[track_idx].role.clone();
-                let roles = &state.media_pool.roles;
+                let roles = &state.document.media_pool.roles;
                 let label = match current.as_ref().and_then(|r| roles.label(r)) {
                     Some(name) => format!("Role for New Clips: {name}"),
                     None => "Role for New Clips".to_string(),
@@ -1046,7 +1046,7 @@ pub fn show(
             for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                 if ui.button(label).clicked() {
                     let before = crate::tracks_undo::before_labelled(state, "Add Track");
-                    let seq = &mut state.sequences[state.active_sequence_idx];
+                    let seq = &mut state.document.sequences[state.active_sequence_idx];
                     let name = seq.next_track_name(kind);
                     match kind {
                         TrackKind::Video => { seq.add_video_track(name); }

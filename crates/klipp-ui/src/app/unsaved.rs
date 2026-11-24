@@ -58,8 +58,8 @@ impl crate::state::AppState {
         let dir = self.project_path.clone().unwrap_or_default();
         klipp_project::project_digest(
             &dir,
-            &self.sequences,
-            &self.media_pool,
+            &self.document.sequences,
+            &self.document.media_pool,
             &self.project_color_settings(),
             self.created_at.as_deref(),
             &self.project_notes,
@@ -74,7 +74,7 @@ impl crate::state::AppState {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             digest.hash(&mut h);
-            for id in klipp_timeline::compositions_used(&self.sequences) {
+            for id in klipp_timeline::compositions_used(&self.document.sequences) {
                 id.0.as_u128().hash(&mut h);
                 self.compositions.get(&id).map(|b| &b[..]).hash(&mut h);
             }
@@ -90,7 +90,7 @@ impl crate::state::AppState {
         self.dirty = false;
         self.unsaved = false;
         // And the tracks there are now are the recorded ones (#2633).
-        self.recorded_tracks = self.sequences.iter().map(|s| (s.id, s.tracks.iter().map(|t| t.id).collect())).collect();
+        self.recorded_tracks = self.document.sequences.iter().map(|s| (s.id, s.tracks.iter().map(|t| t.id).collect())).collect();
     }
 
     /// What changed since the last save is not the person's (analysis
@@ -105,10 +105,10 @@ impl crate::state::AppState {
     /// Whether the state is still the empty one the app starts with: no
     /// media, no clip, no step to undo in any history.
     fn untouched_start(&self) -> bool {
-        self.media_pool.is_empty()
-            && self.sequences.iter().all(|s| s.tracks.iter().all(|t| t.clips.is_empty()))
-            && self.command_histories.values().all(|h| h.undo_count() == 0)
-            && self.project_history.undo_count() == 0
+        self.document.media_pool.is_empty()
+            && self.document.sequences.iter().all(|s| s.tracks.iter().all(|t| t.clips.is_empty()))
+            && self.document.command_histories.values().all(|h| h.undo_count() == 0)
+            && self.document.project_history.undo_count() == 0
     }
 
     /// Settle a raised hint now: unsaved exactly when the project differs
@@ -309,7 +309,7 @@ mod tests {
     fn opened(dir: &Path, sequences: &[Sequence], pool: &MediaPool) -> AppState {
         klipp_project::save_project_full(dir, sequences, pool, &Default::default(), None, None, "notes", 0, Some(80.0), Some(0.0), Some(1.0), &Default::default()).unwrap();
         let (sequences, media_pool, color, _active, created_at, notes, zoom, scroll, scale, title_assets) = klipp_project::load_project(dir).unwrap();
-        let mut s = AppState { sequences, media_pool, created_at, project_notes: notes, title_assets, ..Default::default() };
+        let mut s = AppState { document: klipp_document::Document { sequences, media_pool, ..Default::default() }, created_at, project_notes: notes, title_assets, ..Default::default() };
         s.looks = klipp_project::load_looks(dir);
         (s.timeline_zoom, s.timeline_scroll_x, s.timeline_track_scale) = (zoom.unwrap_or(1.0), scroll.unwrap_or(0.0), scale.unwrap_or(1.0));
         (s.global_lut_path, s.global_lut_opacity, s.global_lut_enabled) = (color.global_lut_path, color.global_lut_opacity, color.global_lut_enabled);
@@ -351,19 +351,19 @@ mod tests {
         for (kind, sequences, pool) in projects() {
             let dir = scratch("rereading_pl", kind);
             let mut s = opened(&dir, &sequences, &pool);
-            let ids: Vec<MediaId> = s.media_pool.all().map(|m| m.id).collect();
+            let ids: Vec<MediaId> = s.document.media_pool.all().map(|m| m.id).collect();
             for id in ids {
-                let stored = s.media_pool.remove(&id).unwrap();
+                let stored = s.document.media_pool.remove(&id).unwrap();
                 let mut fresh = MediaItem { rating: 0, tags: Vec::new(), user_notes: String::new(), markers: Vec::new(), screen_text: String::new(), audio_role: None, metadata_read: true, ..stored.clone() };
                 klipp_media::merge_reprobed(&stored, &mut fresh);
-                s.media_pool.add(fresh);
+                s.document.media_pool.add(fresh);
             }
             s.playback = klipp_engine::PlaybackState::Playing;
             s.playhead = t(2.5);
             (s.timeline_zoom, s.timeline_scroll_x, s.timeline_track_scale) = (240.0, 90.0, 0.6);
             s.track_header_width += 60.0;
             (s.show_curve_editor, s.show_scopes) = (true, true);
-            s.active_sequence_idx = s.sequences.len() - 1;
+            s.active_sequence_idx = s.document.sequences.len() - 1;
             s.dirty = true;
             assert!(!unsaved(&mut s), "{kind}: still as saved");
             let _ = std::fs::remove_dir_all(dir);
@@ -376,12 +376,12 @@ mod tests {
         for (kind, sequences, pool) in projects() {
             let dir = scratch("an_edit_is_u", kind);
             let mut s = opened(&dir, &sequences, &pool);
-            let (ti, ci) = s.sequences[0].tracks.iter().enumerate().find_map(|(ti, tr)| (!tr.clips.is_empty()).then_some((ti, 0))).unwrap();
-            let before = s.sequences[0].tracks[ti].clips[ci].clone();
-            s.sequences[0].tracks[ti].clips[ci].timeline_out = before.timeline_out - t(0.5);
+            let (ti, ci) = s.document.sequences[0].tracks.iter().enumerate().find_map(|(ti, tr)| (!tr.clips.is_empty()).then_some((ti, 0))).unwrap();
+            let before = s.document.sequences[0].tracks[ti].clips[ci].clone();
+            s.document.sequences[0].tracks[ti].clips[ci].timeline_out = before.timeline_out - t(0.5);
             s.dirty = true;
             assert!(unsaved(&mut s), "{kind}: trimmed");
-            s.sequences[0].tracks[ti].clips[ci] = before;
+            s.document.sequences[0].tracks[ti].clips[ci] = before;
             s.dirty = true;
             assert!(!unsaved(&mut s), "{kind}: undone back to as saved");
             let _ = std::fs::remove_dir_all(dir);
@@ -428,17 +428,17 @@ mod tests {
         s.before_dispatch(&AppCommand::SeekTo(t(1.0)));
         assert!(!unsaved(&mut s), "a seek");
         s.before_dispatch(&AppCommand::SetSequenceInPoint(t(1.0)));
-        s.sequences[0].in_point = Some(t(1.0));
+        s.document.sequences[0].in_point = Some(t(1.0));
         assert!(unsaved(&mut s), "a mark");
         s.before_dispatch(&AppCommand::ClearSequenceInPoint);
-        s.sequences[0].in_point = None;
+        s.document.sequences[0].in_point = None;
         assert!(!unsaved(&mut s), "the mark taken away again");
-        let track_id = s.sequences[0].tracks[0].id;
+        let track_id = s.document.sequences[0].tracks[0].id;
         s.before_dispatch(&AppCommand::SetTrackFrozen { track_id, frozen: true });
-        s.sequences[0].tracks[0].set_frozen(true);
+        s.document.sequences[0].tracks[0].set_frozen(true);
         assert!(unsaved(&mut s), "frozen");
         s.before_dispatch(&AppCommand::SetTrackFrozen { track_id, frozen: false });
-        s.sequences[0].tracks[0].set_frozen(false);
+        s.document.sequences[0].tracks[0].set_frozen(false);
         assert!(!unsaved(&mut s), "thawed again");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -450,7 +450,7 @@ mod tests {
         let (kind, sequences, pool) = projects().remove(0);
         let dir = scratch("a_save_is_th", kind);
         let mut s = opened(&dir, &sequences, &pool);
-        s.sequences[0].name.push_str(" (cut)");
+        s.document.sequences[0].name.push_str(" (cut)");
         s.dirty = true;
         assert!(unsaved(&mut s));
         s.mark_saved();
@@ -474,7 +474,7 @@ mod tests {
         clip.composition = Some(id);
         let mut seq = Sequence::new_default();
         seq.tracks = vec![track("V1", TrackKind::Video, vec![clip])];
-        let mut s = AppState { sequences: vec![seq], media_pool: pool(&[a]), project_path: Some(PathBuf::from("/projects/a.klipp")), ..Default::default() };
+        let mut s = AppState { document: klipp_document::Document { sequences: vec![seq], media_pool: pool(&[a]), ..Default::default() }, project_path: Some(PathBuf::from("/projects/a.klipp")), ..Default::default() };
         let saved: std::sync::Arc<[u8]> = b"{\"before\":1}".as_slice().into();
         s.compositions.insert(id, saved.clone());
         s.mark_saved();

@@ -316,7 +316,7 @@ pub(super) fn maybe_insert_whoosh_for_apply(
     let resolved = if whoosh_variant == 255 {
         match whoosh_custom_path {
             Some(custom_path) => {
-                let found = find_existing_audio_in_pool(&state.media_pool, custom_path);
+                let found = find_existing_audio_in_pool(&state.document.media_pool, custom_path);
                 if found.is_none() {
                     tracing::warn!(
                         "ApplyHyperzoom whoosh: custom path {:?} not in media pool — \
@@ -336,7 +336,7 @@ pub(super) fn maybe_insert_whoosh_for_apply(
     } else {
         let v = whoosh_variant_from_u8(whoosh_variant);
         ensure_builtin_whoosh_in_pool(
-            &mut state.media_pool,
+            &mut state.document.media_pool,
             &mut state.whoosh_media_ids,
             v,
         )
@@ -344,8 +344,8 @@ pub(super) fn maybe_insert_whoosh_for_apply(
     let (media_id, dur) = resolved?;
     let timeline_in = whoosh_clip_in_for_apply(src_timeline_out, dur.to_secs_f64());
     match insert_audio_media_clip_into_seq(
-        &mut state.sequences[seq_idx],
-        &state.media_pool,
+        &mut state.document.sequences[seq_idx],
+        &state.document.media_pool,
         media_id,
         None,
         timeline_in,
@@ -595,14 +595,14 @@ mod whoosh_dispatch_tests {
         let mut state = AppState::default();
         // new_default ships V1 + A1; clear and rebuild so we can
         // capture the source clip id deterministically.
-        state.sequences[0].tracks.clear();
+        state.document.sequences[0].tracks.clear();
         let mut track = Track::new("V1", TrackKind::Video);
         let src_in = tc(0, 48);
         let src_out = tc(96, 48); // 2.0 s @ 48
         let clip = Clip::media(MediaId::new(), src_in, src_out, src_in, src_out);
         let cid = clip.id;
         track.clips.push(clip);
-        state.sequences[0].tracks.push(track);
+        state.document.sequences[0].tracks.push(track);
         (state, cid, src_out)
     }
 
@@ -613,13 +613,13 @@ mod whoosh_dispatch_tests {
         // no new clips, no whoosh in the media pool, no entry in
         // the variant cache.
         let (mut state, _src_id, src_out) = fresh_state_with_video_clip();
-        let pre_track_count = state.sequences[0].tracks.len();
-        let pre_clip_count: usize = state.sequences[0]
+        let pre_track_count = state.document.sequences[0].tracks.len();
+        let pre_clip_count: usize = state.document.sequences[0]
             .tracks
             .iter()
             .map(|t| t.clips.len())
             .sum();
-        let pre_pool_count = state.media_pool.all().count();
+        let pre_pool_count = state.document.media_pool.all().count();
         let result = maybe_insert_whoosh_for_apply(
             &mut state,
             0,
@@ -629,14 +629,14 @@ mod whoosh_dispatch_tests {
             None,
         );
         assert!(result.is_none(), "false → no insertion");
-        assert_eq!(state.sequences[0].tracks.len(), pre_track_count);
-        let post_clip_count: usize = state.sequences[0]
+        assert_eq!(state.document.sequences[0].tracks.len(), pre_track_count);
+        let post_clip_count: usize = state.document.sequences[0]
             .tracks
             .iter()
             .map(|t| t.clips.len())
             .sum();
         assert_eq!(post_clip_count, pre_clip_count);
-        assert_eq!(state.media_pool.all().count(), pre_pool_count);
+        assert_eq!(state.document.media_pool.all().count(), pre_pool_count);
         assert!(state.whoosh_media_ids.is_empty());
     }
 
@@ -657,11 +657,11 @@ mod whoosh_dispatch_tests {
             return;
         };
         // Audio track auto-created (sequence had only the video track).
-        assert_eq!(state.sequences[0].tracks[inserted.track_index].kind, TrackKind::Audio);
-        assert_eq!(state.sequences[0].tracks[inserted.track_index].clips.len(), 1);
+        assert_eq!(state.document.sequences[0].tracks[inserted.track_index].kind, TrackKind::Audio);
+        assert_eq!(state.document.sequences[0].tracks[inserted.track_index].clips.len(), 1);
         // Whoosh registered in pool + cached in variant map.
         assert!(state.whoosh_media_ids.contains_key(&0));
-        assert_eq!(state.media_pool.all().count(), 1);
+        assert_eq!(state.document.media_pool.all().count(), 1);
         // Clip-in centring: src_out = 2.0 s @ 48 rate (96 ticks).
         // Short whoosh = 0.30 s → half = 0.15 s → at 48 rate
         // that's 7.2 → rounds to 7. Expected timeline_in =
@@ -692,7 +692,7 @@ mod whoosh_dispatch_tests {
         let mut second_clip = Clip::media(MediaId::new(), src_out, second_out, tc(0, 48), tc(96, 48));
         let _ = src_id; // suppress unused
         second_clip.id = ClipId::new();
-        state.sequences[0].tracks[0].clips.push(second_clip);
+        state.document.sequences[0].tracks[0].clips.push(second_clip);
         let r1 = maybe_insert_whoosh_for_apply(&mut state, 0, src_out, true, 1, None);
         let r2 = maybe_insert_whoosh_for_apply(&mut state, 0, second_out, true, 1, None);
         let (Some(_), Some(_)) = (&r1, &r2) else {
@@ -700,7 +700,7 @@ mod whoosh_dispatch_tests {
             return;
         };
         assert_eq!(
-            state.media_pool.all().count(),
+            state.document.media_pool.all().count(),
             1,
             "second apply reused cached MediaId — pool still has one entry",
         );
@@ -715,7 +715,7 @@ mod whoosh_dispatch_tests {
             klipp_audio::WhooshVariant::Short,
             custom_path.clone(),
         );
-        let custom_id = state.media_pool.add(item);
+        let custom_id = state.document.media_pool.add(item);
         let result = maybe_insert_whoosh_for_apply(
             &mut state,
             0,
@@ -740,7 +740,7 @@ mod whoosh_dispatch_tests {
     fn custom_variant_without_pool_match_skips_silently() {
         let (mut state, _src_id, src_out) = fresh_state_with_video_clip();
         let phantom_path = std::path::PathBuf::from("/tmp/never-imported-whoosh.wav");
-        let pre_clip_count: usize = state.sequences[0]
+        let pre_clip_count: usize = state.document.sequences[0]
             .tracks
             .iter()
             .map(|t| t.clips.len())
@@ -754,7 +754,7 @@ mod whoosh_dispatch_tests {
             Some(&phantom_path),
         );
         assert!(result.is_none(), "no clip inserted when path absent from pool");
-        let post_clip_count: usize = state.sequences[0]
+        let post_clip_count: usize = state.document.sequences[0]
             .tracks
             .iter()
             .map(|t| t.clips.len())

@@ -13,9 +13,9 @@ fn ungraded() -> (AppState, ClipId) {
     let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
     let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
     let mut state = AppState::default();
-    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
     let id = clip.id;
-    state.sequences[0].tracks[v1].clips.push(clip);
+    state.document.sequences[0].tracks[v1].clips.push(clip);
     state.selected_clip = Some(id);
     (state, id)
 }
@@ -63,7 +63,7 @@ impl Views {
     fn tab(&mut self, events: Vec<egui::Event>) -> (bool, Texts) {
         let input = self.input(events);
         let theme = crate::theme::KlippTheme::default();
-        let clip = self.state.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap().clone();
+        let clip = self.state.document.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap().clone();
         let grade = crate::inspector::grade_view::snapshot_for(&clip, &[], false, &mut self.state.pending_corrector);
         let (mut cmds, mut auto) = (Vec::new(), false);
         let (state, busy) = (&self.state, self.busy);
@@ -92,7 +92,7 @@ impl Views {
         let mut cmds = Vec::new();
         let out = page.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
+                let clip = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
                 panel.generated = crate::inspector::grade_view::snapshot_for(clip, &[], false, &mut state.pending_corrector);
                 let (mut selected, mut tab) = (None, crate::state::ColorTab::Adjustments);
                 cmds.extend(clip.edit_grade(|g| panel.show_simple(ui, g, clip_id, &mut selected, &mut tab, &theme, frame)));
@@ -106,7 +106,7 @@ impl Views {
     fn apply(&mut self, cmds: &[AppCommand]) {
         for cmd in cmds {
             let mut cmd = cmd.clone();
-            crate::inspector::keyframe_selection::resolve_command(&self.state.sequences[0], &mut cmd);
+            crate::inspector::keyframe_selection::resolve_command(&self.state.document.sequences[0], &mut cmd);
             // A gesture's open and close change nothing by themselves.
             let marks = matches!(cmd, AppCommand::BeginParamEditAt { .. } | AppCommand::EndParamEditAt { .. });
             let applied = self.state.path_command(&cmd);
@@ -115,7 +115,7 @@ impl Views {
     }
 
     fn exposure(&self) -> Option<f32> {
-        let clip = self.state.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap();
+        let clip = self.state.document.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap();
         clip.grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector)?.params.exposure
     }
 }
@@ -188,9 +188,9 @@ fn contrast_typed_after_a_double_click_is_this_clips() {
     let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
     let other = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(2.0), tc(4.0), tc(0.0), tc(2.0));
     let other_id = other.id;
-    let v1 = views.state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-    views.state.sequences[0].tracks[v1].clips.push(other);
-    let grade_of = |state: &AppState, id: ClipId| serde_json::to_value(state.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade()).unwrap();
+    let v1 = views.state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    views.state.document.sequences[0].tracks[v1].clips.push(other);
+    let grade_of = |state: &AppState, id: ClipId| serde_json::to_value(state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade()).unwrap();
     let other_before = grade_of(&views.state, other_id);
 
     let (_, drawn) = views.tab(Vec::new());
@@ -215,7 +215,7 @@ fn contrast_typed_after_a_double_click_is_this_clips() {
     views.tab(vec![egui::Event::Text("0.4".into())]);
     views.tab(vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
     views.tab(Vec::new());
-    let clip = views.state.sequences[0].all_clips().find(|c| c.id == views.clip).unwrap();
+    let clip = views.state.document.sequences[0].all_clips().find(|c| c.id == views.clip).unwrap();
     let contrast = clip.grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).and_then(|n| n.params.contrast);
     assert_eq!(contrast, Some(0.4), "the value typed, on this clip");
     assert_eq!(grade_of(&views.state, other_id), other_before, "the other clip is untouched");
@@ -235,7 +235,7 @@ fn every_row_of_the_colour_tab_shows_in_the_inspector() {
     let theme = crate::theme::KlippTheme::default();
     let prefs = crate::prefs::Preferences::default();
     let mut panel = crate::inspector::NewInspectorPanel::default();
-    let c = state.sequences[0].all_clips().find(|c| c.id == clip).unwrap().clone();
+    let c = state.document.sequences[0].all_clips().find(|c| c.id == clip).unwrap().clone();
     panel.colour_grade = crate::inspector::grade_view::snapshot_for(&c, &[], false, &mut state.pending_corrector);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, 900.0));
     let mut out = None;
@@ -271,7 +271,7 @@ fn each_tab_keeps_its_own_scroll() {
     let clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(klipp_core::Timecode::zero(), klipp_core::Timecode { value: 120, rate: 24 }) };
     let mut state = crate::state::AppState::default();
     let id = clip.id;
-    state.sequences[0].tracks[0].clips.push(clip);
+    state.document.sequences[0].tracks[0].clips.push(clip);
     state.selected_clip = Some(id);
     let ctx = egui::Context::default();
     crate::icons::install(&ctx);

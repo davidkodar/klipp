@@ -25,7 +25,7 @@ impl KlippApp {
                 true
             }
             AppCommand::RunVisualSearch { query } => {
-                let files: Vec<(klipp_core::MediaId, std::path::PathBuf, f64)> = self.state.media_pool.all().map(|m| (m.id, m.path.clone(), m.duration.to_secs_f64())).collect();
+                let files: Vec<(klipp_core::MediaId, std::path::PathBuf, f64)> = self.state.document.media_pool.all().map(|m| (m.id, m.path.clone(), m.duration.to_secs_f64())).collect();
                 let query = query.clone();
                 crate::file_dialog::spawn(move || {
                     let hits = klipp_analysis::visual::query(&query).and_then(|wanted| {

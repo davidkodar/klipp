@@ -62,7 +62,7 @@ pub(super) fn to_playhead(state: &mut AppState, clip_id: ClipId, edge: Edge) -> 
         state.push_history(EditCommand::Magnetic(result.command));
         return RippleTrim::Made;
     }
-    match ops::trim_at_linked(state.sequence(), &state.media_pool, clip_id, edge, playhead, true, linked) {
+    match ops::trim_at_linked(state.sequence(), &state.document.media_pool, clip_id, edge, playhead, true, linked) {
         Ok(edit) => RippleTrim::Planned(Box::new(edit)),
         Err(r) => RippleTrim::Refused(r.why),
     }
@@ -85,7 +85,7 @@ mod tests {
         let mut state = AppState::default();
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/ripple-trim.mov".into(), None);
         item.duration = tc(60.0);
-        let media = state.media_pool.add(item);
+        let media = state.document.media_pool.add(item);
         let mut ids = Vec::new();
         for n in 0..3 {
             let at = n as f64 * 10.0;
@@ -94,8 +94,8 @@ mod tests {
             v.linked_clip_id = Some(a.id);
             a.linked_clip_id = Some(v.id);
             ids.push((v.id, a.id));
-            state.sequences[0].tracks[0].clips.push(v);
-            state.sequences[0].tracks[1].clips.push(a);
+            state.document.sequences[0].tracks[0].clips.push(v);
+            state.document.sequences[0].tracks[1].clips.push(a);
         }
         (state, ids)
     }
@@ -106,7 +106,7 @@ mod tests {
         match to_playhead(state, id, edge) {
             RippleTrim::Planned(edit) => {
                 let active = state.active_sequence_idx;
-                let mut view = DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+                let mut view = DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
                 let _ = view.apply_forward(&edit);
                 state.push_history(*edit);
             }
@@ -163,7 +163,7 @@ mod tests {
     fn a_clip_without_a_partner_still_trims_and_closes_up() {
         let (mut state, ids) = three_pairs();
         for (v, a) in &ids {
-            for c in state.sequences[0].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+            for c in state.document.sequences[0].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
                 if c.id == *v || c.id == *a {
                     c.linked_clip_id = None;
                 }
@@ -186,9 +186,9 @@ mod tests {
         state.selected_clip = Some(ids[2].1);
         assert_eq!(target(&state), Some(ids[2].1));
         state.selected_clip = None;
-        state.sequences[0].tracks[0].locked = true;
+        state.document.sequences[0].tracks[0].locked = true;
         assert_eq!(target(&state), Some(ids[1].1), "a locked picture track passes to the sound");
-        state.sequences[0].tracks[0].locked = false;
+        state.document.sequences[0].tracks[0].locked = false;
         for at in [10.0, 45.0] {
             state.playhead = tc(at);
             assert_eq!(target(&state), None, "on a cut or past the end there is nothing to trim");
@@ -217,7 +217,7 @@ mod tests {
         trim(&mut state, ids[1].0, Edge::Out, 14.0);
         let entry = state.take_undo().expect("a step");
         let active = state.active_sequence_idx;
-        let mut view = DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        let mut view = DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
         let _ = view.apply_inverse(&entry.command);
         assert_eq!(serde_json::to_string(state.sequence()).unwrap(), before);
     }

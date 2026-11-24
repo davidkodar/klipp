@@ -60,7 +60,7 @@ impl KlippApp {
     /// one undo step; why not, said.
     pub(super) fn set_recipe_control(&mut self, clip: klipp_core::ClipId, control: &str, value: f64) {
         let op = recipe_control_op(clip, control, value);
-        let plan = klipp_document::ops::resolve(self.state.sequence(), &self.state.media_pool, std::slice::from_ref(&op));
+        let plan = klipp_document::ops::resolve(self.state.sequence(), &self.state.document.media_pool, std::slice::from_ref(&op));
         match plan {
             Ok(plan) => {
                 let edits: Vec<_> = plan.steps.into_iter().map(|s| s.edit).collect();

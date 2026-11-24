@@ -21,7 +21,7 @@ impl KlippApp {
             return;
         }
         let unlocked = sequence_has_video_track_overlap(
-            &self.state.sequences[self.state.active_sequence_idx],
+            &self.state.document.sequences[self.state.active_sequence_idx],
         );
         if !unlocked {
             return;

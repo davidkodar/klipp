@@ -314,7 +314,7 @@ fn run_qualifier(report: &mut Report, type_id: &str, surface: Surface, page: Pag
         return;
     };
     // Enabled, so its rows are drawn.
-    if let Some(c) = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
+    if let Some(c) = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
         klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.id == node).for_each(|n| n.params.qualifier.get_or_insert_with(Default::default).enabled = true));
     }
     let start = Grade::new(state, clip, node).on(page);

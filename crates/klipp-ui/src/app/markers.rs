@@ -6,7 +6,7 @@ impl KlippApp {
     pub(super) fn handle_marker_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::AddMarkerWith { marker_id, position, duration, label, comment, color, kind } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 seq.markers.push(Marker { review: None,
                     id: *marker_id,
                     position: *position,
@@ -22,7 +22,7 @@ impl KlippApp {
                 true
             }
             AppCommand::AddMarker { position, label, color } => {
-                self.state.sequences[self.state.active_sequence_idx].markers.push(Marker { review: None,
+                self.state.document.sequences[self.state.active_sequence_idx].markers.push(Marker { review: None,
                     id: MarkerId::new(),
                     position: *position,
                     label: label.clone(),
@@ -31,7 +31,7 @@ impl KlippApp {
                     comment: String::new(),
                     kind: klipp_core::MarkerKind::None,
                 });
-                self.state.sequences[self.state.active_sequence_idx].markers.sort_by(|a, b| {
+                self.state.document.sequences[self.state.active_sequence_idx].markers.sort_by(|a, b| {
                     a.position.to_secs_f64().partial_cmp(&b.position.to_secs_f64()).unwrap_or(std::cmp::Ordering::Equal)
                 });
                 self.state.dirty = true;
@@ -41,13 +41,13 @@ impl KlippApp {
                 true
             }
             AppCommand::RemoveMarker { marker_id } => {
-                self.state.sequences[self.state.active_sequence_idx].markers.retain(|m| m.id != *marker_id);
+                self.state.document.sequences[self.state.active_sequence_idx].markers.retain(|m| m.id != *marker_id);
                 self.state.dirty = true;
                 self.sync_sequence_to_engine();
                 true
             }
             AppCommand::UpdateMarkerLabel { marker_id, label } => {
-                if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
+                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
                     m.label = label.clone();
                 }
                 self.state.dirty = true;
@@ -55,7 +55,7 @@ impl KlippApp {
                 true
             }
             AppCommand::UpdateMarkerColor { marker_id, color } => {
-                if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
+                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
                     m.color = *color;
                 }
                 self.state.dirty = true;
@@ -63,7 +63,7 @@ impl KlippApp {
                 true
             }
             AppCommand::UpdateMarkerComment { marker_id, comment } => {
-                if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
+                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
                     m.comment = comment.clone();
                 }
                 self.state.dirty = true;
@@ -71,7 +71,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetReviewStatus { marker_id, status } => {
-                if let Some(r) = self.state.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id).and_then(|m| m.review.as_mut()) {
+                if let Some(r) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id).and_then(|m| m.review.as_mut()) {
                     r.status = *status;
                 }
                 self.state.dirty = true;
@@ -103,7 +103,7 @@ impl KlippApp {
                         new.extend(added.iter().cloned());
                         new.sort_by_key(|m| m.position);
                         let idx = self.state.active_sequence_idx;
-                        self.state.sequences[idx].markers = new.clone();
+                        self.state.document.sequences[idx].markers = new.clone();
                         self.state.push_history(klipp_document::history::EditCommand::SetMarkers { old, new });
                         self.state.dirty = true;
                         self.sync_sequence_to_engine();
@@ -124,7 +124,7 @@ impl KlippApp {
                 true
             }
             AppCommand::UpdateMarkerKind { marker_id, kind } => {
-                if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
+                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
                     m.kind = *kind;
                 }
                 self.state.dirty = true;
@@ -132,7 +132,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetMarkerDuration { marker_id, duration } => {
-                if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
+                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
                     m.duration = *duration;
                 }
                 self.state.dirty = true;
@@ -140,7 +140,7 @@ impl KlippApp {
                 true
             }
             AppCommand::MoveMarker { marker_id, position } => {
-                if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
+                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
                     m.position = *position;
                 }
                 self.state.dirty = true;
@@ -148,7 +148,7 @@ impl KlippApp {
                 true
             }
             AppCommand::JumpToMarker { marker_id } => {
-                if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter().find(|m| m.id == *marker_id) {
+                if let Some(m) = self.state.document.sequences[self.state.active_sequence_idx].markers.iter().find(|m| m.id == *marker_id) {
                     let pos = m.position;
                     self.state.playhead = pos;
                     let _ = self.cmd_tx.send(AppCommand::SeekTo(pos));
@@ -156,7 +156,7 @@ impl KlippApp {
                 true
             }
             AppCommand::AddClipMarker { clip_id, time_secs, name, color } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         clip.clip_markers.push(klipp_timeline::ClipMarker {
                             time_secs: *time_secs,
@@ -173,7 +173,7 @@ impl KlippApp {
                 true
             }
             AppCommand::RemoveClipMarker { clip_id, index } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if *index < clip.clip_markers.len() {
                             clip.clip_markers.remove(*index);

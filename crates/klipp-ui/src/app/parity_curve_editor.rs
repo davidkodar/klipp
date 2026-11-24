@@ -100,12 +100,12 @@ fn fixture(track: &Track) -> Result<klipp_timeline::Clip, String> {
     // A grade node keyed by its path through the grade group (#891).
     if let Some(kind) = track.grade {
         let (mut state, id, node) = super::grade_inspector_tests::graded(kind).ok_or("the grade won't take one")?;
-        let addr = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade_nodes().into_iter().map(|(p, ..)| p).find(|p| p.node() == Some(node)).ok_or("no grade node by path")?;
+        let addr = state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade_nodes().into_iter().map(|(p, ..)| p).find(|p| p.node() == Some(node)).ok_or("no grade node by path")?;
         for (t, share) in KEYS {
             let keyframe = serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: track.at(share), interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).unwrap();
             state.path_command(&AppCommand::AddKeyAt { addr: addr.clone(), key: track.key.into(), keyframe }).ok_or("no key added")?;
         }
-        let clip = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+        let clip = state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
         if clip.animated_grade_keys().is_empty() {
             return Err("the keyed grade parameter isn't listed as a track".into());
         }
@@ -139,15 +139,15 @@ fn fixture(track: &Track) -> Result<klipp_timeline::Clip, String> {
     }
     let id = clip.id;
     let mut state = AppState::default();
-    state.sequences[0].tracks[0].clips.push(clip);
-    let node = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().picture_v2()?.picture.graph.nodes.iter()
+    state.document.sequences[0].tracks[0].clips.push(clip);
+    let node = state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().picture_v2()?.picture.graph.nodes.iter()
         .find(|n| klipp_graph_lift::effect_params::tag(n) == Some(track.tag)).map(|n| n.id).ok_or("no effect node")?;
     let addr = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, [node]);
     for (t, share) in KEYS {
         let keyframe = serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: track.at(share), interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).unwrap();
         state.path_command(&AppCommand::AddKeyAt { addr: addr.clone(), key: track.key.into(), keyframe }).ok_or("no key added")?;
     }
-    let clip = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+    let clip = state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
     if clip.animated_effect_keys().is_empty() {
         return Err("the keyed parameter isn't listed as a track".into());
     }
@@ -160,13 +160,13 @@ impl Curves {
     fn over(track: Track, clip: klipp_timeline::Clip) -> Result<Self, String> {
         let id = clip.id;
         let mut state = AppState::default();
-        state.sequences[0].tracks[0].clips.push(clip);
+        state.document.sequences[0].tracks[0].clips.push(clip);
         state.selected_clip = Some(id);
         let mut panel = CurveEditorPanel::new();
         let param = match track.video {
             Some(p) => CurveParam::Video(p),
             None => {
-                let clip = state.sequences[0].all_clips().find(|c| c.id == id).unwrap();
+                let clip = state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap();
                 let (path, key, tag) = clip.animated_effect_keys().into_iter().chain(clip.animated_grade_keys()).next().ok_or("no animated track")?;
                 CurveParam::Node { path, key, tag }
             }
@@ -179,7 +179,7 @@ impl Curves {
     }
 
     fn clip(&self) -> &klipp_timeline::Clip {
-        self.state.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap()
+        self.state.document.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap()
     }
 
     /// A fresh history over the clip as it is: where a case starts when
@@ -187,7 +187,7 @@ impl Curves {
     fn restart(&mut self) {
         let clip = self.clip().clone();
         let mut state = AppState::default();
-        state.sequences[0].tracks[0].clips.push(clip);
+        state.document.sequences[0].tracks[0].clips.push(clip);
         state.selected_clip = Some(self.clip);
         self.state = state;
         self.frame(Vec::new());
@@ -274,7 +274,7 @@ impl Curves {
         self.state.before_dispatch(&if forward { AppCommand::Redo } else { AppCommand::Undo });
         // The step the app takes: the sequence's or the project's (#1986).
         let entry = if forward { self.state.take_redo() } else { self.state.take_undo() }.ok_or("no step to take")?;
-        let mut doc = klipp_document::apply::DocumentView { sequences: &mut self.state.sequences, active: self.state.active_sequence_idx, media_pool: &mut self.state.media_pool, fps: &mut self.state.fps };
+        let mut doc = klipp_document::apply::DocumentView { sequences: &mut self.state.document.sequences, active: self.state.active_sequence_idx, media_pool: &mut self.state.document.media_pool, fps: &mut self.state.fps };
         if forward { doc.apply_forward(&entry.command); } else { doc.apply_inverse(&entry.command); }
         Ok(())
     }

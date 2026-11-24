@@ -30,7 +30,7 @@ impl KlippApp {
         let diagnosis = {
             let ring = self.perf_ring.lock().unwrap_or_else(|e| e.into_inner());
             let samples = (seq.fps.as_f64() * klipp_engine::playback_health::WINDOW as f64).ceil() as usize;
-            klipp_engine::playback_health::diagnose_now(&seq, &self.state.media_pool, &ring, samples)
+            klipp_engine::playback_health::diagnose_now(&seq, &self.state.document.media_pool, &ring, samples)
         };
         let Some(d) = diagnosis else { return };
         let project = self.state.project_path.as_ref().map_or_else(|| "untitled".to_string(), |p| p.display().to_string());

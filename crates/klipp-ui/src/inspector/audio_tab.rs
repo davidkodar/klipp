@@ -576,7 +576,7 @@ fn show_clip_audio(
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            let roles = &state.media_pool.roles;
+            let roles = &state.document.media_pool.roles;
             let current_role = clip.role.clone();
             let role_color = theme.role_color(roles, current_role.as_ref());
 
@@ -604,7 +604,7 @@ fn show_clip_audio(
         // What the sound was heard as (#2216), when that is not the role
         // it has: a sure label is applied by itself, an unsure one is
         // offered here.
-        let heard = clip.media_id().and_then(|m| state.media_pool.get(&m)).and_then(|m| m.audio_role).filter(|p| klipp_core::roles::RoleRef::from_legacy(p.role) != clip.role);
+        let heard = clip.media_id().and_then(|m| state.document.media_pool.get(&m)).and_then(|m| m.audio_role).filter(|p| klipp_core::roles::RoleRef::from_legacy(p.role) != clip.role);
         if let Some(p) = heard {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
@@ -912,7 +912,7 @@ fn show_clip_audio(
                 // A file with no sound stream: said, as the audition says
                 // it. Without peaks (none read yet) nothing is drawn: the
                 // painter's stand-in bars read as a sound that isn't there.
-                let no_sound = clip.media_id().and_then(|id| state.media_pool.get(&id)).is_some_and(|m| !m.has_audio);
+                let no_sound = clip.media_id().and_then(|id| state.document.media_pool.get(&id)).is_some_and(|m| !m.has_audio);
                 if no_sound {
                     ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, NO_SOUND, egui::FontId::proportional(10.0), theme.text_dim);
                 } else if waveform_bars_for(clip_peaks) {
@@ -1488,7 +1488,7 @@ mod clip_audio_tests {
     /// says, and what a click on Apply sends.
     fn duck_section(seq: &klipp_timeline::Sequence, sidechain: &[usize]) -> (Vec<String>, Vec<AppCommand>) {
         let mut state = AppState::default();
-        state.sequences[0] = seq.clone();
+        state.document.sequences[0] = seq.clone();
         let music = seq.tracks[0].clips[0].clone();
         let mut duck = DuckSettings { sidechain_tracks: sidechain.to_vec(), ..DuckSettings::default() };
         let tracks = TrackInfo::of(seq);
@@ -1613,7 +1613,7 @@ mod clip_audio_tests {
             let mut state = AppState { audio_backend_ok: true, ..Default::default() };
             let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/market.mp4".into(), None);
             (item.duration, item.has_audio) = (t(10.0), has_audio);
-            let media = state.media_pool.add(item);
+            let media = state.document.media_pool.add(item);
             let clip = Clip::media(media, t(0.0), t(2.0), t(0.0), t(2.0));
             let ctx = egui::Context::default();
             crate::icons::install(&ctx);

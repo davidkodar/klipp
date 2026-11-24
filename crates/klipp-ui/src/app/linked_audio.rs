@@ -225,8 +225,8 @@ impl KlippApp {
     /// The recording synced to `media_id`, if any and if it is still in
     /// the pool.
     pub(super) fn external_audio_of(&self, media_id: klipp_core::MediaId) -> Option<ExternalAudio> {
-        let sync = self.state.media_pool.get(&media_id)?.synced_audio.as_ref()?;
-        let audio = self.state.media_pool.get(&sync.audio_media_id)?;
+        let sync = self.state.document.media_pool.get(&media_id)?.synced_audio.as_ref()?;
+        let audio = self.state.document.media_pool.get(&sync.audio_media_id)?;
         Some(ExternalAudio { media_id: audio.id, offset_secs: sync.offset_secs, len_secs: audio.duration.to_secs_f64() })
     }
 
@@ -267,7 +267,7 @@ impl KlippApp {
         if !self.state.append_brings_audio {
             return None;
         }
-        let item = self.state.media_pool.get(&media_id)?;
+        let item = self.state.document.media_pool.get(&media_id)?;
         // A synced recording goes under the clip in place of its own
         // sound. Otherwise audio-only media is already on an audio
         // track, put there by the caller, and a silent file has nothing
@@ -277,7 +277,7 @@ impl KlippApp {
             return None;
         }
         let seq_idx = self.state.active_sequence_idx;
-        attach_linked_audio_beside(&mut self.state.sequences[seq_idx], video_clip_id, external)
+        attach_linked_audio_beside(&mut self.state.document.sequences[seq_idx], video_clip_id, external)
     }
 }
 

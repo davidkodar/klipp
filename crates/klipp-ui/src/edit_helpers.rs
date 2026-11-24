@@ -80,7 +80,7 @@ mod tests {
         use klipp_document::history::EditCommand;
         let mut state = crate::state::AppState::default();
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
-        let seq = &mut state.sequences[0];
+        let seq = &mut state.document.sequences[0];
         seq.tracks.insert(0, klipp_timeline::Track::new("V2", klipp_timeline::TrackKind::Video));
         let v: Vec<usize> = seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video).map(|(i, _)| i).collect();
         let shot = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
@@ -94,15 +94,15 @@ mod tests {
         let mut trimmed = shot.clone();
         trimmed.timeline_out = tc(3.0);
         trimmed.source_out = tc(3.0);
-        let seq = &mut state.sequences[0];
+        let seq = &mut state.document.sequences[0];
         *seq.all_clips_mut().find(|c| c.id == shot_id).unwrap() = trimmed.clone();
         state.push_history(EditCommand::ReplaceClip { description: "Trim", old: Box::new(shot), new: Box::new(trimmed) });
         assert_eq!((out(&state, shot_id), out(&state, title_id)), (3.0, 3.0), "the title followed its shot");
         assert!(state.matched_follow_sync, "and the engine is told");
 
         let entry = state.take_undo().expect("one step");
-        let (mut pool, mut fps) = (state.media_pool.clone(), state.fps);
-        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&entry.command);
+        let (mut pool, mut fps) = (state.document.media_pool.clone(), state.fps);
+        klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&entry.command);
         assert_eq!((out(&state, shot_id), out(&state, title_id)), (4.0, 4.0), "one undo, both back");
     }
 

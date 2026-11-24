@@ -34,7 +34,7 @@ pub(super) fn create_title_in_viewer(
     if !x.is_finite() || !y.is_finite() || box_size.is_some_and(|(w, h)| !(w > 0.0 && h > 0.0)) {
         return None;
     }
-    let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+    let fps_rate = state.document.sequences[state.active_sequence_idx].fps.rate();
     let duration_frames = ((duration_secs.max(0.0) as f64 * fps_rate as f64).round() as u32).max(1);
     let timeline_in = state.playhead;
     let track_index = super::titles::free_text_track(state, timeline_in, duration_frames);
@@ -122,7 +122,7 @@ mod tests {
         let clip = titles[0];
         assert_eq!(clip.timeline_in.to_secs_f64(), 2.0, "at the playhead");
         assert!(((clip.timeline_out - clip.timeline_in).to_secs_f64() - 5.0).abs() < 1e-6, "the default title's length");
-        let track = v.state.sequences[0].tracks.iter().find(|t| t.find_clip(clip.id).is_some()).unwrap();
+        let track = v.state.document.sequences[0].tracks.iter().find(|t| t.find_clip(clip.id).is_some()).unwrap();
         assert_eq!(track.kind, klipp_timeline::TrackKind::Text, "on a text track");
         let layer = v.layer(clip);
         assert!((layer.transform.center.x - 0.25).abs() < 1e-3 && (layer.transform.center.y - 0.75).abs() < 1e-3, "{:?}", layer.transform.center);
@@ -234,21 +234,21 @@ mod tests {
     #[test]
     fn undo_takes_the_title_away_in_one_step() {
         let mut v = Viewer::new();
-        let tracks = v.state.sequences[0].tracks.len();
+        let tracks = v.state.document.sequences[0].tracks.len();
         let r = v.image_rect();
         v.click(r.center());
         assert_eq!(v.titles().len(), 1);
         assert_eq!(v.state.active_history().undo_count(), 1, "one step");
         let entry = v.state.active_history_mut().undo().expect("a step");
         let mut doc = klipp_document::apply::DocumentView {
-            sequences: &mut v.state.sequences,
+            sequences: &mut v.state.document.sequences,
             active: v.state.active_sequence_idx,
-            media_pool: &mut v.state.media_pool,
+            media_pool: &mut v.state.document.media_pool,
             fps: &mut v.state.fps,
         };
         doc.apply_inverse(&entry.command);
         assert!(v.titles().is_empty(), "the title is gone");
-        assert_eq!(v.state.sequences[0].tracks.len(), tracks, "and the track made for it");
+        assert_eq!(v.state.document.sequences[0].tracks.len(), tracks, "and the track made for it");
     }
 
     /// With the tool down the viewer makes no title.
@@ -289,7 +289,7 @@ mod tests {
         v.click(r.center());
         let clip_id = v.titles()[0].id;
         let text = "Hello\nWorld";
-        let clip = v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
+        let clip = v.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
         let klipp_timeline::ClipKind::Title(td) = &mut clip.kind else { panic!("a title") };
         let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut td.objects[0].content else { panic!("its text") };
         tb.text = text.into();
@@ -297,7 +297,7 @@ mod tests {
         let mut single = klipp_timeline::TitleData::single_text(tb.clone());
         single.objects[0].transform = td.objects[0].transform.clone();
         v.state.viewer_text_edit_buffer = text.into();
-        let (w, h) = (v.state.sequences[0].resolution.width, v.state.sequences[0].resolution.height);
+        let (w, h) = (v.state.document.sequences[0].resolution.width, v.state.document.sequences[0].resolution.height);
         // The positions the app gives the editor.
         v.state.viewer_char_positions = klipp_title::TitleRenderer::new().compute_char_positions(&single, w, h);
         v.frame(Vec::new());

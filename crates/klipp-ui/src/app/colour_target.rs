@@ -71,7 +71,7 @@ impl AppState {
     /// The Colour page's header for `clip`: "Grading: <file> · V1".
     pub(crate) fn grading_title(&self, clip: ClipId) -> String {
         let Some((track, c)) = self.picture_clip(clip) else { return "Grading".into() };
-        let name = c.media_id().and_then(|m| self.media_pool.get(&m)).map(|m| m.filename.clone()).unwrap_or_else(|| "Clip".into());
+        let name = c.media_id().and_then(|m| self.document.media_pool.get(&m)).map(|m| m.filename.clone()).unwrap_or_else(|| "Clip".into());
         let n = crate::timeline::track_headers::badge_number(&self.sequence().tracks, track);
         // A file on the timeline more than once (a split shot, a reused
         // take): which piece, by where it sits, or the two read the same.
@@ -125,7 +125,7 @@ impl AppState {
         match targets {
             [one] => self.sequence().all_clips().find(|c| c.id == *one)
                 .and_then(|c| c.media_id())
-                .and_then(|m| self.media_pool.get(&m))
+                .and_then(|m| self.document.media_pool.get(&m))
                 .map_or_else(|| "the clip".to_string(), |it| klipp_core::quote::quoted(&it.filename)),
             many => format!("{} clips", many.len()),
         }

@@ -305,7 +305,7 @@ impl KlippApp {
             }
             // ── Audio recording (#60) ──
             AppCommand::ArmTrack { track_id, armed } => {
-                if let Some(seq) = self.state.sequences.get_mut(self.state.active_sequence_idx) {
+                if let Some(seq) = self.state.document.sequences.get_mut(self.state.active_sequence_idx) {
                     if *armed {
                         // Exclusive arm — MVP only records one track at a time.
                         // Multi-track arming is a tier-3 extension.
@@ -319,7 +319,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetAudioAutomationLaneParam { track_idx, param, track } => {
-                if let Some(seq) = self.state.sequences.get_mut(self.state.active_sequence_idx) {
+                if let Some(seq) = self.state.document.sequences.get_mut(self.state.active_sequence_idx) {
                     if let Some(t) = seq.tracks.get_mut(*track_idx) {
                         // Only writes when the lane is already open —
                         // the picker UI is only reachable from inside
@@ -344,7 +344,7 @@ impl KlippApp {
                         klipp_core::AudioParam::Volume
                     }
                 };
-                if let Some(seq) = self.state.sequences.get_mut(self.state.active_sequence_idx) {
+                if let Some(seq) = self.state.document.sequences.get_mut(self.state.active_sequence_idx) {
                     if let Some(t) = seq.tracks.get_mut(*track_idx) {
                         // Opened again, the lane shows the clips' keys of
                         // the active param, as it did before track keys

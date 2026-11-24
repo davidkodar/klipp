@@ -126,7 +126,7 @@ impl KlippApp {
             (Some(i), Ok(_)) => bounce::refusal(&seq, i, working),
         };
         let frame = |f: i64| f as f64 * f64::from(seq.fps.den) / f64::from(seq.fps.num.max(1));
-        let has_sound = klipp_render::stem::linked_sound_snapshot(&seq, &[], &self.state.media_pool, track_id).ok().flatten().is_some();
+        let has_sound = klipp_render::stem::linked_sound_snapshot(&seq, &[], &self.state.document.media_pool, track_id).ok().flatten().is_some();
         let sound_refusal = klipp_render::stem::linked_sound_refusal(&seq, track_id);
         self.bounces.dialog = Some(BounceDialog {
             track_id,
@@ -239,7 +239,7 @@ impl KlippApp {
             }
         }
         let (first, end) = bounce::span(&seq, index).ok_or("nothing on the track to bounce")?;
-        let pool = &self.state.media_pool;
+        let pool = &self.state.document.media_pool;
         let sound_snap = if sound { klipp_render::stem::linked_sound_snapshot(&seq, &[], pool, track_id).map_err(|e| format!("its sound couldn't be read: {e}"))? } else { None };
         let name = seq.tracks[index].name.clone();
         let with_sound = sound_snap.is_some();
@@ -306,7 +306,7 @@ impl KlippApp {
     /// module's doc. Nothing for any other media.
     pub(super) fn place_bounce(&mut self, media_id: MediaId) {
         let Some(place) = self.bounces.to_place.remove(&media_id) else { return };
-        let Some(item) = self.state.media_pool.get(&media_id).cloned() else { return };
+        let Some(item) = self.state.document.media_pool.get(&media_id).cloned() else { return };
         let edits = bounce_edits(self.state.sequence(), &item, &place);
         if edits.is_empty() {
             self.state.toast.show(format!("{} was bounced, but its track is gone: the file is in the media pool", place.name));

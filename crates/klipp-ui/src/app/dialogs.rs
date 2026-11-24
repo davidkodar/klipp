@@ -690,7 +690,7 @@ impl KlippApp {
         // 4a1b. Confirm remove media from pool
         if let Some(media_id) = self.state.show_remove_media_confirm {
             let usage = self.state.media_usage_cache.get(&media_id).copied().unwrap_or(0);
-            let name = self.state.media_pool.get(&media_id)
+            let name = self.state.document.media_pool.get(&media_id)
                 .map(|m| m.filename.clone())
                 .unwrap_or_else(|| "Unknown".into());
             crate::widgets::window("Remove Media?")
@@ -896,8 +896,8 @@ impl KlippApp {
                         if ui.button("Remove").clicked() {
                             // One undo step, clips and all (#907).
                             let before = crate::tracks_undo::before_labelled(&self.state, "Remove Track");
-                            let _ = self.state.sequences[self.state.active_sequence_idx].remove_track_with_clips(track_id);
-                            self.state.sequences[self.state.active_sequence_idx].renumber_tracks();
+                            let _ = self.state.document.sequences[self.state.active_sequence_idx].remove_track_with_clips(track_id);
+                            self.state.document.sequences[self.state.active_sequence_idx].renumber_tracks();
                             if let Some(before) = before {
                                 crate::tracks_undo::record(&mut self.state, before);
                             }
@@ -918,10 +918,10 @@ impl KlippApp {
         // 4a3. Confirm delete sequence (#906): a deleted sequence and its
         // undo history cannot be brought back, so the tab menu asks.
         if let Some(seq_id) = self.state.confirm_delete_sequence {
-            let found = self.state.sequences.iter().position(|s| s.id == seq_id);
+            let found = self.state.document.sequences.iter().position(|s| s.id == seq_id);
             match found {
                 Some(idx) => {
-                    let name = self.state.sequences[idx].name.clone();
+                    let name = self.state.document.sequences[idx].name.clone();
                     let mut open = true;
                     crate::widgets::window("Delete Sequence")
                         .open(&mut open)
@@ -957,13 +957,13 @@ impl KlippApp {
             let name = |id: klipp_core::ClipId| {
                 self.state.sequence().find_clip(id)
                     .and_then(|(t, c)| self.state.sequence().tracks[t].clips[c].media_id())
-                    .and_then(|m| self.state.media_pool.get(&m))
+                    .and_then(|m| self.state.document.media_pool.get(&m))
                     .map(|m| m.filename.clone())
                     .unwrap_or_else(|| "(missing)".into())
             };
             let (camera, recording) = (name(pair.reference), name(pair.recording));
-            let waveform_no = auto_align::waveform_unavailable(self.state.sequence(), &self.state.media_pool, pair);
-            let timecode_no = auto_align::timecode_position(self.state.sequence(), &self.state.media_pool, pair).err();
+            let waveform_no = auto_align::waveform_unavailable(self.state.sequence(), &self.state.document.media_pool, pair);
+            let timecode_no = auto_align::timecode_position(self.state.sequence(), &self.state.document.media_pool, pair).err();
             let mut open = true;
             let mut close = false;
             crate::widgets::window("Auto Align Audio")
@@ -1046,7 +1046,7 @@ impl KlippApp {
         }
         // Save Project as Template (#618): what it will keep, said up front.
         if let Some(mut dlg) = self.state.save_template_dialog.take() {
-            let setup = klipp_project::template::ProjectSetup { sequences: &self.state.sequences, pool: &self.state.media_pool, colour: self.template_colour() };
+            let setup = klipp_project::template::ProjectSetup { sequences: &self.state.document.sequences, pool: &self.state.document.media_pool, colour: self.template_colour() };
             let choice = klipp_project::template::StarterChoice { sequences: if dlg.include_starter { dlg.starter.clone() } else { Vec::new() }, package_media: dlg.package_media };
             let (template, _) = klipp_project::template::ProjectTemplate::capture_with_starter("-", "", &setup, &choice);
             // What the starter content needs, as the template will hold it
@@ -1063,7 +1063,7 @@ impl KlippApp {
                 .collect();
             let view = crate::panels::new_project_dialog::SaveTemplateView {
                 summary: template.summary(),
-                sequences: self.state.sequences.iter().map(|s| (s.id, s.name.clone())).collect(),
+                sequences: self.state.document.sequences.iter().map(|s| (s.id, s.name.clone())).collect(),
                 needs: crate::panels::new_project_dialog::dependency_lines(&deps, &|_| true),
                 existing: klipp_project::template::list_templates(&self.project_templates_dir()).into_iter().filter_map(|(_, t)| t.ok().map(|t| t.name)).collect(),
             };
@@ -1079,19 +1079,19 @@ impl KlippApp {
         if let Some(dlg) = self.sequence_settings_dialog.as_mut() {
             let (orig_w, orig_h, orig_n, orig_d) = self
                 .state
-                .sequences
+                .document.sequences
                 .get(dlg.sequence_idx)
                 .map(|s| (s.resolution.width, s.resolution.height, s.fps.num, s.fps.den))
                 .unwrap_or((0, 0, 0, 0));
             let orig_shutter = self
                 .state
-                .sequences
+                .document.sequences
                 .get(dlg.sequence_idx)
                 .map(|s| (s.camera.shutter_deg, s.camera.shutter_samples))
                 .unwrap_or((0.0, 8));
             let orig_title_nits = self
                 .state
-                .sequences
+                .document.sequences
                 .get(dlg.sequence_idx)
                 .map_or(klipp_timeline::DEFAULT_TITLE_NITS, |s| s.title_nits);
             let (still_open, dlg_cmds) = dlg.show(ctx, &self.theme, orig_w, orig_h, orig_n, orig_d, orig_shutter, orig_title_nits);
@@ -1145,7 +1145,7 @@ impl KlippApp {
             let items: Vec<(klipp_core::MediaId, String)> = self.state
                 .batch_rename_ids
                 .iter()
-                .filter_map(|id| self.state.media_pool.get(id).map(|m| (*id, m.filename.clone())))
+                .filter_map(|id| self.state.document.media_pool.get(id).map(|m| (*id, m.filename.clone())))
                 .collect();
             let dialog_cmds = crate::panels::batch_rename_dialog::show_batch_rename_dialog(
                 ctx,
@@ -1275,8 +1275,8 @@ impl KlippApp {
                 return;
             };
             let mut open = true;
-            let total_media = self.state.media_pool.all().count();
-            let offline_count = self.state.media_pool.all().filter(|m| m.offline).count();
+            let total_media = self.state.document.media_pool.all().count();
+            let offline_count = self.state.document.media_pool.all().filter(|m| m.offline).count();
             let online_count = total_media - offline_count;
             let consolidation_active = self.state.consolidate_progress.is_some();
 
@@ -1319,7 +1319,7 @@ impl KlippApp {
                         let mut h = std::collections::hash_map::DefaultHasher::new();
                         (self.state.consolidate_mode, self.state.consolidate_handle_secs.to_bits(), self.state.consolidate_include_proxies, self.state.consolidate_include_skims).hash(&mut h);
                         (total_media, offline_count).hash(&mut h);
-                        for c in self.state.sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()) {
+                        for c in self.state.document.sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()) {
                             (c.id, c.source_in.value, c.source_out.value).hash(&mut h);
                         }
                         h.finish()
@@ -1335,9 +1335,9 @@ impl KlippApp {
                             compositions: Default::default(),
                         };
                         let color = klipp_project::ColorSettings { global_lut_path: self.state.global_lut_path.clone(), ..Default::default() };
-                        let summary = klipp_project::consolidate::summarise(&self.state.media_pool, &self.state.sequences, &color, &options, self.state.project_path.as_deref());
+                        let summary = klipp_project::consolidate::summarise(&self.state.document.media_pool, &self.state.document.sequences, &color, &options, self.state.project_path.as_deref());
                         self.state.consolidate_summary = Some((key, summary));
-                        self.state.consolidate_offline = klipp_project::collect_report::offline_in_use(&self.state.sequences, &self.state.media_pool);
+                        self.state.consolidate_offline = klipp_project::collect_report::offline_in_use(&self.state.document.sequences, &self.state.document.media_pool);
                     }
                     if let Some((_, s)) = &self.state.consolidate_summary {
                         let size = if s.bytes >= 1 << 30 { format!("{:.1} GB", s.bytes as f64 / (1u64 << 30) as f64) } else { format!("{:.1} MB", s.bytes as f64 / (1u64 << 20) as f64) };

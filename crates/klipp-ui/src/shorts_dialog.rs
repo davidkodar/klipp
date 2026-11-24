@@ -142,7 +142,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
         });
     let media_id = dialog.media_id;
     let words = || {
-        let path = state.media_pool.get(&media_id).map(|m| m.path.clone())?;
+        let path = state.document.media_pool.get(&media_id).map(|m| m.path.clone())?;
         klipp_analysis::report::MediaAnalysis::load(&path).transcript.map(|t| t.words)
     };
     if find {
@@ -151,8 +151,8 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
     }
     if build {
         let spoken: Vec<klipp_document::ops::SpokenWord> = words().unwrap_or_default().into_iter().map(|w| klipp_document::ops::SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text, confidence: w.confidence }).collect();
-        let fps = state.media_pool.get(&media_id).map_or(state.sequence().fps, |m| m.fps);
-        let length = state.media_pool.get(&media_id).map(|m| m.duration.to_secs_f64()).filter(|d| *d > 0.0).unwrap_or(f64::INFINITY);
+        let fps = state.document.media_pool.get(&media_id).map_or(state.sequence().fps, |m| m.fps);
+        let length = state.document.media_pool.get(&media_id).map(|m| m.duration.to_secs_f64()).filter(|d| *d > 0.0).unwrap_or(f64::INFINITY);
         return dialog.build(&spoken, fps, length);
     }
     if open && !cancel {

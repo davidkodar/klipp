@@ -37,7 +37,7 @@ impl KlippApp {
             return None;
         }
         let mid = self.state.source_media_id?;
-        let Some(item) = self.state.media_pool.get(&mid).cloned() else {
+        let Some(item) = self.state.document.media_pool.get(&mid).cloned() else {
             self.state.toast.show("Source clip is no longer in the media pool");
             return None;
         };
@@ -76,14 +76,14 @@ impl KlippApp {
         let audio_only = item.video_codec.is_empty();
         let kind = if audio_only { klipp_timeline::TrackKind::Audio } else { klipp_timeline::TrackKind::Video };
         let seq_idx = self.state.active_sequence_idx;
-        if !self.state.sequences[seq_idx].tracks.iter().any(|t| t.kind == kind) {
+        if !self.state.document.sequences[seq_idx].tracks.iter().any(|t| t.kind == kind) {
             self.state.toast.show(if audio_only { "No audio track in sequence" } else { "No video track in sequence" });
             return;
         }
         self.adopt_first_clip_format(&item);
         let (t_in, t_out, s_in, s_out) = self.placement_timecodes(&item, &p);
         let Some(target) = self.source_edit_track(seq_idx, kind, t_in, t_out) else { return };
-        if self.state.sequences[seq_idx].tracks[target].locked {
+        if self.state.document.sequences[seq_idx].tracks[target].locked {
             self.state.toast.show("Target track is locked");
             return;
         }
@@ -94,11 +94,11 @@ impl KlippApp {
             clip.source_rotation = item.source_rotation;
         }
         let id = clip.id;
-        Self::overwrite_insert_clip_on_track(&mut self.state.sequences[seq_idx].tracks[target], clip);
+        Self::overwrite_insert_clip_on_track(&mut self.state.document.sequences[seq_idx].tracks[target], clip);
         if item.has_audio && !audio_only {
             let external = self.external_audio_of(mid);
-            if let Some(a) = attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], id, external) {
-                if let Some(c) = self.state.sequences[seq_idx].tracks[a.track_index].find_clip_mut(a.clip.id) {
+            if let Some(a) = attach_linked_audio_to_clip(&mut self.state.document.sequences[seq_idx], id, external) {
+                if let Some(c) = self.state.document.sequences[seq_idx].tracks[a.track_index].find_clip_mut(a.clip.id) {
                     c.speed = p.speed;
                 }
             }
@@ -130,7 +130,7 @@ impl KlippApp {
         let kind = if audio_only { klipp_timeline::TrackKind::Audio } else { klipp_timeline::TrackKind::Video };
         let seq_idx = self.state.active_sequence_idx;
         let playhead = self.state.playhead;
-        let seq = &self.state.sequences[seq_idx];
+        let seq = &self.state.document.sequences[seq_idx];
         let Some(target) = seq.source_track(kind) else {
             self.state.toast.show("No track of the source's kind to replace on");
             return;
@@ -161,7 +161,7 @@ impl KlippApp {
         }
         let rate = item.duration.rate;
         let (s_in, s_out) = (RationalTime::from_secs_f64(s_in.max(0.0), rate), RationalTime::from_secs_f64(s_out.min(media_len), rate));
-        let seq = &mut self.state.sequences[seq_idx];
+        let seq = &mut self.state.document.sequences[seq_idx];
         let retarget = |c: &mut klipp_timeline::Clip| {
             c.kind = klipp_timeline::ClipKind::Media { media_id: mid };
             c.source_in = s_in;
@@ -190,7 +190,7 @@ impl KlippApp {
         let kind = if audio_only { klipp_timeline::TrackKind::Audio } else { klipp_timeline::TrackKind::Video };
         let seq_idx = self.state.active_sequence_idx;
         let playhead = self.state.playhead;
-        let seq = &self.state.sequences[seq_idx];
+        let seq = &self.state.document.sequences[seq_idx];
         let Some(target) = seq.source_track(kind).filter(|&t| !seq.tracks[t].locked) else {
             self.state.toast.show("Ripple Overwrite: no unlocked track of the source's kind");
             return;
@@ -210,7 +210,7 @@ impl KlippApp {
         }
         let id = new.id;
         let sound = (item.has_audio && !audio_only).then(|| klipp_timeline::Clip::media(mid, t_in, t_out, s_in, s_out));
-        match crate::source_edit::ripple_replace(&mut self.state.sequences[seq_idx], target, old, new, sound) {
+        match crate::source_edit::ripple_replace(&mut self.state.document.sequences[seq_idx], target, old, new, sound) {
             Ok(()) => self.finish_source_edit_in_place(id),
             Err(why) => self.state.toast.show(format!("Ripple Overwrite unchanged: {why}")),
         }
@@ -223,7 +223,7 @@ impl KlippApp {
     /// over sound it was not sent to (#2940). `None` with no track of the
     /// kind.
     pub(super) fn source_edit_track(&mut self, seq_idx: usize, kind: klipp_timeline::TrackKind, from: Timecode, to: Timecode) -> Option<usize> {
-        let seq = &mut self.state.sequences[seq_idx];
+        let seq = &mut self.state.document.sequences[seq_idx];
         if kind != klipp_timeline::TrackKind::Audio {
             return seq.source_track(kind);
         }
@@ -303,15 +303,15 @@ fn place_on_top(state: &mut AppState, mid: MediaId, item: &klipp_media::MediaIte
     let p = crate::source_edit::three_point(&source_marks(state, item));
     let (t_in, t_out, s_in, s_out) = placement_timecodes(state, item, &p);
     let seq_idx = state.active_sequence_idx;
-    let seq = &state.sequences[seq_idx];
+    let seq = &state.document.sequences[seq_idx];
     let sound_only = item.video_codec.is_empty();
     let dest = if sound_only {
         match place_sound_on_top_track(seq, t_in, t_out) {
             Some(i) => i,
             None => {
                 let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
-                state.sequences[seq_idx].add_audio_track(format!("Audio {}", n + 1));
-                state.sequences[seq_idx].tracks.len() - 1
+                state.document.sequences[seq_idx].add_audio_track(format!("Audio {}", n + 1));
+                state.document.sequences[seq_idx].tracks.len() - 1
             }
         }
     } else {
@@ -319,7 +319,7 @@ fn place_on_top(state: &mut AppState, mid: MediaId, item: &klipp_media::MediaIte
             Some(i) => i,
             None => {
                 let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
-                state.sequences[seq_idx].add_video_track(format!("Video {}", n + 1));
+                state.document.sequences[seq_idx].add_video_track(format!("Video {}", n + 1));
                 0
             }
         }
@@ -331,7 +331,7 @@ fn place_on_top(state: &mut AppState, mid: MediaId, item: &klipp_media::MediaIte
         clip.source_rotation = item.source_rotation;
     }
     let id = clip.id;
-    KlippApp::overwrite_insert_clip_on_track(&mut state.sequences[seq_idx].tracks[dest], clip);
+    KlippApp::overwrite_insert_clip_on_track(&mut state.document.sequences[seq_idx].tracks[dest], clip);
     advance_past(state, id);
     id
 }
@@ -443,7 +443,7 @@ mod advance_tests {
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/place-on-top.mov".into(), None);
         item.duration = Timecode::from_secs_f64(3.0, 24);
         item.video_codec = "h264".into();
-        let mid = state.media_pool.add(item.clone());
+        let mid = state.document.media_pool.add(item.clone());
         state.playhead = Timecode::from_secs_f64(1.0, 24);
         let first = place_on_top(&mut state, mid, &item);
         let second = place_on_top(&mut state, mid, &item);
@@ -471,7 +471,7 @@ mod advance_tests {
         music.duration = Timecode::from_secs_f64(4.0, 24);
         music.video_codec = String::new();
         music.has_audio = true;
-        let mid = state.media_pool.add(music.clone());
+        let mid = state.document.media_pool.add(music.clone());
         let audio_tracks = |state: &AppState| state.sequence().tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
         let before = audio_tracks(&state);
         state.playhead = Timecode::from_secs_f64(0.0, 24);
@@ -497,7 +497,7 @@ mod frame_aligned_tests {
     /// at 29.97, 15.782 s), for a 30 fps sequence.
     fn setup() -> (crate::state::AppState, klipp_media::MediaItem) {
         let mut state = crate::state::AppState::default();
-        state.sequences[0].fps = Fps::new(30, 1);
+        state.document.sequences[0].fps = Fps::new(30, 1);
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/longer.mp4".into(), None);
         item.duration = Timecode { value: 473_700, rate: 30_000 };
         item.fps = Fps::ntsc_29970();
@@ -527,8 +527,8 @@ mod frame_aligned_tests {
         assert!(s_out.to_secs_f64() - s_in.to_secs_f64() <= 473.0 / 30.0 + 1e-6, "the source within the picture: {:.6} s", s_out.to_secs_f64());
 
         // Between sequence marks a part of a frame long: whole frames of it.
-        state.sequences[0].in_point = Some(Timecode { value: 60, rate: 30 });
-        state.sequences[0].out_point = Some(Timecode { value: 150_369, rate: 30_000 });
+        state.document.sequences[0].in_point = Some(Timecode { value: 60, rate: 30 });
+        state.document.sequences[0].out_point = Some(Timecode { value: 150_369, rate: 30_000 });
         let p = crate::source_edit::three_point(&source_marks(&state, &item));
         let (t_in, t_out, _, _) = placement_timecodes(&state, &item, &p);
         assert!(on_frame(t_in) && on_frame(t_out), "{:.6}-{:.6} s", t_in.to_secs_f64(), t_out.to_secs_f64());

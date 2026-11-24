@@ -56,7 +56,7 @@ fn compounded(shared: bool) -> Result<(Grade, [NodeId; 3]), String> {
     }
     let mut grade = NodeGraph::default();
     let compound = nest(&mut grade, inner);
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).ok_or("no clip")?.edit_grade(|g| *g = grade);
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).ok_or("no clip")?.edit_grade(|g| *g = grade);
     Ok((Grade::new(state, clip, compound), [ids[0], ids[1], ids[2]]))
 }
 

@@ -617,7 +617,7 @@ fn picture_at_playhead(state: &AppState) -> Option<(&klipp_media::MediaItem, f64
     let seq = state.sequence();
     let tc = state.playhead;
     let (_, clip) = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).find_map(|t| t.clip_at_timecode(tc))?;
-    let item = clip.media_id().and_then(|m| state.media_pool.get(&m))?;
+    let item = clip.media_id().and_then(|m| state.document.media_pool.get(&m))?;
     Some((item, clip.source_secs_at((tc.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0), seq.fps.as_f64())))
 }
 
@@ -676,12 +676,12 @@ mod tests {
     fn skin_is_read_where_the_playhead_is() {
         let mut state = AppState::default();
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
-        let harbour = state.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/harbour.mp4".into(), None));
-        let interview = state.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/interview.mp4".into(), None));
-        let clips = &mut state.sequences[0].tracks[0].clips;
+        let harbour = state.document.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/harbour.mp4".into(), None));
+        let interview = state.document.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/interview.mp4".into(), None));
+        let clips = &mut state.document.sequences[0].tracks[0].clips;
         clips.push(klipp_timeline::Clip::media(harbour, tc(0.0), tc(4.0), tc(1.0), tc(5.0)));
         clips.push(klipp_timeline::Clip::media(interview, tc(8.0), tc(14.0), tc(2.0), tc(8.0)));
-        state.sequences[0].last_playhead = None;
+        state.document.sequences[0].last_playhead = None;
         state.playhead = tc(11.04);
         let (item, source) = picture_at_playhead(&state).expect("a clip under the playhead");
         assert_eq!(item.path, std::path::PathBuf::from("/tmp/interview.mp4"), "the clip under the playhead");

@@ -83,7 +83,7 @@ mod tests {
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
         let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
         let id = clip.id;
-        v.state.sequences[0].tracks[0].clips = vec![clip];
+        v.state.document.sequences[0].tracks[0].clips = vec![clip];
         v.state.frame_glide_clip = Some(id);
         v.frame(Vec::new());
         (v, id)

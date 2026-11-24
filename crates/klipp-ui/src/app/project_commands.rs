@@ -91,17 +91,17 @@ impl KlippApp {
         // so the new timeline was drawn with the old footage.
         self.media_watcher = None;
         self.reset_project_state();
-        self.state.sequences = vec![seq];
+        self.state.document.sequences = vec![seq];
         let mut fps = fps;
         if let Some(made) = from_template {
             self.apply_template(made);
-            fps = self.state.sequences[0].fps;
+            fps = self.state.document.sequences[0].fps;
         }
         self.state.active_sequence_idx = 0;
         self.state.fps = fps;
         self.state.created_at = Some(klipp_project::iso8601_now());
         self.state.filmstrip_generating = false;
-        let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+        let seq_rate = self.state.document.sequences[self.state.active_sequence_idx].fps.rate();
         self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
         self.state.filmstrip_total_queued = 0;
         self.state.filmstrip_completed = 0;
@@ -116,7 +116,7 @@ impl KlippApp {
     /// switched and taken off (#846): each change one undo step, through
     /// `SetTrackSettings`.
     fn handle_track_settings_commands(&mut self, cmd: &AppCommand) -> bool {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let track = |id: &klipp_core::TrackId| seq.tracks.iter().find(|t| t.id == *id);
         // One track's settings changed by `change`: the edit, or `None`
         // when nothing changed.
@@ -185,7 +185,7 @@ impl KlippApp {
             },
             AppCommand::AddTrackAudioEffect { track_id, effect_type } => {
                 let fx = self.default_audio_effect(effect_type);
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let edit = seq.tracks.iter().find(|t| t.id == *track_id).map(|t| {
                     let old = t.settings();
                     let mut new = old.clone();
@@ -622,8 +622,8 @@ impl KlippApp {
             }
             AppCommand::SaveProjectTemplate { name, description, starter, package_media } => {
                 let setup = klipp_project::template::ProjectSetup {
-                    sequences: &self.state.sequences,
-                    pool: &self.state.media_pool,
+                    sequences: &self.state.document.sequences,
+                    pool: &self.state.document.media_pool,
                     colour: self.template_colour(),
                 };
                 let choice = klipp_project::template::StarterChoice { sequences: starter.clone(), package_media: *package_media };
@@ -694,7 +694,7 @@ impl KlippApp {
                 true
             }
             AppCommand::AddSequenceAndOpen { name, fps_num, fps_den, width, height } => {
-                let index = self.state.sequences.len();
+                let index = self.state.document.sequences.len();
                 self.send_commands(vec![
                     AppCommand::AddSequence { name: name.clone(), fps_num: *fps_num, fps_den: *fps_den, width: *width, height: *height },
                     AppCommand::SetActiveSequence { sequence_idx: index },
@@ -739,26 +739,26 @@ impl KlippApp {
                     awaiting_refit: false,
                     version_of: None,
                 };
-                self.state.sequences.push(seq);
+                self.state.document.sequences.push(seq);
                 self.state.dirty = true;
                 true
             }
             AppCommand::DuplicateSequence { sequence_idx, new_name } => {
-                if *sequence_idx < self.state.sequences.len() {
-                    let mut dup = self.state.sequences[*sequence_idx].clone();
+                if *sequence_idx < self.state.document.sequences.len() {
+                    let mut dup = self.state.document.sequences[*sequence_idx].clone();
                     dup.id = klipp_core::SequenceId::new();
                     dup.name = new_name.clone();
                     // A copy of a version still to be reframed waits too.
-                    self.state.pending_refits.extend(super::aspect_version::waiting_refits(std::slice::from_ref(&dup), &self.state.media_pool));
-                    self.state.sequences.push(dup);
+                    self.state.pending_refits.extend(super::aspect_version::waiting_refits(std::slice::from_ref(&dup), &self.state.document.media_pool));
+                    self.state.document.sequences.push(dup);
                     self.state.dirty = true;
                 }
                 true
             }
             AppCommand::NewAspectVersion { sequence_idx, width, height, name } => {
                 if let Some(index) = super::aspect_version::add_version(&mut self.state, *sequence_idx, (*width, *height), name) {
-                    let id = self.state.sequences[index].id;
-                    let waiting = super::aspect_version::request_framing(&self.state.sequences[index], &self.state.media_pool);
+                    let id = self.state.document.sequences[index].id;
+                    let waiting = super::aspect_version::request_framing(&self.state.document.sequences[index], &self.state.document.media_pool);
                     if !waiting.is_empty() {
                         self.state.toast.show(format!("{name}: finding the subjects in {} files; it is reframed when that is done", waiting.len()));
                     } else if !klipp_analysis::subject_detection_enabled() {
@@ -777,8 +777,8 @@ impl KlippApp {
                 // usize::MAX names the active sequence: the control socket
                 // does not know the index, only that it is the one open.
                 let idx = if *sequence_idx == usize::MAX { self.state.active_sequence_idx } else { *sequence_idx };
-                if idx < self.state.sequences.len() {
-                    self.state.sequences[idx].name = new_name.clone();
+                if idx < self.state.document.sequences.len() {
+                    self.state.document.sequences[idx].name = new_name.clone();
                     self.state.dirty = true;
                     if idx == self.state.active_sequence_idx {
                         self.sync_sequence_to_engine();
@@ -787,17 +787,17 @@ impl KlippApp {
                 true
             }
             AppCommand::DeleteSequence { sequence_id } => {
-                let Some(idx) = self.state.sequences.iter().position(|s| s.id == *sequence_id) else { return true };
+                let Some(idx) = self.state.document.sequences.iter().position(|s| s.id == *sequence_id) else { return true };
                 let sequence_idx = &idx;
-                if self.state.sequences.len() > 1 {
+                if self.state.document.sequences.len() > 1 {
                     // Refuse to delete a sequence that is used as a compound
                     // clip elsewhere — otherwise the compound clip's
                     // ClipKind::Sequence { sequence_id, .. } reference would
                     // dangle and double-click to re-open would silently fail.
-                    let target_id = self.state.sequences[*sequence_idx].id;
+                    let target_id = self.state.document.sequences[*sequence_idx].id;
                     let referenced_by: Option<String> = self
                         .state
-                        .sequences
+                        .document.sequences
                         .iter()
                         .enumerate()
                         .filter(|(i, _)| *i != *sequence_idx)
@@ -817,12 +817,12 @@ impl KlippApp {
                         ));
                         return true;
                     }
-                    let removed_id = self.state.sequences[*sequence_idx].id;
-                    self.state.sequences.remove(*sequence_idx);
+                    let removed_id = self.state.document.sequences[*sequence_idx].id;
+                    self.state.document.sequences.remove(*sequence_idx);
                     // Drop the deleted sequence's undo/redo stack — it can
                     // never be replayed once its clips and tracks are
                     // gone.
-                    self.state.command_histories.remove(&removed_id);
+                    self.state.document.command_histories.remove(&removed_id);
                     self.state.closed_sequence_tabs.remove(&removed_id);
                     // Drop any compound_clip_stack entries pointing at the
                     // removed sequence and renumber indices that shifted.
@@ -833,12 +833,12 @@ impl KlippApp {
                         }
                     }
                     // Adjust active index
-                    if self.state.active_sequence_idx >= self.state.sequences.len() {
-                        self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                    if self.state.active_sequence_idx >= self.state.document.sequences.len() {
+                        self.state.active_sequence_idx = self.state.document.sequences.len() - 1;
                     } else if self.state.active_sequence_idx > *sequence_idx {
                         self.state.active_sequence_idx -= 1;
                     }
-                    self.state.fps = self.state.sequences[self.state.active_sequence_idx].fps;
+                    self.state.fps = self.state.document.sequences[self.state.active_sequence_idx].fps;
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
                 }
@@ -854,13 +854,13 @@ impl KlippApp {
                 // engine's state.
                 let to_regen: Vec<(klipp_core::MediaId, std::path::PathBuf)> = self
                     .state
-                    .media_pool
+                    .document.media_pool
                     .all()
                     .filter(|m| m.has_audio && !m.is_still)
                     .map(|m| (m.id, m.path.clone()))
                     .collect();
                 for id in to_regen.iter().map(|(id, _)| *id) {
-                    if let Some(item) = self.state.media_pool.get_mut(&id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(&id) {
                         item.audio_cache = None;
                     }
                 }
@@ -878,7 +878,7 @@ impl KlippApp {
                 // re-spawn filmstrip generation for every pool item.
                 let to_regen: Vec<(klipp_core::MediaId, std::path::PathBuf, klipp_core::RationalTime)> = self
                     .state
-                    .media_pool
+                    .document.media_pool
                     .all()
                     .filter(|m| !m.is_still)
                     .map(|m| (m.id, m.path.clone(), m.duration))
@@ -912,13 +912,13 @@ impl KlippApp {
                 let mut count = 0usize;
                 let ids: Vec<klipp_core::MediaId> = self
                     .state
-                    .media_pool
+                    .document.media_pool
                     .all()
                     .filter(|m| !m.is_still)
                     .map(|m| m.id)
                     .collect();
                 for id in &ids {
-                    if let Some(item) = self.state.media_pool.get_mut(id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(id) {
                         item.skim_file = None;
                     }
                     self.state.pending_skim_transcodes.push(*id);
@@ -930,7 +930,7 @@ impl KlippApp {
                 true
             }
             AppCommand::OpenSequenceSettings { sequence_idx } => {
-                if let Some(seq) = self.state.sequences.get(*sequence_idx) {
+                if let Some(seq) = self.state.document.sequences.get(*sequence_idx) {
                     self.sequence_settings_dialog = Some(
                         crate::panels::sequence_settings_dialog::SequenceSettingsDialog::open(
                             *sequence_idx,
@@ -946,34 +946,34 @@ impl KlippApp {
                 true
             }
             AppCommand::SetSequenceResolution { sequence_idx, width, height } => {
-                if *sequence_idx < self.state.sequences.len() && *width > 0 && *height > 0 {
+                if *sequence_idx < self.state.document.sequences.len() && *width > 0 && *height > 0 {
                     let res = klipp_core::Resolution { width: *width, height: *height };
-                    let from = self.state.sequences[*sequence_idx].resolution;
-                    self.state.sequences[*sequence_idx].resolution = res;
+                    let from = self.state.document.sequences[*sequence_idx].resolution;
+                    self.state.document.sequences[*sequence_idx].resolution = res;
                     // Each reframe stays on its picture in the new frame.
-                    klipp_document::ops::keep_reframes(&mut self.state.sequences[*sequence_idx], &self.state.media_pool, from);
-                    self.state.sequences[*sequence_idx].first_clip_autoset.resolution = false;
+                    klipp_document::ops::keep_reframes(&mut self.state.document.sequences[*sequence_idx], &self.state.document.media_pool, from);
+                    self.state.document.sequences[*sequence_idx].first_clip_autoset.resolution = false;
                     self.state.dirty = true;
                 }
                 true
             }
             AppCommand::SetSequenceFps { sequence_idx, fps_num, fps_den } => {
-                if *sequence_idx < self.state.sequences.len() && *fps_num > 0 && *fps_den > 0 {
-                    self.state.sequences[*sequence_idx].fps = klipp_core::Fps::new(*fps_num, *fps_den);
-                    self.state.sequences[*sequence_idx].first_clip_autoset.fps = false;
+                if *sequence_idx < self.state.document.sequences.len() && *fps_num > 0 && *fps_den > 0 {
+                    self.state.document.sequences[*sequence_idx].fps = klipp_core::Fps::new(*fps_num, *fps_den);
+                    self.state.document.sequences[*sequence_idx].first_clip_autoset.fps = false;
                     if *sequence_idx == self.state.active_sequence_idx {
                         // Engine reads `state.fps` for the active sequence.
-                        self.state.fps = self.state.sequences[*sequence_idx].fps;
+                        self.state.fps = self.state.document.sequences[*sequence_idx].fps;
                     }
                     self.state.dirty = true;
                 }
                 true
             }
             AppCommand::ReorderSequences { from_idx, to_idx } => {
-                let len = self.state.sequences.len();
+                let len = self.state.document.sequences.len();
                 if *from_idx < len && *to_idx < len && from_idx != to_idx {
-                    let seq = self.state.sequences.remove(*from_idx);
-                    self.state.sequences.insert(*to_idx, seq);
+                    let seq = self.state.document.sequences.remove(*from_idx);
+                    self.state.document.sequences.insert(*to_idx, seq);
                     // Adjust active index
                     if self.state.active_sequence_idx == *from_idx {
                         self.state.active_sequence_idx = *to_idx;
@@ -1009,28 +1009,28 @@ impl KlippApp {
                 true
             }
             AppCommand::AddVideoTrack => {
-                let name = self.state.sequences[self.state.active_sequence_idx].next_track_name(klipp_timeline::TrackKind::Video);
-                self.state.sequences[self.state.active_sequence_idx].add_video_track(name);
+                let name = self.state.document.sequences[self.state.active_sequence_idx].next_track_name(klipp_timeline::TrackKind::Video);
+                self.state.document.sequences[self.state.active_sequence_idx].add_video_track(name);
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 true
             }
             AppCommand::AddAudioTrack => {
-                let name = self.state.sequences[self.state.active_sequence_idx].next_track_name(klipp_timeline::TrackKind::Audio);
-                self.state.sequences[self.state.active_sequence_idx].add_audio_track(name);
+                let name = self.state.document.sequences[self.state.active_sequence_idx].next_track_name(klipp_timeline::TrackKind::Audio);
+                self.state.document.sequences[self.state.active_sequence_idx].add_audio_track(name);
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 true
             }
             AppCommand::AddSubtitleTrack { name } => {
                 let n = name.clone();
-                self.state.sequences[self.state.active_sequence_idx].add_subtitle_track(n);
+                self.state.document.sequences[self.state.active_sequence_idx].add_subtitle_track(n);
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 true
             }
             AppCommand::AddTrackAbove { track_index } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 let ti = *track_index;
                 if let Some(kind) = seq.tracks.get(ti).map(|t| t.kind) {
                     let name = seq.next_track_name(kind);
@@ -1043,7 +1043,7 @@ impl KlippApp {
                 true
             }
             AppCommand::AddTrackBelow { track_index } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 let ti = *track_index;
                 if let Some(kind) = seq.tracks.get(ti).map(|t| t.kind) {
                     let name = seq.next_track_name(kind);
@@ -1057,7 +1057,7 @@ impl KlippApp {
             }
             AppCommand::RemoveTrack { track_id } => {
                 let tid = *track_id;
-                let has_clips = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                let has_clips = self.state.document.sequences[self.state.active_sequence_idx].tracks.iter()
                     .find(|t| t.id == tid)
                     .map(|t| !t.clips.is_empty())
                     .unwrap_or(false);
@@ -1065,8 +1065,8 @@ impl KlippApp {
                     // Show confirmation dialog
                     self.state.confirm_remove_track = Some(tid);
                 } else {
-                    let _ = self.state.sequences[self.state.active_sequence_idx].remove_track(tid);
-                    self.state.sequences[self.state.active_sequence_idx].renumber_tracks();
+                    let _ = self.state.document.sequences[self.state.active_sequence_idx].remove_track(tid);
+                    self.state.document.sequences[self.state.active_sequence_idx].renumber_tracks();
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
                 }
@@ -1081,14 +1081,14 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTrackAutomationKeys { track_index, param, keys } => {
-                if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
+                if let Some(t) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                     t.automation.lanes.insert(*param, keys.clone());
                     self.state.dirty = true;
                 }
                 true
             }
             AppCommand::SetTrackAutomationMode { track_index, mode } => {
-                if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
+                if let Some(t) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                     t.automation.mode = *mode;
                     self.state.dirty = true;
                 }
@@ -1103,7 +1103,7 @@ impl KlippApp {
                 true
             }
             AppCommand::TargetTrackFromBadge { track_id } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 if let Some(i) = seq.tracks.iter().position(|t| t.id == *track_id) {
                     seq.target_from_badge(i);
                     self.state.dirty = true;
@@ -1112,7 +1112,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTrackSourcePatch { track_id, on } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 if let Some(i) = seq.tracks.iter().position(|t| t.id == *track_id) {
                     if *on {
                         seq.patch_source_to(i);
@@ -1151,14 +1151,14 @@ impl KlippApp {
             AppCommand::AutoAlignAudio { reference, recording, by_timecode } => {
                 let pair = crate::auto_align::AlignPair { reference: *reference, recording: *recording };
                 if *by_timecode {
-                    match crate::auto_align::timecode_position(self.state.sequence(), &self.state.media_pool, pair) {
+                    match crate::auto_align::timecode_position(self.state.sequence(), &self.state.document.media_pool, pair) {
                         Ok(new_timeline_in) => {
                             self.send_commands(vec![AppCommand::MoveClip { clip_id: *recording, new_timeline_in }]);
                             self.state.toast.show(format!("Aligned by timecode: the recording starts at {:.2} s", new_timeline_in.to_secs_f64()));
                         }
                         Err(why) => self.state.toast.show(format!("Not aligned: {why}")),
                     }
-                } else if let Some(why) = crate::auto_align::waveform_unavailable(self.state.sequence(), &self.state.media_pool, pair) {
+                } else if let Some(why) = crate::auto_align::waveform_unavailable(self.state.sequence(), &self.state.document.media_pool, pair) {
                     self.state.toast.show(format!("Not aligned: {why}"));
                 } else {
                     self.spawn_audio_sync_between(*reference, *recording, true);
@@ -1171,7 +1171,7 @@ impl KlippApp {
                 // offer the same audio-sync commands without the user
                 // having to hunt for a specific clip on the timeline.
                 let mid = *media_id;
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let found = seq.tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.media_id() == Some(mid))
@@ -1191,7 +1191,7 @@ impl KlippApp {
             }
             AppCommand::AlignToAudioReferenceByMedia { media_id } => {
                 let mid = *media_id;
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let found = seq.tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.media_id() == Some(mid))
@@ -1208,7 +1208,7 @@ impl KlippApp {
             // Linked clips
             AppCommand::UnlinkClip { clip_id } => {
                 // Both halves unlinked, the picture's own sound kept out.
-                self.state.sequences[self.state.active_sequence_idx].unlink(*clip_id);
+                self.state.document.sequences[self.state.active_sequence_idx].unlink(*clip_id);
                 self.state.dirty = true;
                 true
             }
@@ -1216,7 +1216,7 @@ impl KlippApp {
                 let a = *clip_a;
                 let b = *clip_b;
                 // Set bidirectional link
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(c) = track.find_clip_mut(a) {
                         c.linked_clip_id = Some(b);
                     }
@@ -1317,7 +1317,7 @@ impl KlippApp {
             }
             AppCommand::GroupClips { clip_ids } => {
                 let gid = GroupId::new();
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     for clip in &mut track.clips {
                         if clip_ids.contains(&clip.id) {
                             clip.group_id = Some(gid);
@@ -1328,7 +1328,7 @@ impl KlippApp {
                 true
             }
             AppCommand::UngroupClips { group_id } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     for clip in &mut track.clips {
                         if clip.group_id == Some(*group_id) {
                             clip.group_id = None;
@@ -1339,7 +1339,7 @@ impl KlippApp {
                 true
             }
             AppCommand::UngroupClip { clip_id } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     for clip in &mut track.clips {
                         if clip.id == *clip_id {
                             clip.group_id = None;
@@ -1424,7 +1424,7 @@ mod sequence_switch_tests {
         tall.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
         let rate = tall.fps.rate();
         tall.last_playhead = Some(klipp_core::RationalTime::from_frames(48, rate));
-        state.sequences.push(tall);
+        state.document.sequences.push(tall);
         assert!(state.switch_sequence(1, false));
         let at = state.playhead;
         assert_eq!(at, klipp_core::Timecode::from_frames(48, rate), "its own playhead taken back");

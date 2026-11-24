@@ -10,11 +10,11 @@ impl KlippApp {
     /// on the magnetic or the free path as the track calls for. The
     /// framerate prompt has already been answered or skipped by the caller.
     pub(super) fn append_media_to_track(&mut self, media_id: &klipp_core::MediaId, track_index: &usize) {
-                    if let Some(item) = self.state.media_pool.get(media_id).cloned() {
+                    if let Some(item) = self.state.document.media_pool.get(media_id).cloned() {
                         self.adopt_first_clip_format(&item);
                         // Whole frames of the sequence, within the picture (#3230).
-                        let duration = item.placed_length(self.state.sequences[self.state.active_sequence_idx].fps);
-                        if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get(*track_index) {
+                        let duration = item.placed_length(self.state.document.sequences[self.state.active_sequence_idx].fps);
+                        if let Some(track) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get(*track_index) {
                             if track.magnetic_role == klipp_timeline::TrackRole::Primary {
                                 // Magnetic path: append via MagneticEditor
                                 let source_in = klipp_core::RationalTime { value: 0, rate: duration.rate };
@@ -31,13 +31,13 @@ impl KlippApp {
                                 // viewer takes rotation from the media item,
                                 // export from the clip, so a clip without it
                                 // plays upright and exports sideways).
-                                if let Some(item) = self.state.media_pool.get(media_id) {
+                                if let Some(item) = self.state.document.media_pool.get(media_id) {
                                     clip.set_input_log_format(item.detected_log_format);
                                     clip.source_rotation = item.source_rotation;
                                     super::media::starting_role_on(&mut clip, item);
                                 }
                                 let result = klipp_timeline::magnetic::MagneticEditor::append_primary(
-                                    &mut self.state.sequences[self.state.active_sequence_idx], clip);
+                                    &mut self.state.document.sequences[self.state.active_sequence_idx], clip);
                                 // Get the clip id from the result
                                 let mut appended_id = None;
                                 if let klipp_timeline::magnetic_commands::MagneticEditCommand::AppendPrimary { ref appended_clip, .. } = result.command {
@@ -74,10 +74,10 @@ impl KlippApp {
                             } else {
                                 // Legacy path for Free tracks
                                 let mid = *media_id;
-                                let track = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index).unwrap();
+                                let track = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index).unwrap();
                                 let clip_id = track.append_clip(mid, duration);
-                                let rotation = self.state.media_pool.get(&mid).map_or(0, |i| i.source_rotation);
-                                if let Some(c) = self.state.sequences[self.state.active_sequence_idx]
+                                let rotation = self.state.document.media_pool.get(&mid).map_or(0, |i| i.source_rotation);
+                                if let Some(c) = self.state.document.sequences[self.state.active_sequence_idx]
                                     .tracks[*track_index]
                                     .find_clip_mut(clip_id)
                                 {
@@ -86,7 +86,7 @@ impl KlippApp {
                                 self.apply_input_defaults(clip_id, mid);
                                 // The file's audio, linked to it.
                                 let audio = self.append_linked_audio(mid, clip_id);
-                                let clip = self.state.sequences[self.state.active_sequence_idx].tracks[*track_index].find_clip(clip_id).unwrap().clone();
+                                let clip = self.state.document.sequences[self.state.active_sequence_idx].tracks[*track_index].find_clip(clip_id).unwrap().clone();
                                 match audio {
                                     Some(a) => self.state.push_history(EditCommand::LinkedImport {
                                         video: Some((clip, *track_index)),
@@ -117,7 +117,7 @@ impl KlippApp {
     /// `overwrite`, its sound linked under it, as one undo step. The
     /// framerate prompt has already been answered or skipped.
     pub(super) fn place_media_on_track_at(&mut self, media_id: klipp_core::MediaId, track_index: usize, at: klipp_core::Timecode, overwrite: bool) {
-        let Some(item) = self.state.media_pool.get(&media_id).cloned() else {
+        let Some(item) = self.state.document.media_pool.get(&media_id).cloned() else {
             self.state.toast.show("That clip is no longer in the media pool");
             return;
         };
@@ -128,7 +128,7 @@ impl KlippApp {
         let has_video = !item.video_codec.is_empty();
         self.adopt_first_clip_format(&item);
         // Whole frames of the sequence, within the picture (#3230).
-        let len = item.placed_length(self.state.sequences[self.state.active_sequence_idx].fps);
+        let len = item.placed_length(self.state.document.sequences[self.state.active_sequence_idx].fps);
         let start = klipp_core::Timecode { value: 0, rate: len.rate };
         let mut clip = klipp_timeline::Clip::media(media_id, start, len, start, len);
         clip.source_rotation = item.source_rotation;
@@ -200,7 +200,7 @@ impl KlippApp {
         if item.video_codec.is_empty() {
             return None;
         }
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
         let change = seq.adopt_first_clip(item.resolution, item.fps)?;
         self.state.fps = seq.fps;
         Some(change)
@@ -242,10 +242,10 @@ impl KlippApp {
         // may move anchored A1 clips, and the snapshot captures the true
         // pre-edit state.
         let audio_track_info: Option<(usize, Vec<klipp_timeline::Clip>)> = if has_linked_audio {
-            let existing = self.state.sequences[seq_idx].tracks.iter()
+            let existing = self.state.document.sequences[seq_idx].tracks.iter()
                 .position(|t| t.kind == klipp_timeline::TrackKind::Audio);
             let ai = existing.unwrap_or_else(|| {
-                let seq = &mut self.state.sequences[seq_idx];
+                let seq = &mut self.state.document.sequences[seq_idx];
                 let audio_count = seq.tracks.iter()
                     .filter(|t| t.kind == klipp_timeline::TrackKind::Audio)
                     .count();
@@ -254,7 +254,7 @@ impl KlippApp {
                     .position(|t| t.kind == klipp_timeline::TrackKind::Audio)
                     .expect("audio track just added")
             });
-            let before = self.state.sequences[seq_idx].tracks[ai].clips.clone();
+            let before = self.state.document.sequences[seq_idx].tracks[ai].clips.clone();
             Some((ai, before))
         } else {
             None
@@ -264,7 +264,7 @@ impl KlippApp {
         // person put it: the magnetic layer's own snap (8 frames at any
         // zoom) would move it to a nearby cut (#3056).
         let result = klipp_timeline::magnetic::MagneticEditor::three_point_edit(
-            &mut self.state.sequences[seq_idx],
+            &mut self.state.document.sequences[seq_idx],
             new_clip,
             timeline_in,
             true,
@@ -278,7 +278,7 @@ impl KlippApp {
                 // Under the picture, where the edit put it (#3456): the
                 // primary closes up, so a picture asked for past its end
                 // lands at its end, not at the time asked.
-                let (sound_in, sound_out) = under_picture(&self.state.sequences[seq_idx], video_clip_id).unwrap_or((timeline_in, timeline_in + dur));
+                let (sound_in, sound_out) = under_picture(&self.state.document.sequences[seq_idx], video_clip_id).unwrap_or((timeline_in, timeline_in + dur));
                 let mut audio_clip = klipp_timeline::Clip::media(
                     mid,
                     sound_in,
@@ -294,10 +294,10 @@ impl KlippApp {
                 // slot; for non-anchored overlap, overwrite semantics
                 // prevent pile-up. A per-mode audio ripple is a future
                 // polish tracked separately.
-                if let Some(track) = self.state.sequences[seq_idx].tracks.get_mut(ai) {
+                if let Some(track) = self.state.document.sequences[seq_idx].tracks.get_mut(ai) {
                     Self::overwrite_insert_clip_on_track(track, audio_clip);
                 }
-                let audio_clips_after = self.state.sequences[seq_idx].tracks[ai].clips.clone();
+                let audio_clips_after = self.state.document.sequences[seq_idx].tracks[ai].clips.clone();
                 self.state.push_history(EditCommand::SourceLinkedInsert {
                         video_command: result.command,
                         audio_track_index: ai,
@@ -341,7 +341,7 @@ impl KlippApp {
         media_id: klipp_core::MediaId,
         start: klipp_core::Timecode,
     ) -> Option<(Option<klipp_core::ClipId>, crate::history::EditCommand)> {
-        let Some(item) = self.state.media_pool.get(&media_id).cloned() else {
+        let Some(item) = self.state.document.media_pool.get(&media_id).cloned() else {
             self.state.toast.show("That clip is no longer in the media pool");
             return None;
         };
@@ -354,7 +354,7 @@ impl KlippApp {
         let seq_idx = self.state.active_sequence_idx;
         let autoset = self.adopt_first_clip_format(&item);
         // Whole frames of the sequence, within the picture (#3230).
-        let len = item.placed_length(self.state.sequences[seq_idx].fps);
+        let len = item.placed_length(self.state.document.sequences[seq_idx].fps);
         let source_in = klipp_core::Timecode { value: 0, rate: len.rate };
         let source_out = len;
         let end = start + len;
@@ -367,7 +367,7 @@ impl KlippApp {
 
         // Video onto an empty video track, or a new one (inserts at index 0).
         if has_video {
-            let seq = &mut self.state.sequences[seq_idx];
+            let seq = &mut self.state.document.sequences[seq_idx];
             let vi = match empty_track(seq, klipp_timeline::TrackKind::Video) {
                 Some(vi) => vi,
                 None => {
@@ -383,14 +383,14 @@ impl KlippApp {
             Self::overwrite_insert_clip_on_track(&mut seq.tracks[vi], clip);
             video_clip_id = Some(cid);
             self.apply_input_defaults(cid, media_id);
-            if let Some(c) = self.state.sequences[seq_idx].tracks[vi].find_clip(cid) {
+            if let Some(c) = self.state.document.sequences[seq_idx].tracks[vi].find_clip(cid) {
                 hist_video = Some((c.clone(), vi));
             }
         }
 
         // Audio onto a new audio track (pushed to the end).
         if has_audio || !has_video {
-            let seq = &mut self.state.sequences[seq_idx];
+            let seq = &mut self.state.document.sequences[seq_idx];
             let ai = match empty_track(seq, klipp_timeline::TrackKind::Audio) {
                 Some(ai) => ai,
                 None => {
@@ -408,14 +408,14 @@ impl KlippApp {
             let aid = clip.id;
             Self::overwrite_insert_clip_on_track(&mut seq.tracks[ai], clip);
             if let Some(vid) = video_clip_id {
-                for track in self.state.sequences[seq_idx].tracks.iter_mut() {
+                for track in self.state.document.sequences[seq_idx].tracks.iter_mut() {
                     if let Some(vc) = track.find_clip_mut(vid) {
                         vc.linked_clip_id = Some(aid);
                         break;
                     }
                 }
             }
-            if let Some(c) = self.state.sequences[seq_idx].tracks[ai].find_clip(aid) {
+            if let Some(c) = self.state.document.sequences[seq_idx].tracks[ai].find_clip(aid) {
                 hist_audio = Some((c.clone(), ai));
             }
             self.state.selected_clip = Some(video_clip_id.unwrap_or(aid));
@@ -453,7 +453,7 @@ impl KlippApp {
     /// back unlinked and ungrouped. The track indices stay as recorded.
     pub(super) fn refresh_placement_snapshot(&self, seq_idx: usize, entry: &mut crate::history::EditCommand) {
         let crate::history::EditCommand::LinkedImport { video, audio, .. } = entry else { return };
-        let seq = &self.state.sequences[seq_idx];
+        let seq = &self.state.document.sequences[seq_idx];
         for (clip, _) in [video.as_mut(), audio.as_mut()].into_iter().flatten() {
             if let Some(now) = seq.tracks.iter().find_map(|t| t.find_clip(clip.id)) {
                 *clip = now.clone();
@@ -1101,11 +1101,11 @@ impl crate::state::AppState {
     /// the sequence's first, at another rate, and the sequence has not
     /// been asked yet ([`klipp_timeline::Sequence::first_clip_rate_question`]).
     pub(crate) fn rate_question(&self, media_id: &klipp_core::MediaId) -> Option<(klipp_core::Fps, klipp_core::Fps)> {
-        let item = self.media_pool.get(media_id)?;
+        let item = self.document.media_pool.get(media_id)?;
         if item.video_codec.is_empty() || item.resolution.width == 0 || item.resolution.height == 0 {
             return None;
         }
-        let sequence_fps = self.sequences.get(self.active_sequence_idx)?.first_clip_rate_question(item.fps)?;
+        let sequence_fps = self.document.sequences.get(self.active_sequence_idx)?.first_clip_rate_question(item.fps)?;
         Some((item.fps, sequence_fps))
     }
 
@@ -1114,7 +1114,7 @@ impl crate::state::AppState {
     /// and the answer is kept with the project. `Some` with the command
     /// that changes the rate, when the answer was to change it.
     pub(crate) fn answer_rate_question(&mut self, seq_idx: usize, change_to: Option<klipp_core::Fps>) -> Option<AppCommand> {
-        let seq = self.sequences.get_mut(seq_idx)?;
+        let seq = self.document.sequences.get_mut(seq_idx)?;
         seq.first_clip_autoset.rate_answered = true;
         self.dirty = true;
         change_to.map(|fps| AppCommand::SetSequenceFps { sequence_idx: seq_idx, fps_num: fps.num, fps_den: fps.den })
@@ -1131,7 +1131,7 @@ mod rate_question_tests {
     /// 50 fps video files in its pool.
     fn project() -> (AppState, MediaId, MediaId) {
         let mut state = AppState::default();
-        let seq = &mut state.sequences[0];
+        let seq = &mut state.document.sequences[0];
         seq.fps = Fps { num: 25, den: 1 };
         seq.first_clip_autoset.fps = false;
         let mut file = |name: &str| {
@@ -1139,7 +1139,7 @@ mod rate_question_tests {
             item.fps = Fps { num: 50, den: 1 };
             item.video_codec = "h264".into();
             item.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
-            state.media_pool.add(item)
+            state.document.media_pool.add(item)
         };
         let (a, b) = (file("first"), file("second"));
         (state, a, b)
@@ -1186,9 +1186,9 @@ mod rate_question_tests {
         assert!(state.answer_rate_question(0, None).is_none(), "Don't Change changes no rate");
         assert_eq!(state.rate_question(&second), None, "the second clip asks nothing");
         assert_eq!(state.rate_question(&first), None, "nor the first again");
-        assert_eq!(state.sequences[0].fps, Fps { num: 25, den: 1 });
+        assert_eq!(state.document.sequences[0].fps, Fps { num: 25, den: 1 });
 
-        let saved = serde_json::to_value(&state.sequences[0]).unwrap();
+        let saved = serde_json::to_value(&state.document.sequences[0]).unwrap();
         let reopened: klipp_timeline::Sequence = serde_json::from_value(saved.clone()).unwrap();
         assert!(reopened.first_clip_autoset.rate_answered, "kept with the project");
         let mut before = saved;
@@ -1242,7 +1242,7 @@ mod rate_question_tests {
         assert_eq!(choice, Some(FrameRateMismatchChoice::Change));
         let cmd = state.answer_rate_question(0, Some(Fps { num: 50, den: 1 }));
         assert!(matches!(cmd, Some(AppCommand::SetSequenceFps { sequence_idx: 0, fps_num: 50, fps_den: 1 })), "{cmd:?}");
-        state.media_pool.get_mut(&second).unwrap().fps = Fps { num: 30, den: 1 };
+        state.document.media_pool.get_mut(&second).unwrap().fps = Fps { num: 30, den: 1 };
         assert_eq!(state.rate_question(&second), None);
     }
 }

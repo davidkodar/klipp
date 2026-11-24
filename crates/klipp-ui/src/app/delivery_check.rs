@@ -56,7 +56,7 @@ impl KlippApp {
 /// The brief's "reused footage is a warning" set, one undo step; the rest
 /// of the brief kept, and one made when there was none.
 fn set_reuse_warns(state: &mut crate::state::AppState, warns: bool) {
-    let seq = &mut state.sequences[state.active_sequence_idx];
+    let seq = &mut state.document.sequences[state.active_sequence_idx];
     let old = seq.brief.clone();
     let brief = klipp_timeline::Brief { reused_footage_warns: warns, ..old.clone().unwrap_or_default() };
     seq.brief = Some(brief.clone());
@@ -73,17 +73,17 @@ mod tests {
     #[test]
     fn reuse_warns_is_a_brief_edit_undone_in_one_step() {
         let mut s = crate::state::AppState::default();
-        s.sequences[0].brief = None;
+        s.document.sequences[0].brief = None;
         set_reuse_warns(&mut s, true);
         assert!(s.sequence().brief.as_ref().is_some_and(|b| b.reused_footage_warns));
-        s.sequences[0].brief.as_mut().unwrap().language = Some("sv".into());
+        s.document.sequences[0].brief.as_mut().unwrap().language = Some("sv".into());
         set_reuse_warns(&mut s, false);
         let b = s.sequence().brief.clone().unwrap();
         assert_eq!((b.reused_footage_warns, b.language.as_deref()), (false, Some("sv")));
         for _ in 0..2 {
             let entry = s.take_undo().expect("a step to undo");
             let active = s.active_sequence_idx;
-            klipp_document::apply::DocumentView { sequences: &mut s.sequences, active, media_pool: &mut s.media_pool, fps: &mut s.fps }.apply_inverse(&entry.command);
+            klipp_document::apply::DocumentView { sequences: &mut s.document.sequences, active, media_pool: &mut s.document.media_pool, fps: &mut s.fps }.apply_inverse(&entry.command);
         }
         assert!(s.sequence().brief.is_none());
     }

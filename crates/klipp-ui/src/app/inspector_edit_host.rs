@@ -43,7 +43,7 @@ impl InspectorEditHost<'_> {
                     let mut old_snap = None;
                     let mut old_linked_snap = None;
                     {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                         if let Some(c) = seq.all_clips().find(|c| c.id == *clip_id) {
                             linked_partner_id = c.linked_clip_id;
                             old_snap = Some(KeyframeSnapshot::from_clip(c));
@@ -83,13 +83,13 @@ impl InspectorEditHost<'_> {
                         })
                         .unwrap_or_else(|| {
                             // Fallback: capture current state (no-op undo)
-                            let snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            let snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                                 .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip)
                                 .unwrap_or_else(KeyframeSnapshot::empty);
                             (snap.clone(), None, None, "Move Keyframe")
                         });
                     // Capture current (post-drag) state
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     let new_state = seq.all_clips().find(|c| c.id == *clip_id)
                         .map(KeyframeSnapshot::from_clip)
                         .unwrap_or_else(|| old_state.clone());
@@ -119,9 +119,9 @@ impl InspectorEditHost<'_> {
     pub(super) fn apply_video_keyframes(&mut self, cmd: &AppCommand) -> bool {
         match cmd {
                 AppCommand::AddVideoKeyframe { clip_id, param, time_secs, value } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                    let old_state = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.edit_video_param_keyframes(*param, |keyframes| {
                                 klipp_core::keyframe::upsert_keyframe(keyframes, *time_secs, *value);
@@ -135,7 +135,7 @@ impl InspectorEditHost<'_> {
                     let in_picture = !matches!(param, klipp_core::VideoParam::MatteFeather | klipp_core::VideoParam::MatteChoke);
                     let in_drag = in_picture && self.state.active_history().is_dragging_picture(*clip_id);
                     if let Some(old_snap) = old_state.filter(|_| !in_drag) {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                             .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         if let Some(new_snap) = new_snap {
                             self.state.push_history(EditCommand::EditKeyframes {
@@ -155,9 +155,9 @@ impl InspectorEditHost<'_> {
                     true
                 }
                 AppCommand::SetVideoKeyframeInterpolation { clip_id, param, keyframe_index, interpolation } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                    let old_state = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.edit_video_param_keyframes(*param, |keyframes| {
                                 klipp_core::keyframe::set_interpolation_at(keyframes, *keyframe_index, *interpolation);
@@ -166,7 +166,7 @@ impl InspectorEditHost<'_> {
                         }
                     }
                     if let Some(old_snap) = old_state {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                             .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         if let Some(new_snap) = new_snap {
                             self.state.push_history(EditCommand::EditKeyframes {
@@ -186,7 +186,7 @@ impl InspectorEditHost<'_> {
                     true
                 }
                 AppCommand::SetVideoKeyframeTangent { clip_id, param, keyframe_index, tangent_in, tangent_out, handles } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.edit_video_param_keyframes(*param, |keyframes| {
                                 klipp_core::keyframe::edit_handles(keyframes, *keyframe_index, *tangent_in, *tangent_out, *handles);
@@ -200,9 +200,9 @@ impl InspectorEditHost<'_> {
                     true
                 }
                 AppCommand::RemoveVideoKeyframe { clip_id, param, time_secs } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                    let old_state = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.edit_video_param_keyframes(*param, |keyframes| {
                                 klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
@@ -211,7 +211,7 @@ impl InspectorEditHost<'_> {
                         }
                     }
                     if let Some(old_snap) = old_state {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                             .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         if let Some(new_snap) = new_snap {
                             self.state.push_history(EditCommand::EditKeyframes {
@@ -231,7 +231,7 @@ impl InspectorEditHost<'_> {
                     true
                 }
                 AppCommand::MoveVideoKeyframe { clip_id, param, index, new_time_secs, new_value } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.edit_video_param_keyframes(*param, |keyframes| {
                                 if let Some(kf) = keyframes.get_mut(*index) {
@@ -249,9 +249,9 @@ impl InspectorEditHost<'_> {
                     true
                 }
                 AppCommand::ScaleVideoKeyframeTiming { clip_id, param, factor } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                    let old_state = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             let clip_dur = clip.duration().to_secs_f64();
                             clip.edit_video_param_keyframes(*param, |keyframes| {
@@ -267,7 +267,7 @@ impl InspectorEditHost<'_> {
                         }
                     }
                     if let Some(old_snap) = old_state {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                             .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         if let Some(new_snap) = new_snap {
                             self.state.push_history(EditCommand::EditKeyframes {
@@ -287,7 +287,7 @@ impl InspectorEditHost<'_> {
                     true
                 }
                 AppCommand::InsertVideoKeyframeBump { clip_id, param, center_time, bump_value, base_value, duration_secs, ramp_secs } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                    let old_state = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                     let bump_kfs: Vec<(f64, f32)> = vec![
                         (center_time - duration_secs / 2.0 - ramp_secs, *base_value),
@@ -295,7 +295,7 @@ impl InspectorEditHost<'_> {
                         (center_time + duration_secs / 2.0, *bump_value),
                         (center_time + duration_secs / 2.0 + ramp_secs, *base_value),
                     ];
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             let clip_dur = clip.duration().to_secs_f64();
                             clip.edit_video_param_keyframes(*param, |keyframes| {
@@ -317,7 +317,7 @@ impl InspectorEditHost<'_> {
                         }
                     }
                     if let Some(old_snap) = old_state {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                             .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         if let Some(new_snap) = new_snap {
                             self.state.push_history(EditCommand::EditKeyframes {
@@ -338,11 +338,11 @@ impl InspectorEditHost<'_> {
                     true
                 }
                 AppCommand::ApplyKenBurns { clip_id, start_scale, end_scale, start_pos_x, start_pos_y, end_pos_x, end_pos_y } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                    let old_state = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                     // The keys are the placement's own, and a clip always has
                     // a placement: no Transform to add (M3 step 13).
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             let duration = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
                             let ease_t = 0.42 * duration;
@@ -399,7 +399,7 @@ impl InspectorEditHost<'_> {
                         }
                     }
                     if let Some(old_snap) = old_state {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                             .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         if let Some(new_snap) = new_snap {
                             self.state.push_history(EditCommand::EditKeyframes {
@@ -419,9 +419,9 @@ impl InspectorEditHost<'_> {
                     true
                 }
                 AppCommand::ClearTransformKeyframes { clip_id } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                    let old_state = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.edit_transform_scale_keyframes(|v| v.clear());
                             clip.edit_transform_scale_y_keyframes(|v| v.clear());
@@ -432,7 +432,7 @@ impl InspectorEditHost<'_> {
                         }
                     }
                     if let Some(old_snap) = old_state {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
                             .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         if let Some(new_snap) = new_snap {
                             self.state.push_history(EditCommand::EditKeyframes {
@@ -452,7 +452,7 @@ impl InspectorEditHost<'_> {
                     true
                 }
                 AppCommand::ClearVideoParamKeyframes { clip_id, param } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             match param {
                                 klipp_core::VideoParam::Opacity => clip.edit_opacity_keyframes(|v| v.clear()),
@@ -472,7 +472,7 @@ impl InspectorEditHost<'_> {
                     true
                 }
                 AppCommand::CopyVideoKeyframes { clip_id, param } => {
-                    if let Some(clip) = self.state.sequences[self.state.active_sequence_idx]
+                    if let Some(clip) = self.state.document.sequences[self.state.active_sequence_idx]
                         .all_clips().find(|c| c.id == *clip_id)
                     {
                         let kfs = clip.video_param_keyframes(*param);
@@ -485,9 +485,9 @@ impl InspectorEditHost<'_> {
                 }
                 AppCommand::PasteVideoKeyframes { clip_id, param } => {
                     if let Some(ref cb) = self.state.keyframe_clipboard.clone() {
-                        let old_state = self.state.sequences[self.state.active_sequence_idx]
+                        let old_state = self.state.document.sequences[self.state.active_sequence_idx]
                             .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                        let target_dur = self.state.sequences[self.state.active_sequence_idx]
+                        let target_dur = self.state.document.sequences[self.state.active_sequence_idx]
                             .all_clips().find(|c| c.id == *clip_id).map(|c| c.duration().to_secs_f64());
                         if let Some(target_dur) = target_dur {
                             let scale = if cb.source_duration_secs > 0.0 { target_dur / cb.source_duration_secs } else { 1.0 };
@@ -497,14 +497,14 @@ impl InspectorEditHost<'_> {
                                 k
                             }).collect();
                             new_kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
-                            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                            for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                                 if let Some(clip) = track.find_clip_mut(*clip_id) {
                                     clip.edit_video_param_keyframes(*param, |target| *target = new_kfs);
                                     break;
                                 }
                             }
                             if let Some(old_snap) = old_state {
-                                let new_snap = self.state.sequences[self.state.active_sequence_idx]
+                                let new_snap = self.state.document.sequences[self.state.active_sequence_idx]
                                     .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                                 if let Some(new_snap) = new_snap {
                                     self.state.push_history(EditCommand::EditKeyframes {
@@ -526,9 +526,9 @@ impl InspectorEditHost<'_> {
                     true
                 }
                 AppCommand::ReverseVideoKeyframes { clip_id, param } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx]
+                    let old_state = self.state.document.sequences[self.state.active_sequence_idx]
                         .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.edit_video_param_keyframes(*param, |keyframes| {
                                 if keyframes.len() >= 2 {
@@ -548,7 +548,7 @@ impl InspectorEditHost<'_> {
                         }
                     }
                     if let Some(old_snap) = old_state {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx]
+                        let new_snap = self.state.document.sequences[self.state.active_sequence_idx]
                             .all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                         if let Some(new_snap) = new_snap {
                             self.state.push_history(EditCommand::EditKeyframes {
@@ -614,9 +614,9 @@ impl InspectorEditHost<'_> {
     /// edited in the list, one keyframe step named `label` (none for a
     /// drag's tick).
     fn placed_effect_keys(&mut self, clip_id: klipp_core::ClipId, effect_index: usize, param_name: &str, label: Option<&'static str>, edit: impl FnOnce(&mut Vec<klipp_core::Keyframe>)) -> bool {
-        let snapshot = |state: &AppState| state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).map(KeyframeSnapshot::from_clip);
+        let snapshot = |state: &AppState| state.document.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).map(KeyframeSnapshot::from_clip);
         let old_state = snapshot(self.state);
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
         let Some(clip) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return false };
         // An index past the list names no effect: no track is started there.
         let Some(id) = clip.effect_id_at(effect_index) else { return false };
@@ -642,7 +642,7 @@ impl InspectorEditHost<'_> {
     /// or the picture refused the edit, said in a toast.
     fn effect_keys(&mut self, clip_id: klipp_core::ClipId, effect_index: usize, param_name: &str, label: Option<&'static str>, edit: impl FnOnce(&mut Vec<klipp_core::Keyframe>)) -> bool {
         use klipp_graph_format::path::{NodePath, Root};
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return false };
         // An index past the list names no effect: no track is started there.
         let Some(node) = clip.effect_node_at(false, effect_index) else { return false };
@@ -669,7 +669,7 @@ impl InspectorEditHost<'_> {
         let done = match label {
             Some(label) => self.state.apply_path_ops(&[op], label),
             None => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 match seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) {
                     Some(clip) => clip.apply_picture_ops(&[op]).map(|_| self.state.dirty = true),
                     None => return false,
@@ -692,7 +692,7 @@ impl InspectorEditHost<'_> {
     /// whether a ramp moved the clip's speed; `None` when the clip refused
     /// it, said in a toast.
     fn effect_edits(&mut self, clip_id: klipp_core::ClipId, edits: &[klipp_timeline::EffectEdit], description: &'static str, record: bool) -> Option<bool> {
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
         let clip = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id))?;
         let before = clip.clone();
         let ramped = edits.iter().any(|e| match *e {
@@ -752,7 +752,7 @@ impl InspectorEditHost<'_> {
 
     /// The clip's picture fields now, for a drag's ends.
     pub(super) fn picture_now(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::ClipPictureFields> {
-        self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).map(|c| c.picture.clone())
+        self.state.document.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).map(|c| c.picture.clone())
     }
 
     /// Close an effect gesture whose release was never seen: as one
@@ -770,7 +770,7 @@ impl InspectorEditHost<'_> {
             // What the All effects switch turned off, set with its
             // switches, in their step: an undo puts the list back too.
             AppCommand::SetEffectsSwitchedOff { clip_id, nodes } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) else { return true };
                 if clip.effects_switched_off == *nodes {
                     return true;
@@ -813,7 +813,7 @@ impl InspectorEditHost<'_> {
                 true
             }
             AppCommand::ToggleBuiltinEffectEnabled { clip_id, index } => {
-                let on = self.state.sequences[self.state.active_sequence_idx]
+                let on = self.state.document.sequences[self.state.active_sequence_idx]
                     .all_clips()
                     .find(|c| c.id == *clip_id)
                     .and_then(|c| {
@@ -891,7 +891,7 @@ impl InspectorEditHost<'_> {
                         before = from;
                     }
                 }
-                if let Some(clip) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find_map(|t| t.find_clip_mut(*clip_id)) {
+                if let Some(clip) = self.state.document.sequences[self.state.active_sequence_idx].tracks.iter_mut().find_map(|t| t.find_clip_mut(*clip_id)) {
                     clip.restore_picture(&before);
                 }
                 self.side.sync_sequence(self.state);
@@ -985,7 +985,7 @@ mod tests {
     struct Recorder(RefCell<Vec<Side>>);
     impl InspectorSideEffects for Recorder {
         fn sync_sequence(&self, state: &AppState) {
-            let clip = state.sequences[state.active_sequence_idx].all_clips().next().unwrap();
+            let clip = state.document.sequences[state.active_sequence_idx].all_clips().next().unwrap();
             self.0.borrow_mut().push(Side::Sync { picture: (*clip.picture_v2().unwrap()).clone(), speed: clip.speed, end: clip.timeline_out });
         }
         fn send(&self, command: AppCommand) { self.0.borrow_mut().push(Side::Command(command)); }
@@ -996,10 +996,10 @@ mod tests {
         let clip = TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0))).effects(effects.iter().cloned()).build();
         let id = clip.id;
         let mut state = AppState::default();
-        state.sequences[0].tracks[0].clips.push(clip);
+        state.document.sequences[0].tracks[0].clips.push(clip);
         (state, id)
     }
-    fn clip(state: &AppState) -> &klipp_timeline::Clip { state.sequences[0].all_clips().next().unwrap() }
+    fn clip(state: &AppState) -> &klipp_timeline::Clip { state.document.sequences[0].all_clips().next().unwrap() }
     fn run(state: &mut AppState, side: &dyn InspectorSideEffects, command: AppCommand) {
         state.before_dispatch(&command);
         assert!(InspectorEditHost { state, side }.apply(&command));
@@ -1007,8 +1007,8 @@ mod tests {
     fn history(state: &mut AppState, forward: bool) {
         let command = if forward { state.active_history_mut().redo() } else { state.active_history_mut().undo() }.unwrap().command;
         let mut doc = klipp_document::apply::DocumentView {
-            sequences: &mut state.sequences, active: state.active_sequence_idx,
-            media_pool: &mut state.media_pool, fps: &mut state.fps,
+            sequences: &mut state.document.sequences, active: state.active_sequence_idx,
+            media_pool: &mut state.document.media_pool, fps: &mut state.fps,
         };
         if forward { doc.apply_forward(&command); } else { doc.apply_inverse(&command); }
     }
@@ -1119,7 +1119,7 @@ mod tests {
     #[test]
     fn live_adapter_updates_the_engine_mirror_and_clears_old_param_writes() {
         let (mut state, id) = fixture(&[E::GaussianBlur { radius: 3.0 }]);
-        let sequence = klipp_timeline::SharedSequence::new(state.sequences[0].clone());
+        let sequence = klipp_timeline::SharedSequence::new(state.document.sequences[0].clone());
         let queue = ArrayQueue::new(4);
         queue.push(ParamChange { clip_id: id, node_id: uuid::Uuid::nil(), param: "stale".into(), value: 1.0 }).unwrap();
         let (tx, rx) = crossbeam_channel::unbounded();

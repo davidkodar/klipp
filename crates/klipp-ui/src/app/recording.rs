@@ -14,7 +14,7 @@ impl KlippApp {
         }
 
         // Find the armed track (first in the active sequence — MVP is single-track).
-        let Some(seq) = self.state.sequences.get(self.state.active_sequence_idx) else {
+        let Some(seq) = self.state.document.sequences.get(self.state.active_sequence_idx) else {
             return;
         };
         let armed_track = seq.tracks.iter().find(|t| t.record_armed);
@@ -149,7 +149,7 @@ impl KlippApp {
             return;
         }
         self.state.pending_take = None;
-        let Some(secs) = self.state.media_pool.get(&media_id).map(|m| m.duration.to_secs_f64()) else { return };
+        let Some(secs) = self.state.document.media_pool.get(&media_id).map(|m| m.duration.to_secs_f64()) else { return };
         let Some((track, clip)) = crate::punch_in::place(self.state.sequence(), &punch, media_id, secs) else {
             self.state.toast.show("The take stopped before the In; it is in the media pool");
             return;

@@ -194,9 +194,9 @@ pub(super) fn mask_track_stopped(span: (f64, f64), clip_secs: f64) -> String {
 /// handed to the job a socket caller is following, if one is.
 pub(super) fn report_mask_track(state: &crate::state::AppState, clip_id: klipp_core::ClipId, point_index: usize, lost: bool) -> String {
     let fps = state.fps.as_f64();
-    let followed = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).and_then(|clip| {
+    let followed = state.document.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).and_then(|clip| {
         let tp = clip.track_points.get(point_index)?;
-        let times = window_track_times(clip, tp, &state.media_pool, fps);
+        let times = window_track_times(clip, tp, &state.document.media_pool, fps);
         Some(((times.first()?.1, times.last()?.1), clip.duration().to_secs_f64()))
     });
     let Some((span_secs, clip_secs)) = followed else {
@@ -251,12 +251,12 @@ mod window_track_tests {
         let mut state = crate::state::AppState { fps: klipp_core::Fps::new(30, 1), ..Default::default() };
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/walk.mov".into(), None);
         item.fps = klipp_core::Fps::new(30, 1);
-        let media = state.media_pool.add(item);
+        let media = state.document.media_pool.add(item);
         let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 30);
         let mut clip = klipp_timeline::Clip::media(media, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
         let id = clip.id;
         clip.track_points.push(klipp_core::TrackPoint { start_frame: 30, positions: vec![(0.5, 0.5); 16], ..Default::default() });
-        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
+        state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
 
         assert!(report_mask_track(&state, id, 0, true).contains("stopped early"), "nothing following it, still said");
         state.control_shared.start_mask_track(id, "job".into()).unwrap();

@@ -86,15 +86,15 @@ pub(super) const ANALYSES: &[Analysis] = &[
 /// put in the pool as a stand-in file that exists, as a key reads it.
 pub(super) fn measure(state: &mut crate::state::AppState, clip: &klipp_timeline::Clip, a: &Analysis) {
     let Some(media) = clip.media_id() else { return };
-    if state.media_pool.get(&media).is_none() {
+    if state.document.media_pool.get(&media).is_none() {
         let Ok(path) = std::env::current_exe() else { return };
         let mut item = klipp_media::MediaItem::synthetic_for_test(path, None);
         item.id = media;
         item.fps = klipp_core::Fps::new(24, 1);
         item.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
-        state.media_pool.add(item);
+        state.document.media_pool.add(item);
     }
-    let Some(key) = state.media_pool.get(&media).and_then(|item| klipp_analysis::assets::asset_key(a.kind, item)) else { return };
+    let Some(key) = state.document.media_pool.get(&media).and_then(|item| klipp_analysis::assets::asset_key(a.kind, item)) else { return };
     state.analyses.insert(key, std::sync::Arc::new((a.measured)()));
 }
 
@@ -729,7 +729,7 @@ fn pool_item(run: &mut Run, id: klipp_core::MediaId, name: &str, path: &str) {
     item.kind = klipp_media::MediaItemKind::File;
     item.path = path.into();
     item.video_codec = "h264".into();
-    run.state.media_pool.add(item);
+    run.state.document.media_pool.add(item);
 }
 
 /// A media source's item editor's cases: opened, an item gone from the

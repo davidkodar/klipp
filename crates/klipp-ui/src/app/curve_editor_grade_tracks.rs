@@ -35,10 +35,10 @@ impl Run {
     /// A Corrector's clip, its exposure at 0.7, the playhead `at` seconds in.
     fn new(at: f64) -> Self {
         let (mut state, clip, node) = super::grade_inspector_tests::graded(NodeKind::Corrector).expect("a Corrector");
-        let c = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+        let c = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
         klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().find(|n| n.id == node).unwrap().params.exposure = Some(0.7));
         state.selected_clip = Some(clip);
-        let start = state.sequences[0].all_clips().find(|c| c.id == clip).unwrap().timeline_in;
+        let start = state.document.sequences[0].all_clips().find(|c| c.id == clip).unwrap().timeline_in;
         state.playhead = klipp_core::Timecode::from_secs_f64(start.to_secs_f64() + at, start.rate);
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
@@ -48,7 +48,7 @@ impl Run {
     }
 
     fn clip(&self) -> &klipp_timeline::Clip {
-        self.state.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap()
+        self.state.document.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap()
     }
 
     /// The Corrector's path in the clip's picture.
@@ -69,8 +69,8 @@ impl Run {
         }
         let clip = self.clip().clone();
         let mut state = AppState::default();
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        state.sequences[0].tracks[v1].clips.push(clip);
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.document.sequences[0].tracks[v1].clips.push(clip);
         state.selected_clip = self.state.selected_clip;
         state.playhead = self.state.playhead;
         self.state = state;
@@ -157,7 +157,7 @@ impl Run {
         self.state.before_dispatch(&if forward { AppCommand::Redo } else { AppCommand::Undo });
         // The step the app takes: the sequence's or the project's (#1986).
         let entry = if forward { self.state.take_redo() } else { self.state.take_undo() }.ok_or("no step to take")?;
-        let mut doc = klipp_document::apply::DocumentView { sequences: &mut self.state.sequences, active: self.state.active_sequence_idx, media_pool: &mut self.state.media_pool, fps: &mut self.state.fps };
+        let mut doc = klipp_document::apply::DocumentView { sequences: &mut self.state.document.sequences, active: self.state.active_sequence_idx, media_pool: &mut self.state.document.media_pool, fps: &mut self.state.fps };
         if forward { doc.apply_forward(&entry.command); } else { doc.apply_inverse(&entry.command); }
         Ok(())
     }

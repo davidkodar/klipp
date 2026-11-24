@@ -225,9 +225,9 @@ pub fn show(
 
     // Collect and filter items
     let search_lower = search_query.to_lowercase();
-    let smart_bins = state.media_pool.smart_bins.clone();
+    let smart_bins = state.document.media_pool.smart_bins.clone();
     let mut items: Vec<_> = state
-        .media_pool
+        .document.media_pool
         .all()
         .filter(|m| {
             if let Some(ref bin) = selected_bin {
@@ -296,7 +296,7 @@ pub fn show(
             synced_audio: m.synced_audio.is_some(),
             is_still: m.is_still,
             span_parts: m.span.map(|sp| {
-                let mut parts: Vec<(u32, MediaId)> = state.media_pool.all().filter_map(|o| o.span.filter(|os| os.first == sp.first).map(|os| (os.index, o.id))).collect();
+                let mut parts: Vec<(u32, MediaId)> = state.document.media_pool.all().filter_map(|o| o.span.filter(|os| os.first == sp.first).map(|os| (os.index, o.id))).collect();
                 parts.sort_by_key(|(i, _)| *i);
                 parts.into_iter().map(|(_, id)| id).collect()
             }).unwrap_or_default(),
@@ -310,7 +310,7 @@ pub fn show(
     // Sort by the chosen field's key; stars descending by default, as a
     // rating sort is read.
     let keys: std::collections::HashMap<MediaId, klipp_media::SortKey> =
-        state.media_pool.all().map(|m| (m.id, sort_by.sort_key(m))).collect();
+        state.document.media_pool.all().map(|m| (m.id, sort_by.sort_key(m))).collect();
     let missing = klipp_media::SortKey::Text(String::new());
     items.sort_by(|a, b| keys.get(&a.id).unwrap_or(&missing).cmp(keys.get(&b.id).unwrap_or(&missing)));
     if *sort_by == SortBy::Rating {
@@ -322,8 +322,8 @@ pub fn show(
 
     // Bins first, by name, then the clips in none (#2621). An empty bin
     // shows while nothing narrows the pool: it was made to be filled.
-    let narrowed = items.len() < state.media_pool.all().count();
-    let mut bins_seen: Vec<Option<String>> = bin_names(&state.media_pool)
+    let narrowed = items.len() < state.document.media_pool.all().count();
+    let mut bins_seen: Vec<Option<String>> = bin_names(&state.document.media_pool)
         .into_iter()
         .filter(|name| !narrowed || items.iter().any(|i| i.bin.as_deref() == Some(name.as_str())))
         .map(Some)
@@ -474,7 +474,7 @@ fn pool_menu(ui: &mut egui::Ui, view_mode: &mut BrowserViewMode, sort_by: &mut S
 
 /// Whether any selected item is in a bin: Remove from Bin applies.
 fn any_in_a_bin(state: &AppState) -> bool {
-    state.selected_media_ids.iter().any(|id| state.media_pool.get(id).is_some_and(|m| m.bin.is_some()))
+    state.selected_media_ids.iter().any(|id| state.document.media_pool.get(id).is_some_and(|m| m.bin.is_some()))
 }
 
 /// Every bin's name, by name: the pool's bins and any an item names.
@@ -878,7 +878,7 @@ fn paint_synthetic_title_thumb(
 /// badge and the delete-confirm prompt.
 pub(crate) fn count_linked_instances(state: &AppState, asset_id: MediaId) -> usize {
     let mut n = 0;
-    for seq in &state.sequences {
+    for seq in &state.document.sequences {
         for track in &seq.tracks {
             for clip in &track.clips {
                 if clip.linked_title_asset_id == Some(asset_id) {
@@ -1037,7 +1037,7 @@ fn render_list_view(
     sort_ascending: &mut bool,
 ) {
     render_column_header(ui, theme, columns, sort_by, sort_ascending);
-    let bin_list = bin_names(&state.media_pool);
+    let bin_list = bin_names(&state.document.media_pool);
     for bin in bins_seen {
         let bin_items: Vec<_> = items.iter().filter(|i| &i.bin == bin).collect();
         if !bin_section(ui, state, theme, bin, bins_seen, bin_items.len(), renaming_bin, cmds) {
@@ -1315,7 +1315,7 @@ fn render_grid_view(
     let thumb_h = (card_w / GRID_THUMB_ASPECT).round();
     let card_h = thumb_h + GRID_INFO_H;
 
-    let bin_list = bin_names(&state.media_pool);
+    let bin_list = bin_names(&state.document.media_pool);
     for bin in bins_seen {
         let bin_items: Vec<_> = items.iter().filter(|i| &i.bin == bin).collect();
         if !bin_section(ui, state, theme, bin, bins_seen, bin_items.len(), renaming_bin, cmds) {
@@ -1372,7 +1372,7 @@ fn render_grid_view(
                 ui.painter().rect_filled(thumb_rect, 0.0, theme.bg_raised);
                 let icon_size = 24.0;
                 let icon_rect = egui::Rect::from_center_size(thumb_rect.center(), egui::vec2(icon_size, icon_size));
-                let sound_only = state.media_pool.get(&item.id).is_some_and(klipp_media::MediaItem::sound_only);
+                let sound_only = state.document.media_pool.get(&item.id).is_some_and(klipp_media::MediaItem::sound_only);
                 placeholder_icon(sound_only).image(icon_size).tint(theme.text_dim).paint_at(ui, icon_rect);
             }
 
@@ -1427,8 +1427,8 @@ fn render_grid_view(
             // codecs, channels, sample rate, file size, in/out marks.
             // Pulls from the canonical MediaItem in the pool because the
             // grid's `item` is a denormalised `MediaRow` snapshot.
-            if let Some(media_item) = state.media_pool.get(&item.id) {
-                draw_info_icon_with_tooltip(ui, media_item, state.media_pool.refused.get(&media_item.id).map(String::as_str), thumb_rect, theme);
+            if let Some(media_item) = state.document.media_pool.get(&item.id) {
+                draw_info_icon_with_tooltip(ui, media_item, state.document.media_pool.refused.get(&media_item.id).map(String::as_str), thumb_rect, theme);
             }
 
             // Hover skim (grid view: white scrubber line over thumbnail)
@@ -1837,7 +1837,7 @@ fn handle_hover_skim(
     let skim_time = dur_secs * fraction as f64;
 
     // Check if skim file is ready (Layer 3 — full resolution per-frame decode)
-    let has_skim_file = state.media_pool.get(&item.id)
+    let has_skim_file = state.document.media_pool.get(&item.id)
         .and_then(|m| m.skim_file.as_ref())
         .is_some_and(|p| p.exists());
 
@@ -2212,7 +2212,7 @@ fn sync_pair_of(state: &AppState) -> Option<(MediaId, MediaId)> {
     if state.selected_media_ids.len() != 2 {
         return None;
     }
-    let items: Vec<&klipp_media::MediaItem> = state.selected_media_ids.iter().filter_map(|id| state.media_pool.get(id)).collect();
+    let items: Vec<&klipp_media::MediaItem> = state.selected_media_ids.iter().filter_map(|id| state.document.media_pool.get(id)).collect();
     let [a, b] = items[..] else { return None };
     let is_video = |m: &klipp_media::MediaItem| !m.video_codec.is_empty() && !m.is_still;
     let is_audio = |m: &klipp_media::MediaItem| m.has_audio && m.video_codec.is_empty();
@@ -2748,7 +2748,7 @@ mod pool_style_tests {
         for view in [BrowserViewMode::Grid, BrowserViewMode::List] {
             let mut state = AppState::default();
             let m = item("A001_C002.mov", "h264", "aac");
-            let id = state.media_pool.add(m);
+            let id = state.document.media_pool.add(m);
             let mut panel = crate::browser::BrowserPanel { browser_view_mode: view, ..Default::default() };
             let ctx = egui::Context::default();
             let theme = KlippTheme::default();
@@ -2786,7 +2786,7 @@ mod pool_style_tests {
     fn a_double_click_only_opens_the_item_in_source() {
         for view in [BrowserViewMode::Grid, BrowserViewMode::List] {
             let mut state = AppState::default();
-            let id = state.media_pool.add(item("A001_C002.mov", "h264", "aac"));
+            let id = state.document.media_pool.add(item("A001_C002.mov", "h264", "aac"));
             let mut panel = crate::browser::BrowserPanel { browser_view_mode: view, ..Default::default() };
             let ctx = egui::Context::default();
             let theme = KlippTheme::default();
@@ -2830,7 +2830,7 @@ mod pool_style_tests {
     fn a_click_ends_a_range_and_the_menus_add_keeps_it() {
         let mut state = AppState::default();
         let m = item("A001_C002.mov", "h264", "aac");
-        let id = state.media_pool.add(m);
+        let id = state.document.media_pool.add(m);
         let mut panel = crate::browser::BrowserPanel { browser_view_mode: BrowserViewMode::Grid, ..Default::default() };
         let ctx = egui::Context::default();
         let theme = KlippTheme::default();
@@ -2879,7 +2879,7 @@ mod pool_style_tests {
         let mut state = AppState::default();
         let mut m = item("A001_C002.mov", "h264", "aac");
         m.duration = klipp_core::RationalTime::from_secs_f64(22.0, 25);
-        let id = state.media_pool.add(m);
+        let id = state.document.media_pool.add(m);
         let mut panel = crate::browser::BrowserPanel { browser_view_mode: BrowserViewMode::Grid, ..Default::default() };
         let ctx = egui::Context::default();
         let theme = KlippTheme::default();
@@ -2960,7 +2960,7 @@ mod bin_menu_tests {
         fn new(view: BrowserViewMode, names: &[&str]) -> Self {
             let mut state = AppState::default();
             for name in names {
-                state.media_pool.add(klipp_media::MediaItem::synthetic_for_test(format!("/footage/{name}").into(), None));
+                state.document.media_pool.add(klipp_media::MediaItem::synthetic_for_test(format!("/footage/{name}").into(), None));
             }
             let panel = crate::browser::BrowserPanel { browser_view_mode: view, ..Default::default() };
             Self { ctx: egui::Context::default(), state, panel, size: egui::vec2(700.0, 1600.0), drawn: Vec::new(), fills: Vec::new(), shapes: Vec::new() }
@@ -3029,9 +3029,9 @@ mod bin_menu_tests {
     }
 
     fn in_bin(pool: &mut Pool, name: &str, bin: &str) -> MediaId {
-        let id = pool.state.media_pool.all().find(|m| m.filename == name).expect("the item").id;
-        pool.state.media_pool.find_or_create_bin(bin);
-        pool.state.media_pool.get_mut(&id).expect("the item").bin = Some(bin.into());
+        let id = pool.state.document.media_pool.all().find(|m| m.filename == name).expect("the item").id;
+        pool.state.document.media_pool.find_or_create_bin(bin);
+        pool.state.document.media_pool.get_mut(&id).expect("the item").bin = Some(bin.into());
         id
     }
 
@@ -3073,7 +3073,7 @@ mod bin_menu_tests {
         for view in [BrowserViewMode::Grid, BrowserViewMode::List] {
             let mut pool = Pool::new(view, &["a.mov", "z.mov"]);
             in_bin(&mut pool, "z.mov", "Selects");
-            pool.state.media_pool.find_or_create_bin("Empty");
+            pool.state.document.media_pool.find_or_create_bin("Empty");
             let texts = pool.texts();
             let y = |t: &str| texts.iter().find(|(s, _)| s == t).unwrap_or_else(|| panic!("{view:?}: {t:?} in {texts:?}")).1.y;
             assert!(y("Empty") < y("Selects") && y("Selects") < y("z.mov") && y("z.mov") < y("NOT IN A BIN") && y("NOT IN A BIN") < y("a.mov"), "{view:?}: {texts:?}");
@@ -3108,7 +3108,7 @@ mod bin_menu_tests {
         for view in [BrowserViewMode::Grid, BrowserViewMode::List] {
             let mut pool = Pool::new(view, &["a.mov", "b.mov"]);
             in_bin(&mut pool, "b.mov", "Selects");
-            pool.state.media_pool.find_or_create_bin("B-roll");
+            pool.state.document.media_pool.find_or_create_bin("B-roll");
             let at = pool.at("a.mov");
             let menu = pool.right_click(at);
             assert!(missing(&menu, &["Move to Bin", "New Bin from Selection"]).is_empty(), "{view:?}: {menu:?}");
@@ -3119,7 +3119,7 @@ mod bin_menu_tests {
             let lacking = missing(&menu, &["B-roll", "Selects", "New Bin\u{2026}"]);
             assert!(lacking.is_empty(), "{view:?}: Move to Bin lacks {lacking:?} in {menu:?}");
             let cmds = pool.click("Selects");
-            let a = pool.state.media_pool.all().find(|m| m.filename == "a.mov").expect("a").id;
+            let a = pool.state.document.media_pool.all().find(|m| m.filename == "a.mov").expect("a").id;
             assert!(cmds.iter().any(|c| matches!(c, AppCommand::MoveItemsToBin { media_ids, bin: Some(b) } if *media_ids == [a] && b == "Selects")), "{view:?}: {cmds:?}");
         }
     }
@@ -3129,7 +3129,7 @@ mod bin_menu_tests {
     #[test]
     fn new_bin_from_selection_takes_every_selected_item() {
         let mut pool = Pool::new(BrowserViewMode::List, &["a.mov", "b.mov", "c.mov"]);
-        let ids: Vec<MediaId> = pool.state.media_pool.all().filter(|m| m.filename != "c.mov").map(|m| m.id).collect();
+        let ids: Vec<MediaId> = pool.state.document.media_pool.all().filter(|m| m.filename != "c.mov").map(|m| m.id).collect();
         pool.state.selected_media_ids = ids.iter().copied().collect();
         let at = pool.at("a.mov");
         let menu = pool.right_click(at);
@@ -3149,13 +3149,13 @@ mod bin_menu_tests {
     #[test]
     fn moving_several_items_is_one_step() {
         let mut state = AppState::default();
-        let ids: Vec<MediaId> = ["a.mov", "b.mov"].iter().map(|n| state.media_pool.add(klipp_media::MediaItem::synthetic_for_test(format!("/footage/{n}").into(), None))).collect();
+        let ids: Vec<MediaId> = ["a.mov", "b.mov"].iter().map(|n| state.document.media_pool.add(klipp_media::MediaItem::synthetic_for_test(format!("/footage/{n}").into(), None))).collect();
         state.move_media_to_bin(&ids, Some("Selects"));
-        assert!(ids.iter().all(|id| state.media_pool.get(id).expect("item").bin.as_deref() == Some("Selects")));
+        assert!(ids.iter().all(|id| state.document.media_pool.get(id).expect("item").bin.as_deref() == Some("Selects")));
         let step = state.project_history_mut().undo().expect("a step");
         assert!(state.project_history_mut().undo().is_none(), "one step for both");
-        let mut pool = state.media_pool.clone();
-        let (mut sequences, mut fps) = (state.sequences.clone(), state.fps);
+        let mut pool = state.document.media_pool.clone();
+        let (mut sequences, mut fps) = (state.document.sequences.clone(), state.fps);
         klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&step.command);
         assert!(ids.iter().all(|id| pool.get(id).expect("item").bin.is_none()), "undone, both are out");
     }
@@ -3194,11 +3194,11 @@ mod bin_menu_tests {
     fn a_selections_menu_offers_only_what_applies() {
         for in_one in [false, true] {
             let mut pool = Pool::new(BrowserViewMode::List, &["a.mov", "b.mov"]);
-            pool.state.media_pool.find_or_create_bin("Selects");
+            pool.state.document.media_pool.find_or_create_bin("Selects");
             if in_one {
                 in_bin(&mut pool, "b.mov", "Selects");
             }
-            pool.state.selected_media_ids = pool.state.media_pool.all().map(|m| m.id).collect();
+            pool.state.selected_media_ids = pool.state.document.media_pool.all().map(|m| m.id).collect();
             let at = pool.at("a.mov");
             let menu = pool.right_click(at);
             assert!(menu.iter().any(|t| t == "Batch Rename\u{2026}") && !menu.iter().any(|t| t == "Rename\u{2026}"), "{menu:?}");
@@ -3265,7 +3265,7 @@ mod bin_menu_tests {
         for view in [BrowserViewMode::List, BrowserViewMode::Grid] {
             let mut pool = Pool::new(view, &["a.mov", "b.mov"]);
             in_bin(&mut pool, "b.mov", "Selects");
-            let a = pool.state.media_pool.all().find(|m| m.filename == "a.mov").expect("a").id;
+            let a = pool.state.document.media_pool.all().find(|m| m.filename == "a.mov").expect("a").id;
             let (from, to) = (pool.at("a.mov"), pool.at("Selects"));
             let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
             pool.frame(vec![egui::Event::PointerMoved(from), button(from, true)]);
@@ -3317,7 +3317,7 @@ mod bin_menu_tests {
     fn a_drag_from_the_thumbnail_takes_the_clip() {
         for start in ["name", "thumbnail"] {
             let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov"]);
-            let a = pool.state.media_pool.all().next().expect("a").id;
+            let a = pool.state.document.media_pool.all().next().expect("a").id;
             let name = pool.at("a.mov");
             let from = if start == "name" { name } else { name - egui::vec2(0.0, 30.0) };
             let to = from + egui::vec2(200.0, 500.0);
@@ -3339,7 +3339,7 @@ mod bin_menu_tests {
     #[test]
     fn a_level_drag_out_of_the_panel_takes_the_clip() {
         let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov"]);
-        let a = pool.state.media_pool.all().next().expect("a").id;
+        let a = pool.state.document.media_pool.all().next().expect("a").id;
         let from = pool.at("a.mov") - egui::vec2(0.0, 30.0);
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         pool.frame(vec![egui::Event::PointerMoved(from)]);
@@ -3366,7 +3366,7 @@ mod bin_menu_tests {
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         for (how, steps, offset) in [("one jump", 1, egui::vec2(300.0, 500.0)), ("straight down", 8, egui::vec2(0.0, 400.0))] {
             let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov"]);
-            let a = pool.state.media_pool.all().next().expect("a").id;
+            let a = pool.state.document.media_pool.all().next().expect("a").id;
             let from = pool.at("a.mov");
             pool.frame(vec![egui::Event::PointerMoved(from)]);
             pool.frame(vec![button(from, true)]);
@@ -3384,15 +3384,15 @@ mod bin_menu_tests {
     fn new_bin_undoes_in_one_step_bin_and_all() {
         for with_items in [false, true] {
             let mut state = AppState::default();
-            let a = state.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/footage/a.mov".into(), None));
+            let a = state.document.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/footage/a.mov".into(), None));
             let ids = if with_items { vec![a] } else { Vec::new() };
             state.new_bin("New Bin 2", &ids);
-            assert!(state.media_pool.bins.iter().any(|b| b.name == "New Bin 2"));
+            assert!(state.document.media_pool.bins.iter().any(|b| b.name == "New Bin 2"));
             let step = state.project_history_mut().undo().expect("a step");
             assert!(state.project_history_mut().undo().is_none(), "one step");
             assert_eq!(step.command.label(), "New Bin");
-            let mut pool = state.media_pool.clone();
-            let (mut sequences, mut fps) = (state.sequences.clone(), state.fps);
+            let mut pool = state.document.media_pool.clone();
+            let (mut sequences, mut fps) = (state.document.sequences.clone(), state.fps);
             klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&step.command);
             assert!(!pool.bins.iter().any(|b| b.name == "New Bin 2"), "undone, the bin is gone");
             assert!(pool.get(&a).expect("a").bin.is_none());

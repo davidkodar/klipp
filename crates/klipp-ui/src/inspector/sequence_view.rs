@@ -189,7 +189,7 @@ mod tests {
     fn the_controls_do_what_they_say() {
         let ctx = egui::Context::default();
         let mut state = AppState { use_proxies: true, ..Default::default() };
-        state.sequences[state.active_sequence_idx].in_point = Some(klipp_core::RationalTime::from_secs_f64(2.0, 24));
+        state.document.sequences[state.active_sequence_idx].in_point = Some(klipp_core::RationalTime::from_secs_f64(2.0, 24));
         let (texts, _) = frame(&ctx, &state, Vec::new());
         let at = |label: &str| texts.iter().find(|(t, _)| t == label).unwrap_or_else(|| panic!("no {label}: {texts:?}")).1;
         // A switch sits at the row's right edge.

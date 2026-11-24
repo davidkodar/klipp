@@ -18,7 +18,7 @@ impl KlippApp {
         }
         self.first_cut_gate_key = Some(key);
         self.transcript_source.sync(self.state.analysis_generation);
-        self.state.first_cut_speech = klipp_document::ops::first_cut::has_speech(self.state.sequence(), &self.state.media_pool, &self.transcript_source);
+        self.state.first_cut_speech = klipp_document::ops::first_cut::has_speech(self.state.sequence(), &self.state.document.media_pool, &self.transcript_source);
     }
 
     /// The dialog: the steps, how tight the pauses are cut, a music bed
@@ -29,8 +29,8 @@ impl KlippApp {
             return;
         }
         self.transcript_source.sync(self.state.analysis_generation);
-        let untranscribed = crate::first_cut::untranscribed(self.state.sequence(), &self.state.media_pool, &self.transcript_source);
-        let music = crate::first_cut::music_choices(&self.state.media_pool);
+        let untranscribed = crate::first_cut::untranscribed(self.state.sequence(), &self.state.document.media_pool, &self.transcript_source);
+        let music = crate::first_cut::music_choices(&self.state.document.media_pool);
         let speech = self.state.first_cut_speech;
         let mut c = self.state.first_cut_choices.clone();
         let (mut open, mut run, mut cancel, mut transcribe) = (true, false, false, false);
@@ -110,13 +110,13 @@ impl KlippApp {
         use klipp_document::ops::first_cut;
         self.transcript_source.sync(self.state.analysis_generation);
         let before = self.state.sequence().clone();
-        let changes = first_cut::plan(&before, &self.state.media_pool, &self.transcript_source, &choices.steps());
+        let changes = first_cut::plan(&before, &self.state.document.media_pool, &self.transcript_source, &choices.steps());
         if changes.is_empty() {
             self.state.toast.show("First Cut: no clip is heard speaking. Transcribe or analyze its sound first.");
             return;
         }
         let ops = first_cut::ops(&before, &changes, &[], choices.music.as_ref());
-        let plan = match klipp_document::ops::resolve_with(&before, &self.state.media_pool, &ops, &self.transcript_source) {
+        let plan = match klipp_document::ops::resolve_with(&before, &self.state.document.media_pool, &ops, &self.transcript_source) {
             Ok(plan) => plan,
             Err(r) => {
                 self.state.toast.show(format!("First Cut: not done, {}", r.why));
@@ -153,7 +153,7 @@ impl KlippApp {
         };
         let excluded = crate::first_cut::Session::flipped(&now, i);
         self.transcript_source.sync(self.state.analysis_generation);
-        let new = match klipp_document::ops::first_cut::tracks_without(&session.before, &self.state.media_pool, &self.transcript_source, &session.changes, &excluded, session.music.as_ref()) {
+        let new = match klipp_document::ops::first_cut::tracks_without(&session.before, &self.state.document.media_pool, &self.transcript_source, &session.changes, &excluded, session.music.as_ref()) {
             Ok(tracks) => tracks,
             Err(r) => {
                 self.state.toast.show(format!("First Cut: not changed, {}", r.why));

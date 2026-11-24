@@ -34,14 +34,14 @@ fn state() -> (AppState, ClipId, klipp_nodes::NodeId) {
         node
     });
     let id = clip.id;
-    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-    state.sequences[0].tracks[v1].clips.push(clip);
+    let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    state.document.sequences[0].tracks[v1].clips.push(clip);
     state.selected_clip = Some(id);
     (state, id, node)
 }
 
 fn clip(state: &AppState, id: ClipId) -> klipp_timeline::Clip {
-    state.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone()
+    state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone()
 }
 
 fn track(node: klipp_nodes::NodeId, mask: usize, param: &str) -> MaskTrack {
@@ -275,7 +275,7 @@ fn a_key_moves_only_on_the_clip_it_names() {
     twin.timeline_in = t(5.0);
     twin.timeline_out = t(9.0);
     let b = twin.id;
-    state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(twin);
+    state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(twin);
     let radius = track(node, 0, "radius");
     let keys = |state: &AppState, c: ClipId| mask_tracks::keys(&clip(state, c), &radius);
     assert_eq!(keys(&state, a), keys(&state, b), "the same mask under the same id on both");

@@ -238,9 +238,9 @@ mod tests {
             let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
             let clip = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0))).lane("opacity", 1.0, 0.5).lane("pos_x", 1.0, 10.0).lane("pos_x", 3.0, 20.0).build();
             let mut state = AppState::default();
-            let v = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+            let v = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
             state.selected_clip = Some(clip.id);
-            state.sequences[0].tracks[v].clips.push(clip);
+            state.document.sequences[0].tracks[v].clips.push(clip);
             let ctx = egui::Context::default();
             crate::icons::install(&ctx);
             let panel = crate::inspector::NewInspectorPanel { key_column: true, key_column_w: 200.0, ..Default::default() };
@@ -324,7 +324,7 @@ mod tests {
             s.frame(vec![egui::Event::PointerMoved(from + (to - from) * (i as f32 / 6.0))]);
         }
         s.frame(vec![egui::Event::PointerMoved(to), b(to, false)]);
-        let keys = crate::key_selection::track_keys(s.state.sequences[0].all_clips().find(|c| Some(c.id) == s.state.selected_clip).unwrap(), &px);
+        let keys = crate::key_selection::track_keys(s.state.document.sequences[0].all_clips().find(|c| Some(c.id) == s.state.selected_clip).unwrap(), &px);
         let moved = keys[0].time_secs;
         assert!(((moved * 24.0) - (moved * 24.0).round()).abs() < 1e-6 && (moved - 1.6).abs() < 0.1, "{keys:?}");
     }

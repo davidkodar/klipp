@@ -144,7 +144,7 @@ fn fixture(kind: NodeKind, desc: &ParamDesc, surface: Surface, sector: bool) -> 
     let (mut state, clip, node) = if surface == Surface::GradePerNode { placed(kind) } else { super::grade_inspector_tests::graded(kind) }.ok_or("the grade won't take one")?;
     let corrector_off = corrector_off(kind, surface);
     let log = is_log(desc);
-    let c = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+    let c = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
     klipp_timeline::GradeAccess::edit_grade(c, |g| {
         for n in &mut g.nodes {
             if corrector_off && n.kind == NodeKind::Corrector {

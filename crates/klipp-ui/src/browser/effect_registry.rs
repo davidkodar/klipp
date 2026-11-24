@@ -1295,7 +1295,7 @@ mod lut_preset_tests {
         let [klipp_core::AppCommand::ApplyClipLut { clip_id, lut_path, name }] = &cmds[..] else { panic!("{cmds:?}") };
         // As the app applies it.
         let op = lut_look_op(*clip_id, lut_path, name);
-        let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &[op]).unwrap();
+        let plan = klipp_document::ops::resolve(state.sequence(), &state.document.media_pool, &[op]).unwrap();
         let mut seqs = vec![state.sequence().clone()];
         let (mut pool, mut fps) = (klipp_media::MediaPool::default(), seqs[0].fps);
         let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };

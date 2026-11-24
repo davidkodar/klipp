@@ -3992,7 +3992,7 @@ impl BrowserPanel {
                     Vec::new()
                 };
                 let menu_count = target_paths.len();
-                let bins_snapshot: Vec<String> = state.media_pool.bins.iter()
+                let bins_snapshot: Vec<String> = state.document.media_pool.bins.iter()
                     .map(|b| b.name.clone())
                     .collect();
                 let menu_path = entry.path.clone();
@@ -4446,9 +4446,9 @@ impl BrowserPanel {
                     }
                 }
                 // Sync to media pool if the file is already imported.
-                if let Some(item) = state.media_pool.find_by_path(path) {
+                if let Some(item) = state.document.media_pool.find_by_path(path) {
                     let mid = item.id;
-                    if let Some(item) = state.media_pool.get_mut(&mid) {
+                    if let Some(item) = state.document.media_pool.get_mut(&mid) {
                         item.rating = rating;
                     }
                 }
@@ -4505,7 +4505,7 @@ impl BrowserPanel {
                             }
 
                             // Update media pool entries pointing to the old path.
-                            for item in state.media_pool.all_mut() {
+                            for item in state.document.media_pool.all_mut() {
                                 if item.path == old_path {
                                     item.path = new_path.clone();
                                 }
@@ -4709,7 +4709,7 @@ impl BrowserPanel {
         // captions and never clips in a narrow browser.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
-            let saved_name = |id: &str| state.media_pool.smart_bins.iter().find(|b| b.id == id).map(|b| b.name.clone());
+            let saved_name = |id: &str| state.document.media_pool.smart_bins.iter().find(|b| b.id == id).map(|b| b.name.clone());
             let filter_label = match &self.smart_bin_filter {
                 SmartBinFilter::None => "All media".to_string(),
                 SmartBinFilter::Unused => "Unused".to_string(),
@@ -4738,10 +4738,10 @@ impl BrowserPanel {
                     ui.separator();
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Favourites, "Favourites");
                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Rejected, "Rejected");
-                    if !state.media_pool.smart_bins.is_empty() {
+                    if !state.document.media_pool.smart_bins.is_empty() {
                         ui.separator();
                         ui.label(egui::RichText::new("Smart bins").size(10.0).color(theme.text_dim));
-                        for bin in &state.media_pool.smart_bins {
+                        for bin in &state.document.media_pool.smart_bins {
                             ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Saved(bin.id.clone()), &bin.name)
                                 .on_hover_text(bin.describe());
                         }
@@ -4752,7 +4752,7 @@ impl BrowserPanel {
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     if let SmartBinFilter::Saved(id) = &self.smart_bin_filter {
-                        if let Some(bin) = state.media_pool.smart_bins.iter().find(|b| &b.id == id) {
+                        if let Some(bin) = state.document.media_pool.smart_bins.iter().find(|b| &b.id == id) {
                             if ui.button(format!("Edit \"{}\"\u{2026}", bin.name)).clicked() {
                                 open_editor = Some(bin.clone());
                                 ui.close_kind(egui::UiKind::Menu);
@@ -4801,7 +4801,7 @@ impl BrowserPanel {
             // with only h264 footage shows only "Codec: h264" — the
             // dropdown stays as small as the actual diversity in the
             // pool.
-            let pool_snapshot: Vec<_> = state.media_pool.all().cloned().collect();
+            let pool_snapshot: Vec<_> = state.document.media_pool.all().cloned().collect();
             let values = media_tab::enumerate_metadata_filter_values(&pool_snapshot);
             let (codecs, fps_pairs, cameras) = (&values.codecs, &values.fps, &values.cameras);
             let metadata_label = match &self.metadata_filter {
@@ -5058,7 +5058,7 @@ impl BrowserPanel {
                         for track in &seq.tracks {
                             if let Some(clip) = track.find_clip(*cid) {
                                 if let Some(mid) = clip.media_id() {
-                                    if let Some(item) = state.media_pool.get(&mid) {
+                                    if let Some(item) = state.document.media_pool.get(&mid) {
                                         return Some(audio_fx_tab::AuditionSourceOption {
                                             clip_id: *cid,
                                             media_id: mid,
@@ -5109,7 +5109,7 @@ impl BrowserPanel {
                     for track in &seq.tracks {
                         if let Some(clip) = track.find_clip(cid) {
                             if let Some(mid) = clip.media_id() {
-                                if let Some(item) = state.media_pool.get(&mid) {
+                                if let Some(item) = state.document.media_pool.get(&mid) {
                                     return Some(Resolved {
                                         path: item.path.clone(),
                                         duration_secs: item.duration.to_secs_f64(),

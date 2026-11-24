@@ -31,12 +31,12 @@ pub fn show(
 
     // Render each open sequence tab
     let open_tabs = open_tab_count(state);
-    for i in 0..state.sequences.len() {
+    for i in 0..state.document.sequences.len() {
         let is_active = i == state.active_sequence_idx;
-        if !is_active && state.closed_sequence_tabs.contains(&state.sequences[i].id) {
+        if !is_active && state.closed_sequence_tabs.contains(&state.document.sequences[i].id) {
             continue;
         }
-        let name = state.sequences[i].name.clone();
+        let name = state.document.sequences[i].name.clone();
 
         // Measure text width
         let font = egui::FontId::proportional(11.0);
@@ -126,7 +126,7 @@ pub fn show(
         // It deleted the sequence, with no question and no undo.
         let close_resp = close_resp.on_hover_text("Close tab (the sequence stays in the project)");
         if can_close && close_resp.clicked() {
-            state.closed_sequence_tabs.insert(state.sequences[i].id);
+            state.closed_sequence_tabs.insert(state.document.sequences[i].id);
             if is_active {
                 if let Some(next) = tab_after_closing(state, i) {
                     cmds.push(AppCommand::SetActiveSequence { sequence_idx: next });
@@ -152,7 +152,7 @@ pub fn show(
             // (#2211).
             ui.menu_rows("New Version at Aspect", |ui| {
                 use crate::app::aspect_version::{aspect_size, has_aspect, ASPECTS};
-                let frame = state.sequences[i].resolution;
+                let frame = state.document.sequences[i].resolution;
                 for (label, a, b) in ASPECTS.into_iter().filter(|(_, a, b)| !has_aspect(frame, (*a, *b))) {
                     let (w, h) = aspect_size(frame, (a, b));
                     if ui.button(format!("{label}  ({w}\u{00d7}{h})")).on_hover_text("A copy at this frame, each picture following its subject; pictures with no clear subject are marked for review").clicked() {
@@ -163,7 +163,7 @@ pub fn show(
             });
             // A version older than its master's cut, made again from it
             // when asked, never on its own (#2724).
-            if state.sequences[i].version_is_stale(&state.sequences) == Some(true)
+            if state.document.sequences[i].version_is_stale(&state.document.sequences) == Some(true)
                 && ui.button("Rebuild from Master").on_hover_text("This version is older than the master's last edit. Copy the master's cut in again: the clips still there keep their framing here, the new ones are reframed").clicked()
             {
                 cmds.push(AppCommand::RebuildVersion { sequence_idx: i });
@@ -174,14 +174,14 @@ pub fn show(
                 ui.close_kind(egui::UiKind::Menu);
             }
             // Stacked above the cut, to skim and take ranges from (#82).
-            let as_selects = state.selects_sequence == Some(state.sequences[i].id);
+            let as_selects = state.selects_sequence == Some(state.document.sequences[i].id);
             if ui.add_enabled(!is_active && !as_selects, egui::Button::new("Open as Selects")).on_disabled_hover_text(if is_active { "This is the sequence being cut" } else { "Open above the cut already" }).clicked() {
-                state.selects_sequence = Some(state.sequences[i].id);
+                state.selects_sequence = Some(state.document.sequences[i].id);
                 state.selects_range = None;
                 ui.close_kind(egui::UiKind::Menu);
             }
             if ui.add_enabled(can_close, egui::Button::new("Close Tab")).clicked() {
-                state.closed_sequence_tabs.insert(state.sequences[i].id);
+                state.closed_sequence_tabs.insert(state.document.sequences[i].id);
                 if is_active {
                     if let Some(next) = tab_after_closing(state, i) {
                         cmds.push(AppCommand::SetActiveSequence { sequence_idx: next });
@@ -190,13 +190,13 @@ pub fn show(
                 ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
-            let can_delete = state.sequences.len() > 1;
+            let can_delete = state.document.sequences.len() > 1;
             if ui.add_enabled(can_delete, egui::Button::new(
                 egui::RichText::new("Delete Sequence…").color(egui::Color32::from_rgb(200, 60, 60))
             )).clicked() {
                 // Asked first: a deleted sequence and its undo history
                 // cannot be brought back.
-                state.confirm_delete_sequence = Some(state.sequences[i].id);
+                state.confirm_delete_sequence = Some(state.document.sequences[i].id);
                 ui.close_kind(egui::UiKind::Menu);
             }
         });
@@ -244,7 +244,7 @@ pub fn show(
     }
     egui::popup_below_widget(ui, popup_id, &list_resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
         ui.set_min_width(200.0);
-        for (i, seq) in state.sequences.iter().enumerate() {
+        for (i, seq) in state.document.sequences.iter().enumerate() {
             let open = i == state.active_sequence_idx || !state.closed_sequence_tabs.contains(&seq.id);
             let label = if open { format!("✓ {}", seq.name) } else { format!("   {}", seq.name) };
             if ui.selectable_label(i == state.active_sequence_idx, label).clicked() {
@@ -260,8 +260,8 @@ pub fn show(
         // behaviour. Lets users pin a vertical/square default if their
         // workflow is mainly that orientation.
         use crate::panels::new_project_dialog::resolution_presets;
-        let active = &state.sequences[state.active_sequence_idx];
-        let n = state.sequences.len() + 1;
+        let active = &state.document.sequences[state.active_sequence_idx];
+        let n = state.document.sequences.len() + 1;
         let pref_idx = state.default_sequence_resolution_idx;
         let (width, height) = if pref_idx > 0 && pref_idx < resolution_presets().len() {
             let (_, w, h) = resolution_presets()[pref_idx];
@@ -280,7 +280,7 @@ pub fn show(
 
     // Inline rename popup
     if let Some(rename_idx) = state.renaming_sequence_idx {
-        if rename_idx < state.sequences.len() {
+        if rename_idx < state.document.sequences.len() {
             let mut open = true;
             crate::widgets::window("Rename Sequence")
                 .collapsible(false)
@@ -362,7 +362,7 @@ pub const HEIGHT: f32 = TAB_HEIGHT;
 /// sequence whose tab was not closed.
 fn open_tab_count(state: &AppState) -> usize {
     state
-        .sequences
+        .document.sequences
         .iter()
         .enumerate()
         .filter(|(i, s)| *i == state.active_sequence_idx || !state.closed_sequence_tabs.contains(&s.id))
@@ -372,8 +372,8 @@ fn open_tab_count(state: &AppState) -> usize {
 /// The tab to show when the active one at `closing` is closed: the next
 /// open tab to its right, else the nearest to its left.
 fn tab_after_closing(state: &AppState, closing: usize) -> Option<usize> {
-    let open = |i: usize| i != closing && !state.closed_sequence_tabs.contains(&state.sequences[i].id);
-    (closing + 1..state.sequences.len()).find(|&i| open(i)).or_else(|| (0..closing).rev().find(|&i| open(i)))
+    let open = |i: usize| i != closing && !state.closed_sequence_tabs.contains(&state.document.sequences[i].id);
+    (closing + 1..state.document.sequences.len()).find(|&i| open(i)).or_else(|| (0..closing).rev().find(|&i| open(i)))
 }
 
 /// The way back out of an opened compound clip: each sequence from the
@@ -388,7 +388,7 @@ fn breadcrumb(state: &AppState) -> Option<Vec<(String, usize)>> {
         .compound_clip_stack
         .iter()
         .enumerate()
-        .filter_map(|(i, (idx, _))| state.sequences.get(*idx).map(|s| (s.name.clone(), depth - i)))
+        .filter_map(|(i, (idx, _))| state.document.sequences.get(*idx).map(|s| (s.name.clone(), depth - i)))
         .collect();
     crumbs.push((state.sequence().name.clone(), 0));
     Some(crumbs)
@@ -401,12 +401,12 @@ mod tests {
 
     fn three() -> AppState {
         let mut state = AppState::default();
-        let first = state.sequences[0].clone();
+        let first = state.document.sequences[0].clone();
         for name in ["B", "C"] {
             let mut s = first.clone();
             s.id = klipp_core::SequenceId::new();
             s.name = name.into();
-            state.sequences.push(s);
+            state.document.sequences.push(s);
         }
         state
     }
@@ -415,17 +415,17 @@ mod tests {
     fn closing_a_tab_keeps_the_sequence_and_moves_to_a_neighbour() {
         let mut state = three();
         state.active_sequence_idx = 1;
-        state.closed_sequence_tabs.insert(state.sequences[1].id);
-        assert_eq!(state.sequences.len(), 3, "the sequence stays in the project");
+        state.closed_sequence_tabs.insert(state.document.sequences[1].id);
+        assert_eq!(state.document.sequences.len(), 3, "the sequence stays in the project");
         assert_eq!(tab_after_closing(&state, 1), Some(2), "the tab to the right");
-        state.closed_sequence_tabs.insert(state.sequences[2].id);
+        state.closed_sequence_tabs.insert(state.document.sequences[2].id);
         assert_eq!(tab_after_closing(&state, 1), Some(0), "else the one to the left");
     }
 
     #[test]
     fn the_active_tab_counts_as_open_even_if_it_was_closed() {
         let mut state = three();
-        for s in &state.sequences {
+        for s in &state.document.sequences {
             state.closed_sequence_tabs.insert(s.id);
         }
         assert_eq!(open_tab_count(&state), 1, "the last tab cannot be closed");
@@ -441,11 +441,11 @@ mod breadcrumb_tests {
     fn the_way_back_names_each_parent_and_how_far_up_it_is() {
         let mut state = AppState::default();
         assert!(breadcrumb(&state).is_none(), "no compound clip open");
-        let mut inner = state.sequences[0].clone();
+        let mut inner = state.document.sequences[0].clone();
         inner.id = klipp_core::SequenceId::new();
         inner.name = "Compound 1".into();
-        state.sequences.push(inner);
-        let main = state.sequences[0].name.clone();
+        state.document.sequences.push(inner);
+        let main = state.document.sequences[0].name.clone();
         state.compound_clip_stack.push((0, state.playhead));
         state.active_sequence_idx = 1;
         assert_eq!(breadcrumb(&state), Some(vec![(main, 1), ("Compound 1".to_string(), 0)]));

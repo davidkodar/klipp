@@ -357,7 +357,7 @@ pub fn dispatch_template(state: &mut AppState, kind: &TemplateKind, cmds: &mut V
             Ok(plan) => {
                 for step in plan.steps {
                     let active = state.active_sequence_idx;
-                    let _ = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&step.edit);
+                    let _ = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(&step.edit);
                     state.push_history(step.edit);
                 }
                 state.dirty = true;
@@ -469,7 +469,7 @@ pub const MENU_ROWS: [TemplateMenuRow; 5] = [
 pub fn template_context(state: &AppState) -> TemplateContext<'_> {
     TemplateContext {
         seq: state.sequence(),
-        pool: &state.media_pool,
+        pool: &state.document.media_pool,
         selected_clip_id: state.selected_clip,
         playhead: state.playhead,
         fps: state.fps,
@@ -842,7 +842,7 @@ mod tests {
             track("V2", TrackKind::Video, vec![above]),
         ]);
         let mut state = AppState::default();
-        state.sequences[0] = seq;
+        state.document.sequences[0] = seq;
         state.selected_clip = Some(consumer_id);
 
         for row in MENU_ROWS {
@@ -850,7 +850,7 @@ mod tests {
             // step named for it, and the engine told.
             if let Some(name) = recipe_of(&row.kind) {
                 let mut probe = AppState::default();
-                probe.sequences[0] = state.sequence().clone();
+                probe.document.sequences[0] = state.sequence().clone();
                 probe.selected_clip = Some(consumer_id);
                 let mut via_dispatch = Vec::new();
                 (row.dispatch)(&mut probe, &mut via_dispatch);

@@ -184,9 +184,9 @@ impl Run {
         };
         let Some(entry) = entry else { return false };
         let mut view = klipp_document::apply::DocumentView {
-            sequences: &mut self.state.sequences,
+            sequences: &mut self.state.document.sequences,
             active: self.state.active_sequence_idx,
-            media_pool: &mut self.state.media_pool,
+            media_pool: &mut self.state.document.media_pool,
             fps: &mut self.state.fps,
         };
         if forward {
@@ -223,7 +223,7 @@ impl Run {
     pub(super) fn new(clip: klipp_timeline::Clip) -> Self {
         let id = clip.id;
         let mut state = AppState::default();
-        state.sequences[0].tracks[0].clips.push(clip);
+        state.document.sequences[0].tracks[0].clips.push(clip);
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
         Run {
@@ -242,7 +242,7 @@ impl Run {
     }
 
     pub(super) fn clip(&self) -> &klipp_timeline::Clip {
-        self.state.sequences[0]
+        self.state.document.sequences[0]
             .all_clips()
             .find(|c| c.id == self.clip)
             .unwrap()
@@ -273,7 +273,7 @@ impl Run {
             state.forget_stale_path_drag(ctx.input(|i| i.pointer.any_down()));
             let state = &*state;
             egui::CentralPanel::default().show(ctx, |ui| {
-                let clip = state.sequences[0]
+                let clip = state.document.sequences[0]
                     .all_clips()
                     .find(|c| c.id == clip_id)
                     .unwrap();
@@ -641,11 +641,11 @@ fn an_effect_added_with_two_clips_selected_lands_on_both_as_one_step() {
     let other_id = other.id;
     let mut track = klipp_timeline::Track::new("Video 9", klipp_timeline::TrackKind::Video);
     track.clips.push(other);
-    run.state.sequences[0].tracks.push(track);
+    run.state.document.sequences[0].tracks.push(track);
     run.state.selected_clip = Some(run.clip);
     run.state.selected_clips = vec![run.clip, other_id];
     let blooms = |run: &Run, id: ClipId| {
-        let clip = run.state.sequences[0].all_clips().find(|c| c.id == id).unwrap();
+        let clip = run.state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap();
         clip.picture_v2().unwrap().picture.graph.nodes.iter().filter(|n| klipp_graph_lift::effect_params::tag(n) == Some("bloom")).count()
     };
     assert!(run.click_last("+ Add effect"), "the add menu");

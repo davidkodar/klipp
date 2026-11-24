@@ -754,7 +754,7 @@ impl KlippApp {
         let dir = path.parent().map(std::path::Path::to_path_buf);
         let here: Vec<klipp_media::MediaItem> = self
             .state
-            .media_pool
+            .document.media_pool
             .all()
             .filter(|m| matches!(m.kind, klipp_media::MediaItemKind::File) && m.path.parent().map(std::path::Path::to_path_buf) == dir)
             .cloned()
@@ -769,7 +769,7 @@ impl KlippApp {
         }
         for item in here {
             let span = spans.get(&item.id).copied();
-            if let Some(m) = self.state.media_pool.get_mut(&item.id) {
+            if let Some(m) = self.state.document.media_pool.get_mut(&item.id) {
                 if m.span != span {
                     m.span = span;
                     self.state.dirty = true;

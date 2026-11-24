@@ -12,13 +12,13 @@ impl KlippApp {
     pub(super) fn tick_automation(&mut self) {
         let playing = self.state.playback == PlaybackState::Playing;
         let secs = self.state.playhead.to_secs_f64();
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let changed = self.state.automation_pass.tick(seq, &self.state.automation_held, playing, secs);
         self.send_automation_overrides(changed);
         if playing || !self.state.automation_pass.has_samples() {
             return;
         }
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let edits: Vec<EditCommand> = self
             .state
             .automation_pass

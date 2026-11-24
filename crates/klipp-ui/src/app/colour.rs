@@ -28,7 +28,7 @@ impl KlippApp {
         match keep_before(began, held, self.node_param_edit_snapshot.is_some()) {
             Keep::Take => {
                 self.graph_before_input = self.state.selected_clip.and_then(|id| {
-                    self.state.sequences[self.state.active_sequence_idx]
+                    self.state.document.sequences[self.state.active_sequence_idx]
                         .tracks
                         .iter()
                         .find_map(|t| t.find_clip(id))
@@ -83,7 +83,7 @@ impl KlippApp {
         // engine's copy has a group's grades baked in only while it grades
         // anything, so a step that starts it grading needs a full sync.
         let group_grades = |app: &Self| {
-            app.state.grade_group_stage.and_then(|(g, _)| app.state.sequences[app.state.active_sequence_idx].grade_group(g)).is_some_and(|g| g.grades())
+            app.state.grade_group_stage.and_then(|(g, _)| app.state.document.sequences[app.state.active_sequence_idx].grade_group(g)).is_some_and(|g| g.grades())
         };
         let group_graded_before = group_grades(self);
         let stood_in = self.stand_in_timeline_grade();
@@ -110,7 +110,7 @@ impl KlippApp {
     /// menu to make, fill, rename and remove groups.
     pub(super) fn grade_group_controls(&mut self, ui: &mut egui::Ui, all_cmds: &mut Vec<AppCommand>, theme: &KlippTheme) {
         use klipp_timeline::GradeStage;
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let selection: Vec<klipp_core::ClipId> = if self.state.selected_clips.is_empty() {
             self.state.selected_clip.into_iter().collect()
         } else {
@@ -221,7 +221,7 @@ impl KlippApp {
     /// step. Only picture clips of the active sequence join a group.
     fn handle_grade_group_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         use klipp_timeline::GradeGroup;
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let pictures = |ids: &[klipp_core::ClipId]| -> Vec<klipp_core::ClipId> {
             seq.tracks
                 .iter()
@@ -305,7 +305,7 @@ impl KlippApp {
             let (g, s) = self.state.grade_group_stage?;
             GradeStandIn::Group(g, s)
         };
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
         let id = stand_in_grade_on(seq, which, &mut self.timeline_grade_fresh)?;
         Some(self.state.selected_clip.replace(id))
     }
@@ -314,7 +314,7 @@ impl KlippApp {
     /// grade if it was edited, and restoring the selection.
     pub(super) fn stand_down_timeline_grade(&mut self, stood_in: Option<Option<klipp_core::ClipId>>) -> TimelineGradeSettled {
         let Some(selected) = stood_in else { return TimelineGradeSettled::Unchanged };
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
         let settled = stand_down_timeline_grade_on(seq, &mut self.timeline_grade_fresh);
         self.state.selected_clip = selected;
         if settled != TimelineGradeSettled::Unchanged {
@@ -357,14 +357,14 @@ impl KlippApp {
         state: &AppState,
         clip_id: klipp_core::ClipId,
     ) -> Result<(Vec<u8>, u32, u32), String> {
-        let clip = state.sequences[state.active_sequence_idx]
+        let clip = state.document.sequences[state.active_sequence_idx]
             .tracks.iter()
             .flat_map(|t| t.clips.iter())
             .find(|c| c.id == clip_id)
             .ok_or_else(|| "clip not found".to_string())?;
         let media_id = clip.media_id()
             .ok_or_else(|| "clip has no media".to_string())?;
-        let item = state.media_pool.get(&media_id)
+        let item = state.document.media_pool.get(&media_id)
             .ok_or_else(|| "media not in pool".to_string())?;
         let path = item.path.clone();
         let at = representative_secs(clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64(), item.is_still);
@@ -377,7 +377,7 @@ impl KlippApp {
     /// reference as graded. `less_match` leaves out its Color Match node.
     fn graded_clip_frame(&mut self, clip_id: klipp_core::ClipId, less_match: bool) -> Result<(Vec<u8>, u32, u32), String> {
         let (bytes, w, h) = Self::decode_clip_representative_frame(&self.state, clip_id)?;
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id).ok_or_else(|| "clip not found".to_string())?;
         let mid = (clip.timeline_out.to_secs_f64() - clip.timeline_in.to_secs_f64()) * 0.5;
         self.scope_executor.set_render_scale(h as f32 / seq.resolution.height.max(1) as f32);
@@ -528,7 +528,7 @@ impl KlippApp {
     /// The graph a command naming `nodes` on `clip_id` edits; see
     /// [`graph_path_for`].
     fn graph_holding(&self, clip_id: klipp_core::ClipId, nodes: &[klipp_nodes::NodeId]) -> Option<Vec<klipp_nodes::NodeId>> {
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let root = seq.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == clip_id))?.grade();
         graph_path_for(root, nodes, &self.state.graph_descent_path)
     }
@@ -578,7 +578,7 @@ impl KlippApp {
     /// last parked frame — another time, maybe another clip — whose
     /// correction was applied here (#404).
     fn shown_frame_for_balance(&self, clip_id: klipp_core::ClipId) -> Result<(Vec<u8>, u32, u32), &'static str> {
-        let clip_span = self.state.sequences[self.state.active_sequence_idx]
+        let clip_span = self.state.document.sequences[self.state.active_sequence_idx]
             .all_clips()
             .find(|c| c.id == clip_id)
             .map(|c| (c.timeline_in, c.timeline_out));
@@ -984,7 +984,7 @@ impl KlippApp {
 
             AppCommand::UpdateActiveGradeVersion { clip_id } => {
                 let clip_id = *clip_id;
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(clip_id) {
                         if let Some(idx) = clip.active_grade_version() {
                             let grade = clip.grade().clone();
@@ -1006,7 +1006,7 @@ impl KlippApp {
                 let path = self.state.graph_descent_path.clone();
                 let seq_idx = self.state.active_sequence_idx;
                 let mut ok = false;
-                for track in &mut self.state.sequences[seq_idx].tracks {
+                for track in &mut self.state.document.sequences[seq_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         clip.edit_grade(|root| {
                             if let Ok(graph) = Self::resolve_graph_at_path_mut(root, &path) {
@@ -1189,7 +1189,7 @@ impl KlippApp {
                     self.state.toast.show("Copy: no colour node selected");
                     return true;
                 }
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 // The nodes would be copied without their mixes (M3 step 17a).
                 if seq.all_clips().any(|c| c.id == *clip_id && c.holds_grade_mix()) {
                     self.state.toast.show(GRADE_MIX_NOT_COPIED);
@@ -1336,7 +1336,7 @@ impl KlippApp {
                     // value into the live one.
                     let before = self.graph_before_input.take().filter(|(id, _)| id == clip_id);
                     self.node_param_edit_snapshot = before.or_else(|| {
-                        self.state.sequences[self.state.active_sequence_idx]
+                        self.state.document.sequences[self.state.active_sequence_idx]
                             .tracks
                             .iter()
                             .find_map(|t| t.find_clip(*clip_id))
@@ -1443,7 +1443,7 @@ impl KlippApp {
                 // and covers every callsite of `SetNodeMasks` that
                 // shrinks the list (whether today's UI ever does so
                 // or not — defending against future regressions).
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id_val) {
                     clip.track_points.retain(|tp| match tp.linked_mask {
                         Some((nid, mi)) if nid == node_id => mi < new_len,
@@ -1513,7 +1513,7 @@ impl KlippApp {
                     moved = move_mask(graph, node_id, from, to);
                 });
                 if moved {
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
                         for tp in &mut clip.track_points {
                             if let Some((tn, mi)) = tp.linked_mask.filter(|(tn, _)| *tn == node_id) {
@@ -1537,7 +1537,7 @@ impl KlippApp {
                 // — acceptable because trackers don't go through the
                 // node-graph snapshot machinery anyway.
                 let mask_node_id: Option<uuid::Uuid> = self
-                    .state.sequences[self.state.active_sequence_idx]
+                    .state.document.sequences[self.state.active_sequence_idx]
                     .tracks.iter().flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id)
                     .and_then(|c| c.grade().nodes.iter()
@@ -1547,7 +1547,7 @@ impl KlippApp {
                     write_node_settings(graph, cmd);
                 });
                 if let Some(nid) = mask_node_id {
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
                         // Drop trackers that were bound to the removed
                         // mask. Indices on remaining trackers can shift,
@@ -1571,7 +1571,7 @@ impl KlippApp {
                 let clip_id = *clip_id;
                 let node_id = *node_id;
                 let mask_index = *mask_index;
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 let edit = seq.all_clips_mut().find(|c| c.id == clip_id).and_then(|clip| {
                     clip.track_points.retain(|tp| tp.linked_mask != Some((node_id, mask_index)));
                     // In the grade, or beside the picture chain.
@@ -1686,7 +1686,7 @@ impl KlippApp {
     fn handle_color_keyframes(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::ShowMaskKeysOnTimeline { clip_id, node_id, mask_index } => {
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let first = seq.all_clips().find(|c| c.id == *clip_id).and_then(|clip| {
                     crate::mask_tracks::keyed(clip).into_iter().map(|(t, _)| t).find(|t| t.node == *node_id && t.mask == *mask_index)
                 });
@@ -1738,7 +1738,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetSourceRotation { clip_id, degrees } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                 for track in &mut seq.tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         clip.source_rotation = *degrees;
@@ -1993,7 +1993,7 @@ impl KlippApp {
                 let name = still.name.clone();
                 let labels = still.grade_labels.clone();
                 let from = still.source.as_ref().and_then(|s| s.clip_id);
-                let GradeApplied { edits, refused, labels, tracks_left } = super::grade_edits::apply_grade_from(&self.state.sequences[self.state.active_sequence_idx], &grade, &labels, clip_ids, *append, from);
+                let GradeApplied { edits, refused, labels, tracks_left } = super::grade_edits::apply_grade_from(&self.state.document.sequences[self.state.active_sequence_idx], &grade, &labels, clip_ids, *append, from);
                 if edits.is_empty() {
                     if refused.is_empty() {
                         self.state.toast.show("Select the clips to grade first");
@@ -2019,7 +2019,7 @@ impl KlippApp {
                     self.state.toast.show("No config folder to keep the grade library in");
                     return true;
                 };
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let Some(clip) = seq.all_clips().find(|c| c.id == *clip_id) else { return true };
                 // The library's file would keep it without its mixes.
                 if clip.holds_grade_mix() {
@@ -2027,7 +2027,7 @@ impl KlippApp {
                     return true;
                 }
                 // Its thumbnail, as the strip shows it: the clip graded, at its middle.
-                let thumbnail = klipp_render::still::clip_still(clip, &self.state.media_pool, clip.duration().to_secs_f64() / 2.0, crate::graded_thumbs::THUMB_WIDTH, klipp_engine::video_decoder::working_colorspace()).ok();
+                let thumbnail = klipp_render::still::clip_still(clip, &self.state.document.media_pool, clip.duration().to_secs_f64() / 2.0, crate::graded_thumbs::THUMB_WIDTH, klipp_engine::video_decoder::working_colorspace()).ok();
                 // Its nodes' colour labels in its file (#1866).
                 let node_labels = klipp_timeline::grade_node_labels(&seq.node_labels, clip.id);
                 match crate::grade_library::save_labelled_in(&dir, name, clip.grade(), &node_labels, thumbnail.as_ref()) {
@@ -2065,7 +2065,7 @@ impl KlippApp {
                     self.state.toast.show(format!("No grade \"{name}\" in the library"));
                     return true;
                 };
-                let GradeApplied { edits, refused, labels, tracks_left } = apply_grade(&self.state.sequences[self.state.active_sequence_idx], &grade, &labels, clip_ids, *append);
+                let GradeApplied { edits, refused, labels, tracks_left } = apply_grade(&self.state.document.sequences[self.state.active_sequence_idx], &grade, &labels, clip_ids, *append);
                 if edits.is_empty() {
                     if refused.is_empty() {
                         self.state.toast.show("Select the clips to grade first");
@@ -2087,7 +2087,7 @@ impl KlippApp {
                 true
             }
             AppCommand::ApplyGradeToShotPieces { clip_id } => {
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let Some(clip) = seq.all_clips().find(|c| c.id == *clip_id) else { return true };
                 let targets = seq.ungraded_shot_pieces(*clip_id);
                 if targets.is_empty() {
@@ -2111,7 +2111,7 @@ impl KlippApp {
                 true
             }
             AppCommand::WipeAgainstClip { target } => {
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                 let wiped = target.and_then(|t| crate::graded_thumbs::wipe_target(seq, self.state.selected_clip, self.state.playhead, t));
                 if target.is_some() && wiped.is_none() {
                     self.state.toast.show("No clip that way to wipe against");
@@ -2163,7 +2163,7 @@ impl KlippApp {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         );
-        let seq = self.state.sequences.get(self.state.active_sequence_idx)?;
+        let seq = self.state.document.sequences.get(self.state.active_sequence_idx)?;
         let clip = still_source_clip(seq, self.state.playhead, self.state.selected_clip);
         let source = clip.map(|c| klipp_project::StillSource {
             clip_id: Some(c.id),
@@ -2171,7 +2171,7 @@ impl KlippApp {
             record_secs: self.state.playhead.to_secs_f64(),
             clip_name: c
                 .media_id()
-                .and_then(|m| self.state.media_pool.get(&m))
+                .and_then(|m| self.state.document.media_pool.get(&m))
                 .map(|m| m.filename.clone())
                 .unwrap_or_default(),
         });
@@ -2310,7 +2310,7 @@ impl KlippApp {
                 let working_cs = self.state.project_working_colorspace;
 
                 let graph = {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     // As it draws, its corrections' mixes in (M3 step 17a).
                     seq.all_clips().find(|c| c.id == clip_id).map(|c| c.grade_to_run().into_owned())
                 };
@@ -2373,7 +2373,7 @@ impl KlippApp {
                     return true;
                 };
                 let snapshot = {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     if seq.all_clips().any(|c| c.id == clip_id && c.holds_grade_mix()) {
                         self.state.toast.show(GRADE_MIX_NOT_COPIED);
                         return true;
@@ -2394,7 +2394,7 @@ impl KlippApp {
             // socket's look runs it, one undo step.
             AppCommand::ApplyClipLut { clip_id, lut_path, name } => {
                 let op = crate::browser::effect_registry::lut_look_op(*clip_id, lut_path, name);
-                match klipp_document::ops::resolve(self.state.sequence(), &self.state.media_pool, &[op]) {
+                match klipp_document::ops::resolve(self.state.sequence(), &self.state.document.media_pool, &[op]) {
                     Ok(plan) => {
                         let edits: Vec<_> = plan.steps.into_iter().map(|s| s.edit).collect();
                         self.apply_edits_as_one(&edits, "Look");
@@ -2412,7 +2412,7 @@ impl KlippApp {
                 // own Input Transform kept, every clip one undo step. Each
                 // clip was a step of its own, so undoing a Look on ten clips
                 // took ten presses.
-                let GradeApplied { edits, refused, labels, tracks_left } = apply_grade(&self.state.sequences[self.state.active_sequence_idx], look.grade(), &look.node_labels, clip_ids, *append);
+                let GradeApplied { edits, refused, labels, tracks_left } = apply_grade(&self.state.document.sequences[self.state.active_sequence_idx], look.grade(), &look.node_labels, clip_ids, *append);
                 if edits.is_empty() {
                     if refused.is_empty() {
                         self.state.toast.show("No matching clips selected");
@@ -3365,7 +3365,7 @@ impl crate::state::AppState {
     /// no balance to add to. One place, so the dispatch and the parity
     /// land a computed balance alike.
     pub(crate) fn apply_white_balance(&mut self, clip_id: klipp_core::ClipId, temp_adj: f32, tint_adj: f32) -> Option<bool> {
-        let seq = &mut self.sequences[self.active_sequence_idx];
+        let seq = &mut self.document.sequences[self.active_sequence_idx];
         let clip = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id))?;
         let old_graph = clip.grade().clone();
         let railed = clip.edit_grade(|graph| {
@@ -3674,7 +3674,7 @@ pub(super) fn edit_clip_graph(
     mutate: impl FnOnce(&mut klipp_nodes::NodeGraph),
 ) -> Option<Result<(), ()>> {
     let seq = state.active_sequence_idx;
-    let clip = state.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id))?;
+    let clip = state.document.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id))?;
     let old_graph = clip.grade().clone();
     if clip.edit_grade(|root| KlippApp::resolve_graph_at_path_mut(root, path).map(mutate)).is_err() {
         return Some(Err(()));
@@ -3779,7 +3779,7 @@ pub(super) fn mask_key_edit(state: &mut AppState, cmd: &AppCommand, record: bool
         | AppCommand::SetMaskKeyframeInterpolation { clip_id, node_id, .. } => (*clip_id, *node_id),
         _ => return None,
     };
-    let seq = &state.sequences[state.active_sequence_idx];
+    let seq = &state.document.sequences[state.active_sequence_idx];
     let clip = seq.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == clip_id))?;
     let Some(path) = clip.grade().path_to_node(node_id) else {
         // A mask beside the clip's picture chain (a Window or a Roto Shape
@@ -3810,7 +3810,7 @@ pub(super) fn mask_key_edit(state: &mut AppState, cmd: &AppCommand, record: bool
 pub(super) fn write_node_param(state: &mut AppState, clip_id: klipp_core::ClipId, path: &[klipp_nodes::NodeId], target: (klipp_nodes::NodeId, bool), param: &str, value: f32) {
     let seq = state.active_sequence_idx;
     let node_id = target.0;
-    if let Some(clip) = state.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) {
+    if let Some(clip) = state.document.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) {
         clip.edit_grade(|root| {
             if let Ok(graph) = KlippApp::resolve_graph_at_path_mut(root, path) {
                 make_reserved(graph, target);
@@ -3838,11 +3838,11 @@ pub(super) fn zones_seed(state: &AppState, clip_id: klipp_core::ClipId, node_id:
             n.params.compound_subgraph.as_ref().and_then(|g| unset(g, id))
         })
     }
-    let Some(clip) = state.sequences[state.active_sequence_idx].tracks.iter().find_map(|t| t.find_clip(clip_id)) else { return Vec::new() };
+    let Some(clip) = state.document.sequences[state.active_sequence_idx].tracks.iter().find_map(|t| t.find_clip(clip_id)) else { return Vec::new() };
     if unset(clip.grade(), node_id) != Some(true) {
         return Vec::new();
     }
-    let boundary = klipp_core::HdrZonesSettings::boundary_for(state.media_pool.scene_referred(clip.media_id()));
+    let boundary = klipp_core::HdrZonesSettings::boundary_for(state.document.media_pool.scene_referred(clip.media_id()));
     klipp_nodes::params::HDR_ZONE_KEYS.iter().enumerate().skip(1).map(|(k, key)| (format!("hdr_{key}_boundary"), boundary[k])).collect()
 }
 
@@ -3852,7 +3852,7 @@ pub(super) fn zones_seed(state: &AppState, clip_id: klipp_core::ClipId, node_id:
 /// nothing; undoing it restores an identical graph.
 pub(super) fn close_gesture(state: &mut AppState, clip_id: klipp_core::ClipId, old_graph: klipp_nodes::NodeGraph) {
     let seq = state.active_sequence_idx;
-    let Some(clip) = state.sequences[seq].tracks.iter().find_map(|t| t.find_clip(clip_id)) else { return };
+    let Some(clip) = state.document.sequences[seq].tracks.iter().find_map(|t| t.find_clip(clip_id)) else { return };
     let new_graph = clip.grade().clone();
     state.active_history_mut().push(crate::history::HistoryEntry {
         command: crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph },
@@ -3865,7 +3865,7 @@ pub(super) fn close_gesture(state: &mut AppState, clip_id: klipp_core::ClipId, o
 /// when the active sequence has no such clip.
 pub(super) fn abandon_gesture(state: &mut AppState, clip_id: klipp_core::ClipId, old_graph: klipp_nodes::NodeGraph) -> bool {
     let seq = state.active_sequence_idx;
-    let Some(clip) = state.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return false };
+    let Some(clip) = state.document.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return false };
     clip.set_grade(old_graph);
     true
 }
@@ -3906,7 +3906,7 @@ impl crate::state::AppState {
         if self.pending_corrector != Some((clip_id, node_id)) {
             return (node_id, false);
         }
-        let Some(clip) = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id) else { return (node_id, false) };
+        let Some(clip) = self.document.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id) else { return (node_id, false) };
         (node_id, !clip.grade().nodes.iter().any(|n| n.id == node_id))
     }
 }
@@ -3920,7 +3920,7 @@ impl crate::state::AppState {
 pub(super) fn printer_light_target(state: &mut crate::state::AppState) -> Option<(klipp_graph_format::path::NodePath, (f32, f32, f32))> {
     let clip_id = state.selected_clip?;
     let descent = state.graph_descent_path.clone();
-    let seq = &state.sequences[state.active_sequence_idx];
+    let seq = &state.document.sequences[state.active_sequence_idx];
     let snapshot = match GradeStandIn::of(seq, clip_id) {
         Some(which) => crate::inspector::grade_view::snapshot_for_root(seq, clip_id, which.root(seq), &descent, &mut state.pending_corrector, &mut state.root_grade_start),
         None => seq.all_clips().find(|c| c.id == clip_id).and_then(|c| crate::inspector::grade_view::snapshot_for(c, &descent, false, &mut state.pending_corrector)),
@@ -4075,7 +4075,7 @@ mod sample_path_tests {
 /// Marked while a track's grade is the one graded; a track whose grade
 /// does something is marked in the list.
 pub(super) fn grade_track_menu(ui: &mut egui::Ui, state: &mut crate::state::AppState, theme: &KlippTheme) {
-    let seq = &state.sequences[state.active_sequence_idx];
+    let seq = &state.document.sequences[state.active_sequence_idx];
     let tracks: Vec<(klipp_core::TrackId, String, bool)> = seq
         .tracks
         .iter()
@@ -4115,7 +4115,7 @@ mod grade_track_menu_tests {
     #[test]
     fn the_track_menu_picks_a_track_s_grade() {
         let mut state = crate::state::AppState { grade_timeline: true, ..Default::default() };
-        let v1 = state.sequences[0].tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let v1 = state.document.sequences[0].tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         let (tid, name) = (v1.id, v1.name.clone());
         let ctx = egui::Context::default();
         let theme = KlippTheme::default();
@@ -4201,7 +4201,7 @@ mod zones_placed_for_their_source {
             if hdr {
                 item.colour_space = klipp_media::ColourSpace::Hdr10;
             }
-            let media = state.media_pool.add(item);
+            let media = state.document.media_pool.add(item);
             let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 25);
             let mut clip = klipp_timeline::Clip::media(media, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
             let mut graph = klipp_nodes::defaults::default_graph();
@@ -4209,13 +4209,13 @@ mod zones_placed_for_their_source {
             graph.splice_before_output(klipp_nodes::Node { id: zones, kind: klipp_nodes::NodeKind::HdrZones, label: "HDR Zones".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] });
             klipp_timeline::GradeAccess::set_grade(&mut clip, graph);
             let clip_id = clip.id;
-            let seq = &mut state.sequences[state.active_sequence_idx];
+            let seq = &mut state.document.sequences[state.active_sequence_idx];
             let v = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
             seq.tracks[v].clips.push(clip);
 
             let seeded: Vec<f32> = zones_seed(&state, clip_id, zones, "hdr_highlight_exposure").into_iter().map(|(_, v)| v).collect();
             let op = klipp_document::ops::Op::Zones { clip_id: Some(klipp_document::ops::ClipRef::Id(clip_id)), on: None, zone: Some("highlight".into()), exposure: Some(-0.7), hue: None, amount: None, saturation: None, boundary: None, falloff: None, preset: None, reset: false };
-            let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &[op]).unwrap();
+            let plan = klipp_document::ops::resolve(state.sequence(), &state.document.media_pool, &[op]).unwrap();
             let klipp_document::history::EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!() };
             let by_op = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::HdrZones).and_then(|n| n.params.hdr_zones.clone()).unwrap().boundary;
             assert_eq!(seeded, by_op[1..].to_vec(), "hdr {hdr}: the colour page and the op place the zones alike");

@@ -278,7 +278,7 @@ fn startable_tracks(clip: &klipp_timeline::Clip) -> Vec<(String, Vec<(String, Cu
 /// now (one undo step), and the track shown. The key and the track.
 fn start_track_menu(ui: &mut egui::Ui, state: &AppState, clip_id: klipp_core::ClipId) -> Option<(AppCommand, CurveParam)> {
     use crate::widgets::menu::{menu_body, menu_item};
-    let clip = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id)?;
+    let clip = state.document.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id)?;
     let mut picked = None;
     ui.menu_rows(egui::RichText::new("+ Track").size(10.0), |ui| {
         menu_body(ui, |ui| {
@@ -865,7 +865,7 @@ impl CurveEditorPanel {
         };
         // A placed kind's track (a Temporal Denoise's) is edited through
         // the clip's effect list, as its card edits it (#1419).
-        match state.selected_clip.and_then(|id| state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == id)) {
+        match state.selected_clip.and_then(|id| state.document.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == id)) {
             Some(clip) => crate::inspector::stack_view::route_placed(clip, cmds),
             None => cmds,
         }
@@ -1288,7 +1288,7 @@ impl CurveEditorPanel {
         let wanted = match state.selected_clip {
             None => state.selected_camera_key.map(|key| CurveParam::Camera(key.param)),
             Some(clip_id) => {
-                let seq = &state.sequences[state.active_sequence_idx];
+                let seq = &state.document.sequences[state.active_sequence_idx];
                 match seq.find_clip(clip_id).map(|(ti, _)| seq.tracks[ti].kind) {
                     Some(TrackKind::Video) => Some(CurveParam::Video(state.video_rubber_band_param)),
                     // Curve editor only mirrors clip-level rubber band
@@ -1332,13 +1332,13 @@ impl CurveEditorPanel {
 
     fn find_selected_clip(&self, state: &AppState) -> Option<(f64, String, TrackKind)> {
         let clip_id = state.selected_clip?;
-        let seq = &state.sequences[state.active_sequence_idx];
+        let seq = &state.document.sequences[state.active_sequence_idx];
         let (ti, ci) = seq.find_clip(clip_id)?;
         let clip = &seq.tracks[ti].clips[ci];
         let track_kind = seq.tracks[ti].kind;
         let duration = (clip.timeline_out - clip.timeline_in).to_secs_f64();
         let name = clip.media_id()
-            .and_then(|mid| state.media_pool.get(&mid))
+            .and_then(|mid| state.document.media_pool.get(&mid))
             .map(|m: &klipp_media::MediaItem| {
                 m.path
                     .file_name()
@@ -1355,7 +1355,7 @@ impl CurveEditorPanel {
 
     /// `param`'s keys on the clip `clip_id`, or the sequence's camera's.
     fn keyframes_of(param: &CurveParam, state: &AppState, clip_id: Option<klipp_core::ClipId>) -> Vec<Keyframe> {
-        let seq = &state.sequences[state.active_sequence_idx];
+        let seq = &state.document.sequences[state.active_sequence_idx];
         if let CurveParam::Camera(param) = param {
             return camera_lane::keys(&seq.camera, *param).to_vec();
         }
@@ -1433,7 +1433,7 @@ impl CurveEditorPanel {
             }
         }
         let track_kind = state.selected_clip.and_then(|cid| {
-            state.sequences[state.active_sequence_idx].tracks.iter()
+            state.document.sequences[state.active_sequence_idx].tracks.iter()
                 .find(|t| t.clips.iter().any(|c| c.id == cid))
                 .map(|t| t.kind)
         });
@@ -1456,7 +1456,7 @@ impl CurveEditorPanel {
 
         // Add effect keyframe tracks from the selected clip
         if let Some(cid) = state.selected_clip {
-            let seq = &state.sequences[state.active_sequence_idx];
+            let seq = &state.document.sequences[state.active_sequence_idx];
             if let Some(clip) = seq.all_clips().find(|c| c.id == cid) {
                 // By node, in the order the picture runs them.
                 for (path, key, tag) in clip.animated_effect_keys() {
@@ -2008,7 +2008,7 @@ impl CurveEditorPanel {
         // A clip's time starts where the clip does; the sequence's at zero.
         let relative = match clip_id {
             Some(clip_id) => {
-                let seq = &state.sequences[state.active_sequence_idx];
+                let seq = &state.document.sequences[state.active_sequence_idx];
                 let Some((ti, ci)) = seq.find_clip(clip_id) else { return };
                 playhead_secs - seq.tracks[ti].clips[ci].timeline_in.to_secs_f64()
             }
@@ -2175,7 +2175,7 @@ impl CurveEditorPanel {
                 // Shift adds the key or takes it out; a plain click selects
                 // it alone, or, on empty graph, nothing (#1958).
                 let shift = ui.ctx().input(|i| i.modifiers.shift);
-                let clip = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
+                let clip = state.document.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
                 match (clicked_kf, clip) {
                     (Some(idx), Some(clip)) => crate::key_selection::click(state, &clip, &self.param_to_kind(), idx, shift),
                     (Some(idx), None) => {
@@ -2262,7 +2262,7 @@ impl CurveEditorPanel {
                             if dist < 10.0 {
                                 // A key of several selected: every one
                                 // moves with it, one step (#1958).
-                                let clip = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
+                                let clip = state.document.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
                                 if let Some(clip) = clip.filter(|_| crate::key_selection::several(state) && state.key_selection.holds(clip_id, &self.param_to_kind(), kf.time_secs)) {
                                     cmds.extend(crate::key_selection::begin_drag(state, &clip, Some(self.param_to_kind())));
                                     self.multi_from = Some((self.x_to_time(pos.x, graph_rect, clip_duration), self.y_to_value(pos.y, graph_rect, v_min, v_range)));
@@ -2288,7 +2288,7 @@ impl CurveEditorPanel {
                                 if matches!(self.param(), CurveParam::Video(_) | CurveParam::Audio(_) | CurveParam::AudioEffect(_)) {
                                     cmds.push(AppCommand::BeginKeyframeDrag { key: lane_drag_key(clip_id, self.param()), clip_id });
                                 }
-                                let found = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
+                                let found = state.document.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
                     if let Some(clip) = found {
                                     crate::key_selection::click(state, &clip, &self.param_to_kind(), i, false);
                                 } else {
@@ -2317,7 +2317,7 @@ impl CurveEditorPanel {
                     let anchor = self.multi_key_time;
                     let dt = self.snap_time(ui, state, clip_id, keyframes, &[], anchor + dt, graph_rect, clip_duration) - anchor;
                     let dv = self.y_to_value(pos.y, graph_rect, v_min, v_range) - v0;
-                    let found = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
+                    let found = state.document.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
                     if let Some(clip) = found {
                         cmds.extend(crate::key_selection::drag_to(state, &clip, dt, dv));
                     }
@@ -2337,7 +2337,7 @@ impl CurveEditorPanel {
                 painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, theme.accent), egui::StrokeKind::Outside);
                 if response.drag_stopped() {
                     let at = |p: egui::Pos2| (self.x_to_time(p.x, graph_rect, clip_duration), self.y_to_value(p.y, graph_rect, v_min, v_range));
-                    let found = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
+                    let found = state.document.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
                     if let Some(clip) = found {
                         crate::key_selection::select_box(state, &clip, &self.param_to_kind(), at(from), at(pos), add);
                     }
@@ -2903,14 +2903,14 @@ mod curve_param_tests {
     #[test]
     fn the_property_buttons_switch_the_curve() {
         let mut state = AppState::default();
-        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/kb.mov".into(), None);
         item.duration = klipp_core::RationalTime { value: 24 * 10, rate: 24 };
-        let media = state.media_pool.add(item);
+        let media = state.document.media_pool.add(item);
         let (zero, ten) = (klipp_core::RationalTime { value: 0, rate: 24 }, klipp_core::RationalTime { value: 24 * 10, rate: 24 });
         let clip = klipp_timeline::Clip::media(media, zero, ten, zero, ten);
         let id = clip.id;
-        state.sequences[0].tracks[v1].clips.push(clip);
+        state.document.sequences[0].tracks[v1].clips.push(clip);
         state.selected_clip = Some(id);
         assert!(state.path_command(&AppCommand::ApplyKenBurns { clip_id: id, start_scale: 1.0, end_scale: 1.3, start_pos_x: 0.0, start_pos_y: 0.0, end_pos_x: 40.0, end_pos_y: 20.0 }).is_some());
         let mut panel = CurveEditorPanel::new();

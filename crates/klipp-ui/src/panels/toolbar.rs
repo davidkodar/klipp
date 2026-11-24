@@ -1019,7 +1019,7 @@ impl ToolbarPanel {
                 ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
-            let source_media = state.source_media_id.and_then(|id| state.media_pool.get(&id));
+            let source_media = state.source_media_id.and_then(|id| state.document.media_pool.get(&id));
             let in_source = state.viewer_mode == klipp_core::ViewerMode::Source && source_media.is_some();
             if ui.add_enabled(in_source, egui::Button::new("Add Source Marker").shortcut_text(kb.display_for("add_marker"))).on_hover_text("A note on the pool clip at the source playhead; the source viewer must be active.").clicked() {
                 if let Some(id) = state.source_media_id {

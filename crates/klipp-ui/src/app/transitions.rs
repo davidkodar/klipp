@@ -6,7 +6,7 @@ impl KlippApp {
     pub(super) fn handle_transition_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::AddTransition { track_index, clip_a_id, clip_b_id, kind_id, duration_frames } => {
-                let made = transition_edits(self.state.sequence(), &self.state.media_pool, &self.transcript_source, *track_index, *clip_a_id, *clip_b_id, *kind_id, *duration_frames);
+                let made = transition_edits(self.state.sequence(), &self.state.document.media_pool, &self.transcript_source, *track_index, *clip_a_id, *clip_b_id, *kind_id, *duration_frames);
                 match made {
                     Ok(TransitionEdits { edits, frames, asked, string_key }) => {
                         self.apply_edits_as_one(&edits, "Add Transition");
@@ -66,13 +66,13 @@ impl KlippApp {
             AppCommand::SetTransitionKind { track_index, transition_id, kind_id } => {
                 // A smooth cut is checked as one put on the cut is (#2219).
                 if klipp_engine::transition::transition_kind_from_id(*kind_id) == klipp_core::TransitionKind::SmoothCut {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    if let Err(r) = klipp_document::ops::smooth_cut_fits(seq, &self.state.media_pool, *track_index, *transition_id, &self.transcript_source) {
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
+                    if let Err(r) = klipp_document::ops::smooth_cut_fits(seq, &self.state.document.media_pool, *track_index, *transition_id, &self.transcript_source) {
                         self.state.toast.show(format!("No smooth cut: {}. {}", r.why, capitalise(&r.hint)));
                         return true;
                     }
                 }
-                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
+                if let Some(track) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                     if let Some(t) = track.transitions.iter_mut().find(|t| t.id == *transition_id) {
                         t.kind = klipp_engine::transition::transition_kind_from_id(*kind_id);
                     }
@@ -82,7 +82,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTransitionParam { track_index, transition_id, user_params } => {
-                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
+                if let Some(track) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                     if let Some(t) = track.transitions.iter_mut().find(|t| t.id == *transition_id) {
                         t.user_params = *user_params;
                     }
@@ -110,7 +110,7 @@ impl KlippApp {
     /// for it, refused with a toast when they have not, one undo step.
     fn reshape_transition(&mut self, track_index: usize, transition_id: klipp_core::TransitionId, duration: klipp_core::RationalTime, alignment: klipp_core::TransitionAlignment) {
         let seq = self.state.sequence();
-        match klipp_document::ops::reshape_transition(seq, &self.state.media_pool, track_index, transition_id, duration, alignment) {
+        match klipp_document::ops::reshape_transition(seq, &self.state.document.media_pool, track_index, transition_id, duration, alignment) {
             Ok(edit) => self.apply_edits_as_one(std::slice::from_ref(&edit), "Transition"),
             Err(r) => self.state.toast.show(format!("Transition unchanged: {}. {}", r.why, capitalise(&r.hint))),
         }

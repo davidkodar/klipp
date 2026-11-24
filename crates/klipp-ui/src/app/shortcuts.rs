@@ -263,7 +263,7 @@ impl KlippApp {
             // Ungroup
             if !self.state.node_canvas_focused() && free("ungroup_clips") && kb.is_action_pressed("ungroup_clips", i) {
                 if let Some(primary) = self.state.selected_clip {
-                    let gid = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                    let gid = self.state.document.sequences[self.state.active_sequence_idx].tracks.iter()
                         .flat_map(|t| t.clips.iter())
                         .find(|c| c.id == primary)
                         .and_then(|c| c.group_id);
@@ -360,12 +360,12 @@ impl KlippApp {
                     // Every selected clip, one step (#3060).
                     cmds.push(AppCommand::RemoveClips { clip_ids: several, lift: true });
                 } else if let Some(clip_id) = self.state.selected_clip {
-                    let track_idx = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                    let track_idx = self.state.document.sequences[self.state.active_sequence_idx].tracks.iter()
                         .position(|t| t.clips.iter().any(|c| c.id == clip_id));
                     if let Some(ti) = track_idx {
                         if self.is_magnetic_track(ti) {
                             let result = klipp_timeline::magnetic::MagneticEditor::lift(
-                                &mut self.state.sequences[self.state.active_sequence_idx], clip_id);
+                                &mut self.state.document.sequences[self.state.active_sequence_idx], clip_id);
                             self.state.push_history(crate::history::EditCommand::Magnetic(result.command));
                             self.state.selected_clip = None;
                             self.sync_sequence_to_engine();
@@ -781,8 +781,8 @@ impl KlippApp {
                     self.state.scope_cursor_locked_pos = None;
                     self.state.scope_cursor_locked_data = None;
                 } else if let Some(drag) = self.state.range_drag.take() {
-                    self.state.sequences[self.state.active_sequence_idx].in_point = drag.original_in;
-                    self.state.sequences[self.state.active_sequence_idx].out_point = drag.original_out;
+                    self.state.document.sequences[self.state.active_sequence_idx].in_point = drag.original_in;
+                    self.state.document.sequences[self.state.active_sequence_idx].out_point = drag.original_out;
                 } else if !self.state.selected_edits.is_empty() {
                     self.state.selected_edits.clear();
                 } else if self.state.selected_clip.is_some() || !self.state.selected_clips.is_empty() {
@@ -877,7 +877,7 @@ impl KlippApp {
             if kb.is_action_pressed("toggle_keyframe", i) {
                 let mut keys_in_frame = 0;
                 if let Some(clip_id) = self.state.selected_clip {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     // Find the clip and its track kind
                     let clip_and_kind = seq.tracks.iter().find_map(|t| {
                         t.clips.iter().find(|c| c.id == clip_id).map(|c| (c, t.kind))
@@ -1033,7 +1033,7 @@ impl KlippApp {
             if kb.is_action_pressed("add_clip_marker", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     // Find the clip and compute the time relative to source_in
-                    let clip_info = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                    let clip_info = self.state.document.sequences[self.state.active_sequence_idx].tracks.iter()
                         .flat_map(|t| t.clips.iter())
                         .find(|c| c.id == clip_id)
                         .map(|c| (c.timeline_in, c.timeline_out));
@@ -1150,7 +1150,7 @@ impl KlippApp {
 /// way.
 pub(super) fn keyframe_jump(state: &crate::state::AppState, forward: bool) -> Option<klipp_core::Timecode> {
     let clip_id = state.selected_clip?;
-    let seq = &state.sequences[state.active_sequence_idx];
+    let seq = &state.document.sequences[state.active_sequence_idx];
     let (clip, track_kind) = seq.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == clip_id).map(|c| (c, t.kind)))?;
     let empty: Vec<klipp_core::Keyframe> = Vec::new();
     let node_keys: Vec<klipp_core::Keyframe>;
@@ -1192,7 +1192,7 @@ pub(super) fn keyframe_jump(state: &crate::state::AppState, forward: bool) -> Op
 /// index. `None` when the clip or the key is gone. One place, so the
 /// shortcut and the curve editor's family apply it alike.
 pub(super) fn remove_selected_keyframe(state: &crate::state::AppState, sk: &crate::state::SelectedKeyframe) -> Option<Vec<AppCommand>> {
-    let seq = &state.sequences[state.active_sequence_idx];
+    let seq = &state.document.sequences[state.active_sequence_idx];
     let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == sk.clip_id)?;
     let kf_time = match &sk.param_kind {
         crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id).get(sk.keyframe_index).map(|kf| kf.time_secs),

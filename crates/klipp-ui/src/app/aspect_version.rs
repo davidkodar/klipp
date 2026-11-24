@@ -24,7 +24,7 @@ pub(crate) fn has_aspect(frame: klipp_core::Resolution, aspect: (u32, u32)) -> b
 /// A copy of sequence `source` at `size`, named `name`, added after the
 /// others: its index. The pictures are reframed later, as one undo step.
 pub(super) fn add_version(state: &mut crate::state::AppState, source: usize, size: (u32, u32), name: &str) -> Option<usize> {
-    let master = state.sequences.get(source)?;
+    let master = state.document.sequences.get(source)?;
     let mut version = master.clone();
     // Whose version, at which cut (#2724): one made of a version is the
     // master's.
@@ -34,11 +34,11 @@ pub(super) fn add_version(state: &mut crate::state::AppState, source: usize, siz
     let from = version.resolution;
     version.resolution = klipp_core::Resolution { width: size.0, height: size.1 };
     // Each reframe on its picture in the new frame, for the refit to keep.
-    klipp_document::ops::keep_reframes(&mut version, &state.media_pool, from);
+    klipp_document::ops::keep_reframes(&mut version, &state.document.media_pool, from);
     version.awaiting_refit = true;
-    state.sequences.push(version);
+    state.document.sequences.push(version);
     state.dirty = true;
-    Some(state.sequences.len() - 1)
+    Some(state.document.sequences.len() - 1)
 }
 
 /// Which of `pending` to reframe now, given the sequences there are, the
@@ -149,8 +149,8 @@ impl KlippApp {
             }
             FindPeopleNext::Run => {
                 self.state.find_people = None;
-                let Some(seq) = self.state.sequences.iter_mut().find(|s| s.id == id) else { return };
-                let waiting = framing_of_pictures(seq, &self.state.media_pool, klipp_analysis::service::request_framing);
+                let Some(seq) = self.state.document.sequences.iter_mut().find(|s| s.id == id) else { return };
+                let waiting = framing_of_pictures(seq, &self.state.document.media_pool, klipp_analysis::service::request_framing);
                 seq.awaiting_refit = true;
                 let name = seq.name.clone();
                 self.state.pending_refits.retain(|p| p.sequence != id);
@@ -166,14 +166,14 @@ impl KlippApp {
         if self.state.pending_refits.is_empty() {
             return;
         }
-        let open = self.state.sequences.get(self.state.active_sequence_idx).map(|s| s.id);
-        let ids: Vec<_> = self.state.sequences.iter().map(|s| s.id).collect();
+        let open = self.state.document.sequences.get(self.state.active_sequence_idx).map(|s| s.id);
+        let ids: Vec<_> = self.state.document.sequences.iter().map(|s| s.id).collect();
         let busy = |id| klipp_analysis::service::status(id).is_some_and(|s| matches!(s.state, klipp_analysis::service::State::Queued | klipp_analysis::service::State::Running));
         // The open sequence is the one an op resolves on, so one due at
         // most.
         let keeps: std::collections::HashMap<_, _> = self.state.pending_refits.iter().map(|p| (p.sequence, p.keep.clone())).collect();
         for id in due_refits(&mut self.state.pending_refits, |id| ids.contains(&id), open, busy) {
-            if let Some(seq) = self.state.sequences.iter_mut().find(|s| s.id == id) {
+            if let Some(seq) = self.state.document.sequences.iter_mut().find(|s| s.id == id) {
                 seq.awaiting_refit = false;
             }
             self.state.pending_doc_ops.push(crate::state::DocOpsRequest {
@@ -234,15 +234,15 @@ pub(crate) fn stale_version_at(sequences: &[klipp_timeline::Sequence], open: usi
 /// versions made and the stale ones by name.
 pub(crate) fn delivery_targets(state: &mut crate::state::AppState, outputs: &[klipp_core::DeliveryOutput]) -> (Vec<crate::state::PendingDelivery>, Vec<usize>, Vec<String>) {
     let open = state.active_sequence_idx;
-    let master_idx = state.sequences[open].version_of.and_then(|v| state.sequences.iter().position(|s| s.id == v.master)).unwrap_or(open);
-    let master_id = state.sequences[master_idx].id;
+    let master_idx = state.document.sequences[open].version_of.and_then(|v| state.document.sequences.iter().position(|s| s.id == v.master)).unwrap_or(open);
+    let master_id = state.document.sequences[master_idx].id;
     let (mut pending, mut made, mut stale) = (Vec::new(), Vec::new(), Vec::new());
     for o in outputs {
-        let master = &state.sequences[master_idx];
+        let master = &state.document.sequences[master_idx];
         let target = if has_aspect(master.resolution, o.aspect) {
             master_id
-        } else if let Some(v) = state.sequences.iter().find(|s| s.version_of.is_some_and(|v| v.master == master_id) && has_aspect(s.resolution, o.aspect)) {
-            if v.version_is_stale(&state.sequences) == Some(true) {
+        } else if let Some(v) = state.document.sequences.iter().find(|s| s.version_of.is_some_and(|v| v.master == master_id) && has_aspect(s.resolution, o.aspect)) {
+            if v.version_is_stale(&state.document.sequences) == Some(true) {
                 stale.push(v.name.clone());
             }
             v.id
@@ -251,7 +251,7 @@ pub(crate) fn delivery_targets(state: &mut crate::state::AppState, outputs: &[kl
             let name = format!("{} {}:{}", master.name, o.aspect.0, o.aspect.1);
             let Some(index) = add_version(state, master_idx, size, &name) else { continue };
             made.push(index);
-            state.sequences[index].id
+            state.document.sequences[index].id
         };
         pending.push(crate::state::PendingDelivery { sequence: target, settings: o.settings.clone() });
     }
@@ -296,7 +296,7 @@ impl super::KlippApp {
             for (i, t) in klipp_core::delivery_templates().iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut self.export_dialog.deliver[i], t.name.as_str());
-                    if let Some(v) = stale_version_at(&self.state.sequences, open, t.aspect) {
+                    if let Some(v) = stale_version_at(&self.state.document.sequences, open, t.aspect) {
                         ui.label(egui::RichText::new("\u{26A0} older than the master's last edit").small().color(ui.visuals().warn_fg_color));
                         if ui.small_button("Rebuild from Master").on_hover_text("Copy the master's cut in again; clips still there keep their framing").clicked() {
                             cmds.push(AppCommand::RebuildVersion { sequence_idx: v });
@@ -318,22 +318,22 @@ impl super::KlippApp {
     /// on it, opened first; the clips that are new to it reframed once
     /// their framing is in (#2724).
     pub(super) fn rebuild_version(&mut self, index: usize) {
-        let Some((tracks, kept, cut)) = rebuilt_tracks(&self.state.sequences, index) else {
+        let Some((tracks, kept, cut)) = rebuilt_tracks(&self.state.document.sequences, index) else {
             self.state.toast.show("Not a version of a sequence there is: nothing to rebuild from");
             return;
         };
         if index != self.state.active_sequence_idx {
             self.send_commands(vec![AppCommand::SetActiveSequence { sequence_idx: index }]);
         }
-        let old = self.state.sequences[index].tracks.clone();
+        let old = self.state.document.sequences[index].tracks.clone();
         self.apply_edits_as_one(&[klipp_document::history::EditCommand::SetTracks { description: "Rebuild from Master", old, new: tracks }], "Rebuild from Master");
-        let seq = &mut self.state.sequences[index];
+        let seq = &mut self.state.document.sequences[index];
         if let Some(v) = seq.version_of.as_mut() {
             v.cut = cut;
         }
         seq.awaiting_refit = true;
         let (id, name) = (seq.id, seq.name.clone());
-        let waiting = request_framing(&self.state.sequences[index], &self.state.media_pool);
+        let waiting = request_framing(&self.state.document.sequences[index], &self.state.document.media_pool);
         self.state.pending_refits.push(crate::state::PendingRefit { sequence: id, waiting, keep: kept.clone() });
         self.state.toast.show(format!("{name} rebuilt from the master's cut: {} clip(s) kept their framing, the new ones are reframed", kept.len()));
     }
@@ -341,11 +341,11 @@ impl super::KlippApp {
     /// A delivery's outputs found or made, and queued to export each in
     /// turn as its version is reframed (#2724).
     pub(super) fn start_delivery(&mut self, outputs: &[klipp_core::DeliveryOutput]) {
-        let home = self.state.sequences[self.state.active_sequence_idx].id;
+        let home = self.state.document.sequences[self.state.active_sequence_idx].id;
         let (pending, made, stale) = delivery_targets(&mut self.state, outputs);
         for index in made {
-            let id = self.state.sequences[index].id;
-            let waiting = request_framing(&self.state.sequences[index], &self.state.media_pool);
+            let id = self.state.document.sequences[index].id;
+            let waiting = request_framing(&self.state.document.sequences[index], &self.state.document.media_pool);
             self.state.pending_refits.push(crate::state::PendingRefit { sequence: id, waiting, keep: Vec::new() });
         }
         if !stale.is_empty() {
@@ -360,10 +360,10 @@ impl super::KlippApp {
     /// when all are queued.
     pub(super) fn advance_deliveries(&mut self) {
         let confirming = self.state.export_offline_warning.is_some() || self.state.export_source_overwrite_warning.is_some();
-        match next_delivery(&self.state.pending_deliveries, &self.state.sequences, self.state.active_sequence_idx, confirming) {
+        match next_delivery(&self.state.pending_deliveries, &self.state.document.sequences, self.state.active_sequence_idx, confirming) {
             Go::Done => {
                 if let Some(home) = self.state.delivery_home.take() {
-                    if let Some(i) = self.state.sequences.iter().position(|s| s.id == home) {
+                    if let Some(i) = self.state.document.sequences.iter().position(|s| s.id == home) {
                         self.send_commands(vec![AppCommand::SetActiveSequence { sequence_idx: i }]);
                     }
                 }
@@ -403,16 +403,16 @@ mod tests {
     #[test]
     fn a_version_is_a_copy_at_the_new_size() {
         let mut state = crate::state::AppState::default();
-        let source = state.sequences[0].clone();
+        let source = state.document.sequences[0].clone();
         let index = add_version(&mut state, 0, (1080, 1920), "Cut 9:16").unwrap();
         assert_eq!(index, 1);
-        let version = &state.sequences[1];
+        let version = &state.document.sequences[1];
         assert_eq!((version.name.as_str(), version.resolution.width, version.resolution.height), ("Cut 9:16", 1080, 1920));
         assert_ne!(version.id, source.id);
         assert_eq!(version.tracks.len(), source.tracks.len());
-        assert_eq!(state.sequences[0].resolution, source.resolution);
+        assert_eq!(state.document.sequences[0].resolution, source.resolution);
         assert!(add_version(&mut state, 9, (1, 1), "x").is_none());
-        assert!(state.sequences[1].awaiting_refit && !state.sequences[0].awaiting_refit, "the version waits to be reframed");
+        assert!(state.document.sequences[1].awaiting_refit && !state.document.sequences[0].awaiting_refit, "the version waits to be reframed");
     }
 
     /// An opened project's versions still to be reframed wait again
@@ -421,10 +421,10 @@ mod tests {
     fn an_opened_version_still_to_be_reframed_waits_again() {
         let mut state = crate::state::AppState::default();
         add_version(&mut state, 0, (1080, 1920), "Cut 9:16").unwrap();
-        let pending = waiting_refits(&state.sequences, &state.media_pool);
-        assert_eq!(pending.iter().map(|p| p.sequence).collect::<Vec<_>>(), vec![state.sequences[1].id]);
-        state.sequences[1].awaiting_refit = false;
-        assert!(waiting_refits(&state.sequences, &state.media_pool).is_empty());
+        let pending = waiting_refits(&state.document.sequences, &state.document.media_pool);
+        assert_eq!(pending.iter().map(|p| p.sequence).collect::<Vec<_>>(), vec![state.document.sequences[1].id]);
+        state.document.sequences[1].awaiting_refit = false;
+        assert!(waiting_refits(&state.document.sequences, &state.document.media_pool).is_empty());
     }
 
     /// A version is reframed once its files are analysed and it is the
@@ -483,24 +483,24 @@ mod tests {
         let mut state = crate::state::AppState::default();
         let media = klipp_core::MediaId::new();
         let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 30);
-        state.sequences[0].tracks[0].clips.push(klipp_timeline::Clip::media(media, at(0.0), at(4.0), at(0.0), at(4.0)));
+        state.document.sequences[0].tracks[0].clips.push(klipp_timeline::Clip::media(media, at(0.0), at(4.0), at(0.0), at(4.0)));
         let tall = add_version(&mut state, 0, (1080, 1920), "Cut 9:16").unwrap();
-        state.sequences[tall].awaiting_refit = false;
-        let tall_id = state.sequences[tall].id;
+        state.document.sequences[tall].awaiting_refit = false;
+        let tall_id = state.document.sequences[tall].id;
         let (pending, made, stale) = delivery_targets(&mut state, &[output((16, 9), "/tmp/a.mp4"), output((9, 16), "/tmp/b.mp4"), output((1, 1), "/tmp/c.mp4")]);
         assert_eq!(pending.len(), 3);
-        assert_eq!(pending[0].sequence, state.sequences[0].id, "16:9 from the master");
+        assert_eq!(pending[0].sequence, state.document.sequences[0].id, "16:9 from the master");
         assert_eq!(pending[1].sequence, tall_id, "9:16 from its version");
         assert_eq!(made.len(), 1);
-        let square = &state.sequences[made[0]];
+        let square = &state.document.sequences[made[0]];
         assert_eq!((square.resolution.width, square.resolution.height, pending[2].sequence), (1080, 1080, square.id), "1:1 made");
-        assert!(square.awaiting_refit && square.version_of.is_some_and(|v| v.master == state.sequences[0].id));
+        assert!(square.awaiting_refit && square.version_of.is_some_and(|v| v.master == state.document.sequences[0].id));
         assert!(stale.is_empty(), "nothing cut since");
         // The master trimmed: its versions are older than its cut.
-        state.sequences[0].tracks[0].clips[0].timeline_out = at(3.0);
+        state.document.sequences[0].tracks[0].clips[0].timeline_out = at(3.0);
         let (_, made, stale) = delivery_targets(&mut state, &[output((9, 16), "/tmp/b.mp4")]);
         assert!(made.is_empty() && stale == vec!["Cut 9:16".to_string()], "{stale:?}");
-        assert_eq!(state.sequences[tall].tracks[0].clips[0].timeline_out, at(4.0), "never rebuilt unasked");
+        assert_eq!(state.document.sequences[tall].tracks[0].clips[0].timeline_out, at(4.0), "never rebuilt unasked");
     }
 
     /// One step a frame: the next export's sequence opened, its reframe
@@ -509,15 +509,15 @@ mod tests {
     fn a_delivery_opens_waits_and_exports_in_turn() {
         let mut state = crate::state::AppState::default();
         let v = add_version(&mut state, 0, (1080, 1920), "Cut 9:16").unwrap();
-        let pending = vec![crate::state::PendingDelivery { sequence: state.sequences[v].id, settings: Default::default() }];
-        assert_eq!(next_delivery(&pending, &state.sequences, 0, false), Go::Open(v));
-        assert_eq!(next_delivery(&pending, &state.sequences, v, false), Go::Wait, "awaiting its reframe");
-        state.sequences[v].awaiting_refit = false;
-        assert_eq!(next_delivery(&pending, &state.sequences, v, true), Go::Wait, "a confirmation open");
-        assert_eq!(next_delivery(&pending, &state.sequences, v, false), Go::Export(v));
-        assert_eq!(next_delivery(&[], &state.sequences, v, false), Go::Done);
-        state.sequences.remove(v);
-        assert_eq!(next_delivery(&pending, &state.sequences, 0, false), Go::Gone);
+        let pending = vec![crate::state::PendingDelivery { sequence: state.document.sequences[v].id, settings: Default::default() }];
+        assert_eq!(next_delivery(&pending, &state.document.sequences, 0, false), Go::Open(v));
+        assert_eq!(next_delivery(&pending, &state.document.sequences, v, false), Go::Wait, "awaiting its reframe");
+        state.document.sequences[v].awaiting_refit = false;
+        assert_eq!(next_delivery(&pending, &state.document.sequences, v, true), Go::Wait, "a confirmation open");
+        assert_eq!(next_delivery(&pending, &state.document.sequences, v, false), Go::Export(v));
+        assert_eq!(next_delivery(&[], &state.document.sequences, v, false), Go::Done);
+        state.document.sequences.remove(v);
+        assert_eq!(next_delivery(&pending, &state.document.sequences, 0, false), Go::Gone);
     }
 
     /// #2724: a version rebuilt from its trimmed master takes the new
@@ -528,24 +528,24 @@ mod tests {
         let mut state = crate::state::AppState::default();
         let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 30);
         let media = klipp_core::MediaId::new();
-        state.sequences[0].tracks[0].clips.push(klipp_timeline::Clip::media(media, at(0.0), at(4.0), at(0.0), at(4.0)));
+        state.document.sequences[0].tracks[0].clips.push(klipp_timeline::Clip::media(media, at(0.0), at(4.0), at(0.0), at(4.0)));
         let v = add_version(&mut state, 0, (1080, 1920), "Cut 9:16").unwrap();
         // Reframed by hand in the version.
-        let framed = klipp_timeline::test_clip::TestClip::of(state.sequences[v].tracks[0].clips[0].clone()).lane("scale", 0.0, 2.5).build();
-        state.sequences[v].tracks[0].clips[0] = framed;
+        let framed = klipp_timeline::test_clip::TestClip::of(state.document.sequences[v].tracks[0].clips[0].clone()).lane("scale", 0.0, 2.5).build();
+        state.document.sequences[v].tracks[0].clips[0] = framed;
         // The master trimmed, and a shot added.
-        state.sequences[0].tracks[0].clips[0].timeline_out = at(3.0);
-        state.sequences[0].tracks[0].clips.push(klipp_timeline::Clip::media(media, at(3.0), at(6.0), at(5.0), at(8.0)));
-        assert_eq!(state.sequences[v].version_is_stale(&state.sequences), Some(true));
-        let (tracks, kept, cut) = rebuilt_tracks(&state.sequences, v).unwrap();
+        state.document.sequences[0].tracks[0].clips[0].timeline_out = at(3.0);
+        state.document.sequences[0].tracks[0].clips.push(klipp_timeline::Clip::media(media, at(3.0), at(6.0), at(5.0), at(8.0)));
+        assert_eq!(state.document.sequences[v].version_is_stale(&state.document.sequences), Some(true));
+        let (tracks, kept, cut) = rebuilt_tracks(&state.document.sequences, v).unwrap();
         let clips = &tracks[0].clips;
         assert_eq!((clips.len(), clips[0].timeline_out), (2, at(3.0)), "the new cut");
         assert_eq!(kept, vec![clips[0].id], "the clip still there kept");
         let scale = |c: &klipp_timeline::Clip| klipp_timeline::frame_glide::lane(c, "scale").iter().map(|k| k.value).collect::<Vec<_>>();
         assert_eq!(scale(&clips[0]), vec![2.5], "with its framing");
         assert!(scale(&clips[1]).is_empty(), "the new one left for the refit");
-        assert_eq!(cut, state.sequences[0].cut_stamp());
-        assert!(rebuilt_tracks(&state.sequences, 0).is_none(), "the master is no version");
+        assert_eq!(cut, state.document.sequences[0].cut_stamp());
+        assert!(rebuilt_tracks(&state.document.sequences, 0).is_none(), "the master is no version");
     }
 
     /// #2724: the ticked formats are written beside the output file,

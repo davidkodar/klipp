@@ -11,8 +11,8 @@ impl KlippApp {
         if old == new {
             return;
         }
-        if let Some((ti, ci)) = self.state.sequences[self.state.active_sequence_idx].find_clip(clip_id) {
-            if let klipp_timeline::ClipKind::TemplatePrecomposition { template_instance, .. } = &mut self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
+        if let Some((ti, ci)) = self.state.document.sequences[self.state.active_sequence_idx].find_clip(clip_id) {
+            if let klipp_timeline::ClipKind::TemplatePrecomposition { template_instance, .. } = &mut self.state.document.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
                 *template_instance = new.clone();
             }
         }
@@ -41,7 +41,7 @@ impl KlippApp {
         // Generator parameter editing
         if let AppCommand::UpdateGeneratorData { clip_id, data } = cmd {
             let old = self.snapshot_generator(*clip_id);
-            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+            for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
                 if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                     if let klipp_timeline::ClipKind::Generator(ref mut gd) = clip.kind {
                         *gd = data.clone();
@@ -66,7 +66,7 @@ impl KlippApp {
     /// keep reading as one shot. Clips it leaves as they were are not in
     /// the step, and nothing is pushed when none changes.
     pub(super) fn set_clip_labels(&mut self, clip_ids: &[klipp_core::ClipId], description: &'static str, change: impl Fn(&klipp_timeline::ClipLabel) -> klipp_timeline::ClipLabel) {
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
         let targets = with_linked_partners(seq, clip_ids);
         let mut changes = Vec::new();
         for clip in seq.all_clips_mut().filter(|c| targets.contains(&c.id)) {
@@ -116,7 +116,7 @@ impl KlippApp {
                 }
                 AppCommand::MoveClipToTrack { clip_id, new_timeline_in, from_track, to_track } => {
                     if self.refused_by_lock(clip_id) { return true; }
-                    if let Some(name) = self.state.sequences[self.state.active_sequence_idx].tracks.get(*to_track).filter(|t| t.locked).map(|t| t.name.clone()) {
+                    if let Some(name) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get(*to_track).filter(|t| t.locked).map(|t| t.name.clone()) {
                         self.state.toast.show(format!("{name} is locked"));
                         return true;
                     }
@@ -147,14 +147,14 @@ impl KlippApp {
                 AppCommand::StretchClip { clip_ids, at_end, to, ripple, keep_pitch } => {
                     use klipp_document::ops::{stretch_at, Edge, StretchTo};
                     let edge = if *at_end { Edge::Out } else { Edge::In };
-                    match stretch_at(self.state.sequence(), &self.state.media_pool, clip_ids, edge, StretchTo::EdgeAt(to.to_secs_f64()), *ripple, *keep_pitch) {
+                    match stretch_at(self.state.sequence(), &self.state.document.media_pool, clip_ids, edge, StretchTo::EdgeAt(to.to_secs_f64()), *ripple, *keep_pitch) {
                         Ok((_, edit, _)) => {
                             self.apply_edits_as_one(&[edit], "Rate Stretch");
                             // Slowed, with nothing drawing its in-between
                             // frames: smooth motion offered, as the clip's
                             // speed settings offer it.
                             let first = clip_ids.first().and_then(|id| self.state.sequence().all_clips().find(|c| c.id == *id));
-                            if let Some((id, pct)) = first.and_then(|c| crate::timeline::stretch_drag::smooth_offer(c, &self.state.media_pool).map(|p| (c.id, p))) {
+                            if let Some((id, pct)) = first.and_then(|c| crate::timeline::stretch_drag::smooth_offer(c, &self.state.document.media_pool).map(|p| (c.id, p))) {
                                 self.state.toast.show_with_action(format!("Slowed to {pct:.0}%: each frame is shown longer"), "Smooth motion", crate::widgets::toast::ToastAction::SmoothMotion(id));
                             }
                         }
@@ -167,7 +167,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::TrimClip { .. } => {
-                    match crate::clip_edits::trim(self.state.sequence(), &self.state.media_pool, cmd) {
+                    match crate::clip_edits::trim(self.state.sequence(), &self.state.document.media_pool, cmd) {
                         Ok(Some(edit)) => self.apply_edits_as_one(&[edit], "Trim Clip"),
                         Ok(None) => {},
                         Err(why) => {
@@ -218,7 +218,7 @@ impl KlippApp {
         match cmd {
                 AppCommand::CenterTimelineOnClip(clip_id) => {
                     let cid = *clip_id;
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some(c) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid) {
                         // Phase 4A: scroll the timeline so the clip's
                         // start sits a small constant inset from the
@@ -284,7 +284,7 @@ impl KlippApp {
                 // Node graph, color grading, keyframes, LUT — handled by handle_color_commands
                 AppCommand::SetClipDepth { clip_id, depth } => {
                     let depth = depth.clamp(0.0, 20.0);
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some((ti, ci)) = seq.find_clip(*clip_id) {
                         let clip = &mut seq.tracks[ti].clips[ci];
                         let old = clip.depth;
@@ -311,8 +311,8 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetTemplateOverride { clip_id, parameter, value } => {
-                    let selected = self.state.sequences[self.state.active_sequence_idx].find_clip(*clip_id)
-                        .and_then(|(ti, ci)| match &self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
+                    let selected = self.state.document.sequences[self.state.active_sequence_idx].find_clip(*clip_id)
+                        .and_then(|(ti, ci)| match &self.state.document.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
                             klipp_timeline::ClipKind::TemplatePrecomposition { sequence_id, template_instance } => Some((*sequence_id, template_instance.clone())),
                             _ => None,
                         });
@@ -331,7 +331,7 @@ impl KlippApp {
                     }
                     let mut new = old.clone();
                     new.overrides.insert(parameter.clone(), value.clone());
-                    let Some(template_sequence) = self.state.sequences.iter().find(|sequence| sequence.id == sequence_id) else {
+                    let Some(template_sequence) = self.state.document.sequences.iter().find(|sequence| sequence.id == sequence_id) else {
                         self.state.toast.show("Template composition is missing");
                         return true;
                     };
@@ -343,8 +343,8 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetTemplateLink { clip_id, property, action } => {
-                    let Some(old) = self.state.sequences[self.state.active_sequence_idx].find_clip(*clip_id)
-                        .and_then(|(ti, ci)| match &self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
+                    let Some(old) = self.state.document.sequences[self.state.active_sequence_idx].find_clip(*clip_id)
+                        .and_then(|(ti, ci)| match &self.state.document.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
                             klipp_timeline::ClipKind::TemplatePrecomposition { template_instance, .. } => Some(template_instance.clone()),
                             _ => None,
                         }) else { return true };
@@ -363,11 +363,11 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SaveCompositionTemplate { sequence_id, name } => {
-                    let Some(sequence) = self.state.sequences.iter().find(|sequence| sequence.id.0 == *sequence_id).cloned() else {
+                    let Some(sequence) = self.state.document.sequences.iter().find(|sequence| sequence.id.0 == *sequence_id).cloned() else {
                         self.state.toast.show("The selected composition is missing");
                         return true;
                     };
-                    match crate::parameterized_templates::save_composition_as_template(&mut self.state.composition_templates, &sequence, &self.state.sequences, name.clone()) {
+                    match crate::parameterized_templates::save_composition_as_template(&mut self.state.composition_templates, &sequence, &self.state.document.sequences, name.clone()) {
                         Ok(true) => self.state.toast.show(format!("Updated the template '{name}'")),
                         Ok(false) => self.state.toast.show(format!("Saved '{name}' as a template")),
                         Err(error) => self.state.toast.show(format!("Could not save template: {error}")),
@@ -375,7 +375,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetSequenceShutter { sequence_idx, shutter_deg, samples } => {
-                    if let Some(seq) = self.state.sequences.get_mut(*sequence_idx) {
+                    if let Some(seq) = self.state.document.sequences.get_mut(*sequence_idx) {
                         let old = seq.camera.clone();
                         seq.camera.shutter_deg = shutter_deg.clamp(0.0, 360.0);
                         seq.camera.shutter_samples = (*samples).clamp(2, 32);
@@ -392,7 +392,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetSequenceTitleNits { sequence_idx, nits } => {
-                    if let Some(seq) = self.state.sequences.get_mut(*sequence_idx) {
+                    if let Some(seq) = self.state.document.sequences.get_mut(*sequence_idx) {
                         let range = klipp_timeline::TITLE_NITS_RANGE;
                         let new = if nits.is_finite() { nits.clamp(*range.start(), *range.end()) } else { klipp_timeline::DEFAULT_TITLE_NITS };
                         let old = seq.title_nits;
@@ -433,7 +433,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::BeginSequenceCameraDrag { sequence_idx } => {
-                    if let Some(seq) = self.state.sequences.get(*sequence_idx) {
+                    if let Some(seq) = self.state.document.sequences.get(*sequence_idx) {
                         let before = Box::new(seq.camera.clone());
                         let id = seq.id;
                         self.state.history_for_mut(id).begin_drag(
@@ -446,7 +446,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::EndSequenceCameraDrag { sequence_idx } => {
-                    if let Some(seq) = self.state.sequences.get(*sequence_idx) {
+                    if let Some(seq) = self.state.document.sequences.get(*sequence_idx) {
                         let now = Box::new(seq.camera.clone());
                         let id = seq.id;
                         let history = self.state.history_for_mut(id);
@@ -580,7 +580,7 @@ impl KlippApp {
                     if *from == self.state.sequence().id {
                         return true;
                     }
-                    let Some(source) = self.state.sequences.iter().find(|s| s.id == *from) else { return true };
+                    let Some(source) = self.state.document.sequences.iter().find(|s| s.id == *from) else { return true };
                     let Some(cb) = crate::clip_clipboard::copy(source, ids) else {
                         self.state.toast.show("Those clips are gone from the other timeline");
                         return true;
@@ -599,7 +599,7 @@ impl KlippApp {
                         self.state.toast.show("The selects and the cut are the same sequence: open another as selects");
                         return true;
                     }
-                    let Some(selects) = self.state.sequences.iter().find(|s| s.id == *sequence_id) else { return true };
+                    let Some(selects) = self.state.document.sequences.iter().find(|s| s.id == *sequence_id) else { return true };
                     let Some(cb) = crate::clip_clipboard::copy_range(selects, *range_in, *range_out) else {
                         self.state.toast.show("Nothing in the selects' marked range");
                         return true;
@@ -631,7 +631,7 @@ impl KlippApp {
                 }
                 AppCommand::CopyAttributes { clip_id } => {
                     let cid = *clip_id;
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips().find(|c| c.id == cid) {
                         self.state.attributes_clipboard = Some(crate::state::AttributesClipboard::of_in(seq, clip));
                         self.state.toast.show("Attributes copied".to_string());
@@ -663,7 +663,7 @@ impl KlippApp {
                         let targets = self.state.paste_attributes_targets();
                         self.state.paste_attributes_onto = None;
                         let named = self.state.paste_attributes_named(&targets);
-                        let (mut edits, labels, tracks_left) = paste_attributes(&self.state.sequences[self.state.active_sequence_idx], &targets, &attrs, what);
+                        let (mut edits, labels, tracks_left) = paste_attributes(&self.state.document.sequences[self.state.active_sequence_idx], &targets, &attrs, what);
                         // The grade's node labels, in the same step (#1866).
                         edits.extend(labels);
                         self.apply_edits_as_one(&edits, "Paste Attributes");
@@ -685,7 +685,7 @@ impl KlippApp {
                         }
                         return true;
                     }
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     let found = seq.tracks.iter().enumerate().find_map(|(ti, t)| {
                         t.find_clip(cid).map(|c| (ti, c.clone()))
                     });
@@ -702,7 +702,7 @@ impl KlippApp {
                 AppCommand::SetClipEnabled { clip_id, enabled } => {
                     let cid = *clip_id;
                     let en = *enabled;
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
                         clip.enabled = en;
                     }
@@ -713,7 +713,7 @@ impl KlippApp {
                 AppCommand::SetClipSolo { clip_id, solo } => {
                     let cid = *clip_id;
                     let s = *solo;
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
                         clip.solo = s;
                     }
@@ -726,7 +726,7 @@ impl KlippApp {
                 AppCommand::SetClipBlendMode { clip_id, mode } => {
                     let cid = *clip_id;
                     let m = *mode;
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
                         clip.blend_mode = m;
                     }
@@ -751,7 +751,7 @@ impl KlippApp {
                     // must not be an AdjustmentLayer (no own pixels), and the
                     // bind must not introduce a cycle.
                     {
-                        let seq = &self.state.sequences[seq_idx];
+                        let seq = &self.state.document.sequences[seq_idx];
                         let source = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == source_id);
                         let Some(source) = source else {
                             tracing::warn!("SetClipMatte: source clip {source_id:?} not found in active sequence");
@@ -774,7 +774,7 @@ impl KlippApp {
                         feather_px: *feather_px,
                         choke_px: *choke_px,
                     };
-                    let seq = &mut self.state.sequences[seq_idx];
+                    let seq = &mut self.state.document.sequences[seq_idx];
                     if let Some(consumer) = seq.all_clips_mut().find(|c| c.id == consumer_id) {
                         consumer.matte_source = Some(binding);
                     }
@@ -793,7 +793,7 @@ impl KlippApp {
                     // Capture which source the consumer was pointing at, then
                     // clear the binding.
                     let prior_source = {
-                        let seq = &mut self.state.sequences[seq_idx];
+                        let seq = &mut self.state.document.sequences[seq_idx];
                         if let Some(consumer) = seq.all_clips_mut().find(|c| c.id == consumer_id) {
                             let prior = consumer.matte_source.as_ref().map(|b| b.source_clip_id);
                             consumer.matte_source = None;
@@ -805,11 +805,11 @@ impl KlippApp {
                     // If nothing else references the source, return it to the
                     // visible composite (clear `consumed_as_matte`).
                     if let Some(sid) = prior_source {
-                        let still_referenced = self.state.sequences[seq_idx].tracks.iter()
+                        let still_referenced = self.state.document.sequences[seq_idx].tracks.iter()
                             .flat_map(|t| t.clips.iter())
                             .any(|c| c.matte_source.as_ref().is_some_and(|b| b.source_clip_id == sid));
                         if !still_referenced {
-                            let seq = &mut self.state.sequences[seq_idx];
+                            let seq = &mut self.state.document.sequences[seq_idx];
                             if let Some(src) = seq.all_clips_mut().find(|c| c.id == sid) {
                                 src.consumed_as_matte = false;
                             }
@@ -837,7 +837,7 @@ impl KlippApp {
                     // as targets), and the bind would not introduce a
                     // cycle.
                     {
-                        let seq = &self.state.sequences[seq_idx];
+                        let seq = &self.state.document.sequences[seq_idx];
                         let Some(target_clip) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == target_id) else {
                             tracing::warn!("SetClipTransformLink: target clip {target_id:?} not found in active sequence");
                             return true;
@@ -866,7 +866,7 @@ impl KlippApp {
                         inherit_rotation: *inherit_rotation,
                         inherit_anchor: *inherit_anchor,
                     };
-                    let seq = &mut self.state.sequences[seq_idx];
+                    let seq = &mut self.state.document.sequences[seq_idx];
                     if let Some(consumer) = seq.all_clips_mut().find(|c| c.id == consumer_id) {
                         consumer.transform_link = Some(link);
                     }
@@ -890,7 +890,7 @@ impl KlippApp {
                     // transform_link points back at consumer would
                     // — defence-in-depth covers that).
                     {
-                        let seq = &self.state.sequences[seq_idx];
+                        let seq = &self.state.document.sequences[seq_idx];
                         let Some(host) = seq.tracks.iter().flat_map(|t| t.clips.iter())
                             .find(|c| c.id == host_id) else {
                             tracing::warn!(
@@ -923,7 +923,7 @@ impl KlippApp {
                         inherit_rotation: *inherit_rotation,
                         inherit_anchor: *inherit_anchor,
                     };
-                    let seq = &mut self.state.sequences[seq_idx];
+                    let seq = &mut self.state.document.sequences[seq_idx];
                     if let Some(consumer) = seq.all_clips_mut().find(|c| c.id == consumer_id) {
                         consumer.transform_link = Some(link);
                     }
@@ -933,7 +933,7 @@ impl KlippApp {
                 }
                 AppCommand::ClearClipTransformLink { clip_id } => {
                     let cid = *clip_id;
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
                         clip.transform_link = None;
                     }
@@ -953,7 +953,7 @@ impl KlippApp {
                         klipp_timeline::LinkMode::Absolute
                     };
                     let targets = {
-                        let seq = &self.state.sequences[seq_idx];
+                        let seq = &self.state.document.sequences[seq_idx];
                         crate::hyperzoom::collect_auto_link_targets(seq, src_id, *ramp_secs)
                     };
                     if targets.is_empty() {
@@ -968,7 +968,7 @@ impl KlippApp {
                         return true;
                     }
                     let inherit = (*inherit_scale, *inherit_position, *inherit_rotation, *inherit_anchor);
-                    let seq = &mut self.state.sequences[seq_idx];
+                    let seq = &mut self.state.document.sequences[seq_idx];
                     for cid in &targets {
                         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *cid) {
                             clip.transform_link = Some(klipp_timeline::TransformLink {
@@ -1007,7 +1007,7 @@ impl KlippApp {
                     // a partial application that left a dangling
                     // ramp on the source).
                     let (src_dur_secs, src_timeline_out, tgt_id, tgt_dur_secs) = {
-                        let seq = &self.state.sequences[seq_idx];
+                        let seq = &self.state.document.sequences[seq_idx];
                         let mut found: Option<(f64, klipp_core::Timecode, klipp_core::ClipId, f64)> = None;
                         'outer: for track in &seq.tracks {
                             for (idx, c) in track.clips.iter().enumerate() {
@@ -1063,8 +1063,8 @@ impl KlippApp {
                     // apply records (M3 step 4: the effect layers are graph
                     // edits by path, recorded as picture edits).
                     let picture_of = |seq: &klipp_timeline::Sequence, id| seq.all_clips().find(|c| c.id == id).map(|c| c.picture.clone());
-                    let before = [src_id, tgt_id].map(|id| (id, picture_of(&self.state.sequences[seq_idx], id)));
-                    let seq = &mut self.state.sequences[seq_idx];
+                    let before = [src_id, tgt_id].map(|id| (id, picture_of(&self.state.document.sequences[seq_idx], id)));
+                    let seq = &mut self.state.document.sequences[seq_idx];
                     apply_hyperzoom_plan_to_clip(seq, src_id, plan.source_anchor, &plan.source_scale_kfs);
                     apply_hyperzoom_plan_to_clip(seq, tgt_id, plan.target_anchor, &plan.target_scale_kfs);
                     if let Some(rb) = plan.radial_blur.as_ref() {
@@ -1114,7 +1114,7 @@ impl KlippApp {
                     // success.
                     self.state.active_history_mut().begin_batch();
                     for (clip_id, before) in before {
-                        let after = picture_of(&self.state.sequences[seq_idx], clip_id);
+                        let after = picture_of(&self.state.document.sequences[seq_idx], clip_id);
                         if let (Some(before), Some(after)) = (before, after) {
                             let edit = klipp_timeline::PictureEdit { before, after };
                             self.state.push_history(EditCommand::PictureEdit { description: "Hyperzoom", clip_id, edit: Box::new(edit) });
@@ -1153,7 +1153,7 @@ impl KlippApp {
                 AppCommand::SetClipConsumedAsMatte { clip_id, consumed } => {
                     let cid = *clip_id;
                     let c = *consumed;
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
                         clip.consumed_as_matte = c;
                     }
@@ -1169,7 +1169,7 @@ impl KlippApp {
                         feather_px: *feather_px,
                         choke_px: *choke_px,
                     };
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
                         clip.matte_stencil = Some(stencil);
                     }
@@ -1179,7 +1179,7 @@ impl KlippApp {
                 }
                 AppCommand::ClearClipStencil { clip_id } => {
                     let cid = *clip_id;
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
                         clip.matte_stencil = None;
                     }
@@ -1191,7 +1191,7 @@ impl KlippApp {
                     let cid = *clip_id;
                     let chan = *channel;
                     // Resolve the consumer's track index.
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let seq = &self.state.document.sequences[self.state.active_sequence_idx];
                     let track_idx = seq.tracks.iter().position(|t| t.clips.iter().any(|c| c.id == cid));
                     let Some(track_idx) = track_idx else {
                         return true;
@@ -1216,7 +1216,7 @@ impl KlippApp {
                 }
                 AppCommand::ToggleClipStencil { clip_id } => {
                     let cid = *clip_id;
-                    let currently_on = self.state.sequences[self.state.active_sequence_idx]
+                    let currently_on = self.state.document.sequences[self.state.active_sequence_idx]
                         .tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid)
                         .map(|c| c.matte_stencil.is_some()).unwrap_or(false);
                     let next_cmd = if currently_on {
@@ -1326,7 +1326,7 @@ impl KlippApp {
                     let result = if *by_markers {
                         crate::timeline_sync::by_markers(self.state.sequence(), &selected, anchor)
                     } else {
-                        crate::timeline_sync::by_timecode(self.state.sequence(), &self.state.media_pool, &selected, anchor)
+                        crate::timeline_sync::by_timecode(self.state.sequence(), &self.state.document.media_pool, &selected, anchor)
                     };
                     match result {
                         Ok((moves, skipped)) => {
@@ -1459,7 +1459,7 @@ impl KlippApp {
 impl KlippApp {
     /// Check if the track containing a given clip is locked.
     pub(super) fn clip_track_is_locked(&self, clip_id: &ClipId) -> bool {
-        self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+        self.state.document.sequences[self.state.active_sequence_idx].tracks.iter()
             .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
             .is_some_and(|t| t.locked)
     }
@@ -1486,7 +1486,7 @@ impl KlippApp {
         }
         // Resolve the new media's source duration so we know whether
         // to clamp. None → media isn't in the pool.
-        let (new_media_dur, new_media_in) = match self.state.media_pool.get(&new_media_id) {
+        let (new_media_dur, new_media_in) = match self.state.document.media_pool.get(&new_media_id) {
             Some(item) => (item.duration, item.default_source_in),
             None => {
                 self.state.toast.show("Replace: target media not found in pool");
@@ -1496,7 +1496,7 @@ impl KlippApp {
         // The new media's In mark, when it has one, is where the clip
         // now starts in it (#919); the step is recorded whole.
         let undo_before = new_media_in.and_then(|_| crate::tracks_undo::before_labelled(&self.state, "Replace From Bin"));
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
         let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else {
             self.state.toast.show("Replace: clip not found");
             return false;
@@ -1579,7 +1579,7 @@ impl KlippApp {
         clip_a: ClipId,
         clip_b: ClipId,
     ) -> bool {
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
         match seq.try_swap_adjacent_clips(clip_a, clip_b) {
             Ok(result) => {
                 let linked_a_partner = result.partners.as_ref().map(|p| p.a_partner);
@@ -1630,17 +1630,17 @@ impl crate::state::AppState {
     pub(super) fn duplicate_after_on(&mut self, track_index: usize, clip: &klipp_timeline::Clip) -> klipp_core::ClipId {
         let new_clip = duplicate_after(clip);
         let new_id = new_clip.id;
-        let seq = &self.sequences[self.active_sequence_idx];
+        let seq = &self.document.sequences[self.active_sequence_idx];
         let carried = klipp_timeline::carry_node_labels(&seq.node_labels, clip, &new_clip);
         let batch = !carried.is_empty() && !self.active_history_mut().is_batching();
         if batch {
             self.active_history_mut().begin_batch();
         }
-        let track = &mut self.sequences[self.active_sequence_idx].tracks[track_index];
+        let track = &mut self.document.sequences[self.active_sequence_idx].tracks[track_index];
         KlippApp::overwrite_insert_clip_on_track(track, new_clip.clone());
         self.push_history(EditCommand::LegacyPasteClip { clip: new_clip, track_index });
         if !carried.is_empty() {
-            let seq = &mut self.sequences[self.active_sequence_idx];
+            let seq = &mut self.document.sequences[self.active_sequence_idx];
             let old = seq.node_labels.clone();
             seq.node_labels.extend(carried);
             let new = seq.node_labels.clone();
@@ -1761,25 +1761,25 @@ mod duplicate_label_tests {
         let node = clip.edit_grade(|g| g.ensure_corrector());
         let on = |c: klipp_core::ClipId| NodePath::new(Root::Clip { clip: c.0 }, [grade_group_id(c), node]);
         let mut state = crate::state::AppState::default();
-        state.sequences[0].tracks[0].clips.push(clip.clone());
-        state.sequences[0].node_labels = vec![NodeLabel { node: on(clip.id), colour: 1 }];
+        state.document.sequences[0].tracks[0].clips.push(clip.clone());
+        state.document.sequences[0].node_labels = vec![NodeLabel { node: on(clip.id), colour: 1 }];
         let copy = state.duplicate_after_on(0, &clip);
-        assert_eq!(state.sequences[0].node_label(&on(copy)), 1, "the copy's node has the label");
-        assert!(state.sequences[0].holds_node(&on(copy)));
-        assert_eq!(state.sequences[0].node_label(&on(clip.id)), 1, "the original keeps its own");
+        assert_eq!(state.document.sequences[0].node_label(&on(copy)), 1, "the copy's node has the label");
+        assert!(state.document.sequences[0].holds_node(&on(copy)));
+        assert_eq!(state.document.sequences[0].node_label(&on(clip.id)), 1, "the original keeps its own");
         assert_eq!(state.active_history().undo_count(), 1, "one step");
 
         let step = |state: &mut crate::state::AppState, forward: bool| {
             let entry = if forward { state.active_history_mut().redo() } else { state.active_history_mut().undo() }.unwrap();
-            let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps };
+            let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
             if forward { view.apply_forward(&entry.command) } else { view.apply_inverse(&entry.command) }
         };
         step(&mut state, false);
-        assert!(state.sequences[0].find_clip(copy).is_none());
-        assert_eq!(state.sequences[0].node_labels.len(), 1, "only the original's label");
+        assert!(state.document.sequences[0].find_clip(copy).is_none());
+        assert_eq!(state.document.sequences[0].node_labels.len(), 1, "only the original's label");
         step(&mut state, true);
-        assert!(state.sequences[0].find_clip(copy).is_some());
-        assert_eq!(state.sequences[0].node_label(&on(copy)), 1);
+        assert!(state.document.sequences[0].find_clip(copy).is_some());
+        assert_eq!(state.document.sequences[0].node_label(&on(copy)), 1);
     }
 }
 

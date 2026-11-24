@@ -54,7 +54,7 @@ impl crate::state::AppState {
     /// The node at `node` given `colour` (0 takes its label off), one
     /// undo step: whether anything changed.
     pub(crate) fn set_node_colour_label(&mut self, node: &NodePath, colour: u8) -> bool {
-        let seq = &mut self.sequences[self.active_sequence_idx];
+        let seq = &mut self.document.sequences[self.active_sequence_idx];
         let stored = stored_path(seq, node);
         let new = seq.node_labels_with(&stored, colour);
         if new == seq.node_labels {

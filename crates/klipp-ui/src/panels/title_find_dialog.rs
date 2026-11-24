@@ -11,8 +11,8 @@ use klipp_document::find::{find_in_titles, TextMatch};
 pub fn show_title_find_dialog(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     // The matches, by sequence: the active one, or all of them.
-    let scope: Vec<usize> = if state.title_find_project { (0..state.sequences.len()).collect() } else { vec![state.active_sequence_idx] };
-    let matches: Vec<(usize, TextMatch)> = scope.iter().flat_map(|&i| find_in_titles(&state.sequences[i], &state.title_find).into_iter().map(move |m| (i, m))).collect();
+    let scope: Vec<usize> = if state.title_find_project { (0..state.document.sequences.len()).collect() } else { vec![state.active_sequence_idx] };
+    let matches: Vec<(usize, TextMatch)> = scope.iter().flat_map(|&i| find_in_titles(&state.document.sequences[i], &state.title_find).into_iter().map(move |m| (i, m))).collect();
     let mut open = state.show_title_find;
     crate::widgets::window("Find and Replace in Titles")
         .open(&mut open)
@@ -35,7 +35,7 @@ pub fn show_title_find_dialog(ctx: &egui::Context, state: &mut AppState) -> Vec<
                 ui.checkbox(&mut state.title_find.match_case, "Match case");
                 ui.checkbox(&mut state.title_find.whole_word, "Whole word");
                 ui.checkbox(&mut state.title_find.subtitles, "Subtitles too");
-                if state.sequences.len() > 1 {
+                if state.document.sequences.len() > 1 {
                     ui.checkbox(&mut state.title_find_project, "Every sequence");
                 }
             });
@@ -47,9 +47,9 @@ pub fn show_title_find_dialog(ctx: &egui::Context, state: &mut AppState) -> Vec<
             }
             egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                 for (k, (seq_idx, m)) in matches.iter().enumerate() {
-                    let fps = state.sequences[*seq_idx].fps.rate();
+                    let fps = state.document.sequences[*seq_idx].fps.rate();
                     let at = Timecode::from_secs_f64(m.at_secs, fps);
-                    let where_ = if state.title_find_project { format!("{} · ", state.sequences[*seq_idx].name) } else { String::new() };
+                    let where_ = if state.title_find_project { format!("{} · ", state.document.sequences[*seq_idx].name) } else { String::new() };
                     let label = format!("{where_}{}  {}", state.timecode_display().position(at), m.line.trim());
                     if ui.selectable_label(state.title_find_selected == Some(k), label).clicked() {
                         state.title_find_selected = Some(k);

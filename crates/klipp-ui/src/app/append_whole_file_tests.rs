@@ -87,19 +87,19 @@ fn the_issue_s_appends_end_on_frames_meet_and_retime() {
     two.id = MediaId::new();
 
     let mut state = crate::state::AppState::default();
-    let seq = &mut state.sequences[0];
+    let seq = &mut state.document.sequences[0];
     seq.fps = Fps::new(30, 1);
     let v = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).expect("a video track");
     let mut appended = Vec::new();
     for item in [&one, &two] {
-        state.media_pool.add(item.clone());
-        let seq = &mut state.sequences[0];
+        state.document.media_pool.add(item.clone());
+        let seq = &mut state.document.sequences[0];
         let clip = append_whole_file(seq, item, v).expect("appended");
         attach_linked_audio_to_clip(seq, clip, None).expect("its sound");
         appended.push(clip);
     }
 
-    let seq = &state.sequences[0];
+    let seq = &state.document.sequences[0];
     for (ti, t) in seq.tracks.iter().enumerate() {
         let mut clips: Vec<&Clip> = t.clips.iter().collect();
         clips.sort_by_key(|c| c.timeline_in);
@@ -117,6 +117,6 @@ fn the_issue_s_appends_end_on_frames_meet_and_retime() {
 
     // The issue's retime: -1, no ripple.
     let ops = [klipp_document::ops::Op::Retime { clip_id: klipp_document::ops::ClipRef::Id(appended[0]), speed: -1.0, fit: false, ripple: false, interpolation: None, length_secs: None, fit_range: false }];
-    let plan = klipp_document::ops::resolve(seq, &state.media_pool, &ops);
+    let plan = klipp_document::ops::resolve(seq, &state.document.media_pool, &ops);
     assert!(plan.is_ok(), "retime -1 without ripple applies: {:?}", plan.err());
 }

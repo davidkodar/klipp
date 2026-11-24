@@ -263,7 +263,7 @@ fn left_fields(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
     status_item(ui, theme, &res_str);
 
     // Project media size
-    let total_bytes: u64 = state.media_pool.all().map(|m| m.file_size_bytes).sum();
+    let total_bytes: u64 = state.document.media_pool.all().map(|m| m.file_size_bytes).sum();
     if total_bytes > 0 {
         let size = format_size(total_bytes);
         if !fits(ui, &["Media:", &size]) {

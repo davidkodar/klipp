@@ -86,7 +86,7 @@ impl KlippApp {
     /// drag's end records the one entry for all of it. Nothing is
     /// recorded when the edit changed nothing.
     pub(super) fn edit_sequence_camera(&mut self, sequence_idx: usize, edit: impl FnOnce(&mut klipp_timeline::Camera)) {
-        let Some(seq) = self.state.sequences.get_mut(sequence_idx) else { return };
+        let Some(seq) = self.state.document.sequences.get_mut(sequence_idx) else { return };
         let old = seq.camera.clone();
         edit(&mut seq.camera);
         if seq.camera == old {

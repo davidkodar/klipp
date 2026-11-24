@@ -70,8 +70,8 @@ impl KlippApp {
     /// one sequence (#618): its sequences, its bins and smart bins, and its
     /// colour setup, given to the engine as opening a project gives it.
     pub(super) fn apply_template(&mut self, made: klipp_project::template::FromTemplate) {
-        self.state.sequences = made.sequences;
-        self.state.media_pool = made.pool;
+        self.state.document.sequences = made.sequences;
+        self.state.document.media_pool = made.pool;
         self.sync_media_pool_to_engine();
         let colour = made.colour;
         self.state.project_working_colorspace = colour.working_colorspace;
@@ -231,7 +231,7 @@ impl KlippApp {
     /// engine, which would otherwise keep reading the old paths: the
     /// same `LoadMediaFile` a relink sends.
     pub(super) fn repoint_moved_media(&mut self, from: &Path, to: &Path) {
-        let moved = crate::project_paths::rewrite_media_paths(&mut self.state.media_pool, from, to);
+        let moved = crate::project_paths::rewrite_media_paths(&mut self.state.document.media_pool, from, to);
         if moved.is_empty() {
             return;
         }
@@ -290,9 +290,9 @@ impl KlippApp {
         self.state.project_epoch += 1;
         self.state.ai_tools_state.forget_project();
         self.retire_project_media();
-        self.state.sequences = vec![Sequence::new_default()];
+        self.state.document.sequences = vec![Sequence::new_default()];
         self.state.active_sequence_idx = 0;
-        self.state.media_pool = klipp_media::MediaPool::new();
+        self.state.document.media_pool = klipp_media::MediaPool::new();
         self.state.project_default_odt = klipp_core::OdtChoice::default();
         self.state.project_default_input_format = None;
         self.state.project_default_input_lut = None;
@@ -333,7 +333,7 @@ impl KlippApp {
         // 5. Reset playback / playhead
         self.drop_automation_pass();
         self.state.playback = PlaybackState::Idle;
-        let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+        let seq_rate = self.state.document.sequences[self.state.active_sequence_idx].fps.rate();
         self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
 
         // 6. Clear thumbnail and filmstrip caches (textures reference dropped media)
@@ -371,7 +371,7 @@ impl KlippApp {
     /// away, so a probe that lands after the switch is dropped rather
     /// than added to the next project.
     fn retire_project_media(&mut self) {
-        let ids: Vec<klipp_core::MediaId> = self.state.media_pool.all().map(|m| m.id)
+        let ids: Vec<klipp_core::MediaId> = self.state.document.media_pool.all().map(|m| m.id)
             .chain(self.state.pending_media_drop.keys().copied())
             .chain(self.state.pending_skip_analysis.iter().copied())
             .chain(self.state.pending_undo_imports.iter().copied())
@@ -592,7 +592,7 @@ impl KlippApp {
     /// would otherwise report a clean success for a project pointing
     /// into `/tmp`.
     fn adopt_temp_stills(&mut self, project_dir: &std::path::Path) {
-        let report = klipp_project::adopt_temp_stills(project_dir, &mut self.state.media_pool, &mut self.state.sequences);
+        let report = klipp_project::adopt_temp_stills(project_dir, &mut self.state.document.media_pool, &mut self.state.document.sequences);
         if report.is_empty() {
             return;
         }
@@ -615,7 +615,7 @@ impl KlippApp {
     /// for the project, copied into its folder on every save (#730): kept
     /// where a cache clean or a moved project cannot leave them behind.
     fn adopt_made_media(&mut self, project_dir: &std::path::Path) {
-        let report = klipp_project::adopt_made_media(project_dir, &mut self.state.media_pool);
+        let report = klipp_project::adopt_made_media(project_dir, &mut self.state.document.media_pool);
         if report.is_empty() {
             return;
         }
@@ -655,7 +655,7 @@ impl KlippApp {
         self.adopt_made_media(path);
         // A clip copied with its composition gets one of its own, so the
         // file never has two clips sharing one.
-        let forks = klipp_project::compositions::fork_shared(&mut self.state.sequences, &mut self.state.compositions);
+        let forks = klipp_project::compositions::fork_shared(&mut self.state.document.sequences, &mut self.state.compositions);
         if !forks.is_empty() {
             self.sync_compositions_to_engine();
             self.sync_sequence_to_engine();
@@ -663,14 +663,14 @@ impl KlippApp {
         // The compositions' assets are in the folder they were opened
         // from, or the session's for a project never saved.
         let assets_dir = Some(self.compositions_home());
-        let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
-        match klipp_project::save_project_full(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), Some(self.state.timeline_track_scale), &self.state.title_assets) {
+        let active_seq_id = self.state.document.sequences[self.state.active_sequence_idx].id.to_string();
+        match klipp_project::save_project_full(path, &self.state.document.sequences, &self.state.document.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), Some(self.state.timeline_track_scale), &self.state.title_assets) {
             Ok(()) => {
                 if let Err(e) = klipp_project::import_report::save(path, self.state.last_import_report.as_ref()) {
                     self.state.toast.show(format!("Project saved, but the import report could not be saved: {e}"));
                 }
                 let from = klipp_project::compositions::AssetsFrom { project_dir: assets_dir.as_deref(), forks: &forks };
-                match klipp_project::compositions::save_compositions(path, &self.state.sequences, &self.state.compositions, from) {
+                match klipp_project::compositions::save_compositions(path, &self.state.document.sequences, &self.state.compositions, from) {
                     Ok(missing) => {
                         if let Some(first) = missing.first() {
                             self.state.toast.show(first.clone());
@@ -724,12 +724,12 @@ impl KlippApp {
                         .map(|s| s.to_string_lossy().to_string())
                         .filter(|s| !s.is_empty())
                         .unwrap_or_else(|| {
-                            self.state.sequences[self.state.active_sequence_idx].name.clone()
+                            self.state.document.sequences[self.state.active_sequence_idx].name.clone()
                         }),
                     last_saved: Some(crate::app::iso8601_now()),
                     duration_secs: Some(self.state.sequence_duration().to_secs_f64()),
                     fps: {
-                        let f = self.state.sequences[self.state.active_sequence_idx].fps;
+                        let f = self.state.document.sequences[self.state.active_sequence_idx].fps;
                         if f.den == 1 {
                             Some(format!("{}fps", f.num))
                         } else {
@@ -738,19 +738,19 @@ impl KlippApp {
                     },
                     resolution: Some(format!(
                         "{}×{}",
-                        self.state.sequences[self.state.active_sequence_idx].resolution.width,
-                        self.state.sequences[self.state.active_sequence_idx].resolution.height
+                        self.state.document.sequences[self.state.active_sequence_idx].resolution.width,
+                        self.state.document.sequences[self.state.active_sequence_idx].resolution.height
                     )),
-                    thumbnail_path: generate_poster_frame(&self.frame_buffer, path, &self.state.media_pool, self.state.sequence_duration().to_secs_f64()),
-                    total_size_bytes: Some(self.state.media_pool.all().map(|m| m.file_size_bytes).sum()),
-                    clip_count: Some(self.state.sequences[self.state.active_sequence_idx].clip_count() as u32),
-                    track_count: Some(self.state.sequences[self.state.active_sequence_idx].tracks.len() as u32),
-                    missing_media: Some(self.state.media_pool.all().any(|m| m.offline || !m.path.exists())),
-                    sequence_count: Some(self.state.sequences.len() as u32),
+                    thumbnail_path: generate_poster_frame(&self.frame_buffer, path, &self.state.document.media_pool, self.state.sequence_duration().to_secs_f64()),
+                    total_size_bytes: Some(self.state.document.media_pool.all().map(|m| m.file_size_bytes).sum()),
+                    clip_count: Some(self.state.document.sequences[self.state.active_sequence_idx].clip_count() as u32),
+                    track_count: Some(self.state.document.sequences[self.state.active_sequence_idx].tracks.len() as u32),
+                    missing_media: Some(self.state.document.media_pool.all().any(|m| m.offline || !m.path.exists())),
+                    sequence_count: Some(self.state.document.sequences.len() as u32),
                     pinned: false,
                 };
                 if let Some(poster) = rp.thumbnail_path.as_deref() {
-                    spawn_skim_strip(&self.state.sequences[self.state.active_sequence_idx], &self.state.sequences, &self.state.media_pool, poster);
+                    spawn_skim_strip(&self.state.document.sequences[self.state.active_sequence_idx], &self.state.document.sequences, &self.state.document.media_pool, poster);
                 }
                 self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;
@@ -944,7 +944,7 @@ impl KlippApp {
                 let active_idx = active_id.as_deref()
                     .and_then(|id| sequences.iter().position(|s| s.id.to_string() == id))
                     .unwrap_or(0);
-                self.state.sequences = sequences;
+                self.state.document.sequences = sequences;
                 self.state.active_sequence_idx = active_idx;
                 self.state.created_at = created_at;
                 self.state.project_notes = notes;
@@ -965,15 +965,15 @@ impl KlippApp {
                 self.state.project_epoch += 1;
                 open_laps.lap("import_report");
                 self.retire_project_media();
-                self.state.media_pool = media_pool;
+                self.state.document.media_pool = media_pool;
                 // Reopening a project brings its own media back.
-                for item in self.state.media_pool.all() {
+                for item in self.state.document.media_pool.all() {
                     self.state.retired_media_ids.remove(&item.id);
                 }
                 self.state.title_assets = title_assets;
                 // The clips' Veylvik compositions; one that can't be read
                 // is said, and its clip shows its media.
-                let (compositions, unread) = klipp_project::compositions::load_compositions(path, &self.state.sequences);
+                let (compositions, unread) = klipp_project::compositions::load_compositions(path, &self.state.document.sequences);
                 self.state.compositions = compositions;
                 self.sync_compositions_to_engine();
                 if let Some(first) = unread.first() {
@@ -1015,7 +1015,7 @@ impl KlippApp {
                 // each file's rotation here held the window 2.9 s on a
                 // 93-file project. The re-read every file gets on open
                 // (the probe thread) confirms the size after.
-                for item in self.state.media_pool.all_mut() {
+                for item in self.state.document.media_pool.all_mut() {
                     if let Some((w, h)) = upright_stored_size(item) {
                         tracing::info!("Fixed rotation-aware resolution for {:?}: {}x{}", item.filename, w, h);
                         item.resolution = klipp_core::Resolution { width: w, height: h };
@@ -1025,7 +1025,7 @@ impl KlippApp {
                 open_laps.lap("rotation");
                 // Aspect versions not yet reframed when the project was
                 // closed wait again for their files' framing (#2231).
-                self.state.pending_refits = super::aspect_version::waiting_refits(&self.state.sequences, &self.state.media_pool);
+                self.state.pending_refits = super::aspect_version::waiting_refits(&self.state.document.sequences, &self.state.document.media_pool);
 
                 // Restore global LUT
                 self.state.global_lut_opacity = color_settings.global_lut_opacity;
@@ -1118,12 +1118,12 @@ impl KlippApp {
                         .map(|s| s.to_string_lossy().to_string())
                         .filter(|s| !s.is_empty())
                         .unwrap_or_else(|| {
-                            self.state.sequences[self.state.active_sequence_idx].name.clone()
+                            self.state.document.sequences[self.state.active_sequence_idx].name.clone()
                         }),
                     last_saved: existing_saved,
                     duration_secs: Some(self.state.sequence_duration().to_secs_f64()),
                     fps: {
-                        let f = self.state.sequences[self.state.active_sequence_idx].fps;
+                        let f = self.state.document.sequences[self.state.active_sequence_idx].fps;
                         if f.den == 1 {
                             Some(format!("{}fps", f.num))
                         } else {
@@ -1132,15 +1132,15 @@ impl KlippApp {
                     },
                     resolution: Some(format!(
                         "{}×{}",
-                        self.state.sequences[self.state.active_sequence_idx].resolution.width,
-                        self.state.sequences[self.state.active_sequence_idx].resolution.height
+                        self.state.document.sequences[self.state.active_sequence_idx].resolution.width,
+                        self.state.document.sequences[self.state.active_sequence_idx].resolution.height
                     )),
                     thumbnail_path: existing_thumb,
-                    total_size_bytes: Some(self.state.media_pool.all().map(|m| m.file_size_bytes).sum()),
-                    clip_count: Some(self.state.sequences[self.state.active_sequence_idx].clip_count() as u32),
-                    track_count: Some(self.state.sequences[self.state.active_sequence_idx].tracks.len() as u32),
-                    missing_media: Some(self.state.media_pool.all().any(|m| m.offline || !m.path.exists())),
-                    sequence_count: Some(self.state.sequences.len() as u32),
+                    total_size_bytes: Some(self.state.document.media_pool.all().map(|m| m.file_size_bytes).sum()),
+                    clip_count: Some(self.state.document.sequences[self.state.active_sequence_idx].clip_count() as u32),
+                    track_count: Some(self.state.document.sequences[self.state.active_sequence_idx].tracks.len() as u32),
+                    missing_media: Some(self.state.document.media_pool.all().any(|m| m.offline || !m.path.exists())),
+                    sequence_count: Some(self.state.document.sequences.len() as u32),
                     pinned: false,
                 };
                 self.prefs.add_recent_project(rp);
@@ -1148,7 +1148,7 @@ impl KlippApp {
                 open_laps.lap("sound_effects");
                 self.drop_automation_pass();
                 self.state.playback = PlaybackState::Idle;
-                let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+                let seq_rate = self.state.document.sequences[self.state.active_sequence_idx].fps.rate();
                 self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
                 self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
                 let thumb_drain: Vec<_> = self.state.thumbnail_textures.drain().map(|(_, t)| t).collect();
@@ -1170,7 +1170,7 @@ impl KlippApp {
                 // project. What it finds is kept as it comes back, and only
                 // the files with no whole skim are given one to make.
                 self.skim_lookup = Some(SkimLookup::start(
-                    skim_lookup_items(self.state.media_pool.all()),
+                    skim_lookup_items(self.state.document.media_pool.all()),
                     self.state.project_working_colorspace,
                 ));
                 open_laps.lap("textures_skims");
@@ -1179,7 +1179,7 @@ impl KlippApp {
                 open_laps.lap("sync_to_engine");
 
                 // Detect offline media
-                self.state.offline_media_ids = self.state.media_pool.all()
+                self.state.offline_media_ids = self.state.document.media_pool.all()
                     .filter(|item| item.offline)
                     .map(|item| item.id)
                     .collect();
@@ -1188,7 +1188,7 @@ impl KlippApp {
                 self.state.show_relink_dialog = !self.state.offline_media_ids.is_empty();
                 // Frei0r plug-ins this machine hasn't (#3200): said, not
                 // left to pass the picture on unseen.
-                let missing = crate::panels::project_doctor::missing_frei0r_plugins(&self.state.sequences);
+                let missing = crate::panels::project_doctor::missing_frei0r_plugins(&self.state.document.sequences);
                 if let Some(said) = crate::panels::project_doctor::missing_frei0r_message(&missing) {
                     tracing::warn!("{said} ({})", missing.join(", "));
                     self.state.toast.show(said);
@@ -1220,14 +1220,14 @@ impl KlippApp {
                 // This read is also the re-probe of each file's shot
                 // metadata a load owes (#1148): a source may have changed
                 // while the project was closed. One read a file.
-                let media_items = files_to_read_on_open(&self.state.media_pool);
+                let media_items = files_to_read_on_open(&self.state.document.media_pool);
                 for (id, source_path, duration, has_audio) in media_items {
                     // Always use the original source for timeline playback (full quality + audio)
                     self.cmd_tx.send(AppCommand::LoadMediaFile {
                         path: source_path.clone(),
                         media_id: id,
                     }).ok();
-                    let is_still = self.state.media_pool.get(&id).is_some_and(|m| m.is_still);
+                    let is_still = self.state.document.media_pool.get(&id).is_some_and(|m| m.is_still);
                     self.spawn_thumbnail(id, source_path.clone(), duration, is_still);
                     self.spawn_filmstrip(id, source_path.clone(), duration);
                     if has_audio {
@@ -1259,7 +1259,7 @@ impl KlippApp {
                 self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead)).ok();
 
                 // Start file watcher for all media paths
-                let media_paths: Vec<std::path::PathBuf> = self.state.media_pool.all()
+                let media_paths: Vec<std::path::PathBuf> = self.state.document.media_pool.all()
                     .filter(|m| !m.offline)
                     .map(|m| m.path.clone())
                     .collect();
@@ -1900,12 +1900,12 @@ mod project_replace_tests {
         let loaded = at(open, "Ok((", "the open's loaded arm");
         let failed = at(open, "Err(e) =>", "the open's failure arm");
         let reset_at = at(open, reset, "do_open_project_inner");
-        let installed = at(open, "self.state.sequences = sequences;", "the open installing the project");
+        let installed = at(open, "self.state.document.sequences = sequences;", "the open installing the project");
         assert!(loaded < reset_at && reset_at < installed, "an open resets in its loaded arm, before the project goes in");
         assert!(reset_at < failed, "a failed open does not reset");
 
         let new = body(commands, "start_new_project");
-        assert!(at(new, reset, "start_new_project") < at(new, "self.state.sequences = vec![seq];", "the new project going in"));
+        assert!(at(new, reset, "start_new_project") < at(new, "self.state.document.sequences = vec![seq];", "the new project going in"));
         at(body(io, "do_new_project"), reset, "do_new_project");
         at(body(io, "do_close_project"), reset, "do_close_project");
     }

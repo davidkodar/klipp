@@ -454,7 +454,7 @@ mod window_tests {
         let mut state = AppState { show_markers_panel: true, ..Default::default() };
         let marker = klipp_timeline::Marker { id: klipp_core::MarkerId::new(), position: RationalTime::from_secs_f64(1.0, 24), label: String::new(), color: klipp_core::MarkerColor::Blue, duration: None, comment: String::new(), kind: Default::default(), review: None };
         let id = marker.id;
-        state.sequences[0].markers.push(marker);
+        state.document.sequences[0].markers.push(marker);
         state.edit_marker_request = Some(id);
         let (ctx, mut panel) = (egui::Context::default(), MarkersPanel::default());
         frame(&ctx, &mut panel, &mut state);

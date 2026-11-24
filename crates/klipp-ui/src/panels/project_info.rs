@@ -39,7 +39,7 @@ pub fn show_project_info(
             }
 
             // Sequences
-            info_row(ui, theme, "Sequences", &state.sequences.len().to_string());
+            info_row(ui, theme, "Sequences", &state.document.sequences.len().to_string());
 
             // Active sequence info
             let seq = state.sequence();
@@ -69,8 +69,8 @@ pub fn show_project_info(
             ui.separator();
 
             // Media
-            let media_count = state.media_pool.len();
-            let total_size: u64 = state.media_pool.all()
+            let media_count = state.document.media_pool.len();
+            let total_size: u64 = state.document.media_pool.all()
                 .map(|m| m.file_size_bytes)
                 .sum();
             info_row(ui, theme, "Media Items", &media_count.to_string());
@@ -86,8 +86,8 @@ pub fn show_project_info(
             info_row(ui, theme, "Clips", &clip_count.to_string());
 
             // Proxy/skim count
-            let proxy_count = state.media_pool.all().filter(|m| state.proxy_shown(m)).count();
-            let skim_count = state.media_pool.all().filter(|m| m.skim_file.is_some()).count();
+            let proxy_count = state.document.media_pool.all().filter(|m| state.proxy_shown(m)).count();
+            let skim_count = state.document.media_pool.all().filter(|m| m.skim_file.is_some()).count();
             if proxy_count > 0 {
                 info_row(ui, theme, "Proxies", &format!("{proxy_count} files"));
             }
@@ -241,13 +241,13 @@ mod working_space_tests {
         let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0), tc(24), tc(0), tc(24));
         let n = clip.edit_grade(|g| g.ensure_corrector());
         clip.edit_grade(|g| g.nodes.iter_mut().find(|x| x.id == n).unwrap().params.exposure = Some(0.5));
-        state.sequences[0].tracks[0].clips.push(clip);
+        state.document.sequences[0].tracks[0].clips.push(clip);
         state.project_working_colorspace = WorkingColorspace::Rec709Linear;
         state
     }
 
     fn grade(state: &AppState) -> klipp_nodes::NodeGraph {
-        state.sequences[0].tracks[0].clips[0].grade().clone()
+        state.document.sequences[0].tracks[0].clips[0].grade().clone()
     }
 
     #[test]

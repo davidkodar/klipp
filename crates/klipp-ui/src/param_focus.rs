@@ -273,9 +273,9 @@ mod tests {
     impl Shown {
         fn new(clip: Clip, tab: InspectorTab) -> Self {
             let mut state = crate::state::AppState::default();
-            let v = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+            let v = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
             state.selected_clip = Some(clip.id);
-            state.sequences[0].tracks[v].clips.push(clip);
+            state.document.sequences[0].tracks[v].clips.push(clip);
             let ctx = egui::Context::default();
             crate::icons::install(&ctx);
             let mut s = Shown { state, panel: Default::default(), ctx, tab, clock: 1.0 };

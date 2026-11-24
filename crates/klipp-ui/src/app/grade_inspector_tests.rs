@@ -31,14 +31,14 @@ pub(super) fn graded(kind: NodeKind) -> Option<(AppState, ClipId, NodeId)> {
     };
     clip.picture_v2().ok()?;
     let mut state = AppState::default();
-    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
     let id = clip.id;
-    state.sequences[0].tracks[v1].clips.push(clip);
+    state.document.sequences[0].tracks[v1].clips.push(clip);
     Some((state, id, node))
 }
 
 fn clip(state: &AppState, id: ClipId) -> &klipp_timeline::Clip {
-    state.sequences[0].all_clips().find(|c| c.id == id).unwrap()
+    state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap()
 }
 
 /// The inspector drawn on one node, frame by frame, as the app draws it.
@@ -135,7 +135,7 @@ impl Run {
     fn apply(&mut self, cmds: &[AppCommand]) {
         for cmd in cmds {
             let mut cmd = cmd.clone();
-            crate::inspector::keyframe_selection::resolve_command(&self.state.sequences[0], &mut cmd);
+            crate::inspector::keyframe_selection::resolve_command(&self.state.document.sequences[0], &mut cmd);
             assert_eq!(self.state.path_command(&cmd), Some(true), "{cmd:?} applied: {:?}", self.state.toast.message_for_test());
         }
     }
@@ -145,7 +145,7 @@ impl Run {
     fn try_apply(&mut self, cmds: &[AppCommand]) -> Result<(), String> {
         for cmd in cmds {
             let mut cmd = cmd.clone();
-            crate::inspector::keyframe_selection::resolve_command(&self.state.sequences[0], &mut cmd);
+            crate::inspector::keyframe_selection::resolve_command(&self.state.document.sequences[0], &mut cmd);
             if self.state.path_command(&cmd) != Some(true) {
                 return Err(self.state.toast.message_for_test().unwrap_or_default().to_string());
             }
@@ -541,7 +541,7 @@ fn tabbed_targeting_is_unchanged() {
     let corrector = clip(&run.state, run.clip).grade().nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
     // Both away from the default, so the row's label resets them.
     for id in [exposure_node, corrector] {
-        let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();
+        let c = run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();
         c.edit_grade(|g| g.nodes.iter_mut().find(|n| n.id == id).unwrap().params.exposure = Some(0.7));
     }
     for (selected, want) in [(Some(exposure_node), exposure_node), (None, corrector)] {
@@ -570,7 +570,7 @@ fn the_colour_tab_edits_the_selected_corrector() {
         let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
         let first = run.node;
         let second = NodeId::new_v4();
-        let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();
+        let c = run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();
         let n = Node { id: second, kind: NodeKind::Corrector, label: "Lift".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() };
         assert!(c.insert_grade_node(Some(first), n));
         c.edit_grade(|g| {
@@ -602,7 +602,7 @@ fn the_colour_tab_edits_the_selected_corrector() {
 fn the_shared_rows_are_generated_at_any_depth_and_not_for_a_stand_in() {
     let mut run = Run::new(NodeKind::Corrector).unwrap();
     let id = run.clip;
-    let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+    let c = run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
     let mut compound = klipp_nodes::Node { id: klipp_nodes::NodeId::new_v4(), kind: NodeKind::Compound, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] };
     compound.params.compound_subgraph = Some(klipp_timeline::GradeAccess::grade(&*c).clone());
     let at = compound.id;
@@ -640,7 +640,7 @@ fn the_bottom_tools_draw_the_current_values() {
 fn without_corrector(disabled: bool) -> Run {
     let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
     let corrector = run.node;
-    let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();
+    let c = run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();
     c.edit_grade(|g| {
         if disabled {
             g.nodes.iter_mut().find(|n| n.id == corrector).unwrap().enabled = false;
@@ -847,7 +847,7 @@ fn the_first_edit_inside_a_compound_makes_its_corrector_in_the_same_step() {
         let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
         let (grade, descent) = compounded(deep);
         let top = grade.nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
-        run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap().edit_grade(|g| *g = grade);
+        run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap().edit_grade(|g| *g = grade);
         let (before, steps) = (saved(&run.state, run.clip), run.state.active_history().undo_count());
         let c = clip(&run.state, run.clip).clone();
         let snapshot = crate::inspector::grade_view::snapshot_for(&c, &descent, false, &mut run.state.pending_corrector).expect("drawn inside the compound");
@@ -876,17 +876,17 @@ fn the_first_edit_inside_a_sequence_grade_s_compound_makes_its_corrector() {
         for w in which {
             let (grade, descent) = compounded(deep);
             let top = grade.nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
-            let root = w.root(&run.state.sequences[0]);
-            run.state.sequences[0].set_root_grade(root, Some(grade)).unwrap();
+            let root = w.root(&run.state.document.sequences[0]);
+            run.state.document.sequences[0].set_root_grade(root, Some(grade)).unwrap();
             let (before, steps) = (stored(&run, w), run.state.active_history().undo_count());
-            let id = super::timeline_grade::stand_in_grade_on(&mut run.state.sequences[0], w, &mut run.fresh).expect("stood in");
-            let snapshot = crate::inspector::grade_view::snapshot_for_root(&run.state.sequences[0], id, root, &descent, &mut run.state.pending_corrector, &mut run.state.root_grade_start);
-            super::timeline_grade::stand_down_timeline_grade_on(&mut run.state.sequences[0], &mut run.fresh);
+            let id = super::timeline_grade::stand_in_grade_on(&mut run.state.document.sequences[0], w, &mut run.fresh).expect("stood in");
+            let snapshot = crate::inspector::grade_view::snapshot_for_root(&run.state.document.sequences[0], id, root, &descent, &mut run.state.pending_corrector, &mut run.state.root_grade_start);
+            super::timeline_grade::stand_down_timeline_grade_on(&mut run.state.document.sequences[0], &mut run.fresh);
             let reserved = snapshot.expect("drawn inside the compound").pending().expect("a Corrector reserved inside it");
             let addr = NodePath::new(root, descent.iter().copied().chain([reserved]));
             let edit = AppCommand::SetParamAt { addr, key: "exposure".into(), value: klipp_graph_format::ParamValue::Float(0.4) };
             assert_eq!(run.state.path_command(&edit), Some(true), "{w:?} deep {deep}: {:?}", run.state.toast.message_for_test());
-            let grade = run.state.sequences[0].root_grade(root).unwrap().unwrap().clone();
+            let grade = run.state.document.sequences[0].root_grade(root).unwrap().unwrap().clone();
             let made = correctors_at(&grade, &descent);
             assert_eq!(made.iter().map(|n| (n.id, n.params.exposure)).collect::<Vec<_>>(), vec![(reserved, Some(0.4))], "{w:?} deep {deep}");
             assert_eq!(correctors_at(&grade, &[]).iter().map(|n| n.id).collect::<Vec<_>>(), vec![top], "{w:?} deep {deep}: none made at the top");
@@ -986,7 +986,7 @@ fn a_clip_grade_s_structure_edits_are_one_step_by_path_at_any_depth() {
     for depth in 0..3 {
         let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
         let (grade, descent, ids) = at_depth(depth);
-        run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap().edit_grade(|g| *g = grade);
+        run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap().edit_grade(|g| *g = grade);
         let clip_id = run.clip;
         let d = descent.clone();
         check_structure_edits(
@@ -1010,7 +1010,7 @@ fn a_sequence_grade_s_structure_edits_are_one_step_by_path_at_any_depth() {
         let (mut run, which) = sequence_grades(true);
         for w in which {
             let (grade, descent, ids) = at_depth(depth);
-            let seq = &mut run.state.sequences[0];
+            let seq = &mut run.state.document.sequences[0];
             let root = w.root(seq);
             seq.set_root_grade(root, Some(grade)).unwrap();
             let stand_in = w.id(seq).unwrap();
@@ -1021,7 +1021,7 @@ fn a_sequence_grade_s_structure_edits_are_one_step_by_path_at_any_depth() {
                 &descent,
                 &ids,
                 &|run| {
-                    let seq = &run.state.sequences[0];
+                    let seq = &run.state.document.sequences[0];
                     crate::inspector::grade_view::v1_level(seq.root_grade(root).unwrap().unwrap(), &d).expect("the level").clone()
                 },
                 &|run| stored(run, w),
@@ -1102,7 +1102,7 @@ fn undoing_a_bare_editor_command_takes_back_the_corrector_it_made() {
         assert_eq!(run.state.active_history().undo_count(), 1);
         let entry = run.state.active_history_mut().undo().unwrap();
         let crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, .. } = entry.command else { panic!("a graph step") };
-        run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().set_grade(old_graph);
+        run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().set_grade(old_graph);
         assert_eq!(saved(&run.state, run.clip), before, "disabled {disabled}: as it was");
     }
 }
@@ -1118,7 +1118,7 @@ fn a_spent_reservation_is_never_reused() {
     editor_write(&mut run, first, |_| {});
     tabbed_on(&mut run, false, tab, None, Vec::new());
     assert_eq!(run.state.pending_corrector, None);
-    let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();
+    let c = run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();
     c.edit_grade(|g| g.nodes.iter_mut().find(|n| n.id == first).unwrap().enabled = false);
     tabbed_on(&mut run, false, tab, None, Vec::new());
     let (_, second) = run.state.pending_corrector.unwrap();
@@ -1159,7 +1159,7 @@ use super::timeline_grade::GradeStandIn;
 /// with a stored grade (`stored`), or none yet.
 fn sequence_grades(stored: bool) -> (Run, Vec<GradeStandIn>) {
     let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
-    let seq = &mut run.state.sequences[0];
+    let seq = &mut run.state.document.sequences[0];
     let mut group = klipp_timeline::GradeGroup::new("Night");
     if stored {
         group.stage_slot(klipp_timeline::GradeStage::Pre).set(Some(NodeGraph::default()));
@@ -1182,10 +1182,10 @@ fn sequence_grades(stored: bool) -> (Run, Vec<GradeStandIn>) {
 /// drawn over the stand-in's grade on the right or (`wide`) in the bottom
 /// tools, then the stand-in taken down. Its commands are not applied.
 fn stand_in_tab(run: &mut Run, which: GradeStandIn, wide: bool, on: crate::state::ColorTab, events: Vec<egui::Event>) -> Drawn {
-    let id = super::timeline_grade::stand_in_grade_on(&mut run.state.sequences[0], which, &mut run.fresh).expect("stood in");
-    let root = which.root(&run.state.sequences[0]);
+    let id = super::timeline_grade::stand_in_grade_on(&mut run.state.document.sequences[0], which, &mut run.fresh).expect("stood in");
+    let root = which.root(&run.state.document.sequences[0]);
     let mut panel = run.panel.take().unwrap_or_default();
-    panel.generated = crate::inspector::grade_view::snapshot_for_root(&run.state.sequences[0], id, root, &[], &mut run.state.pending_corrector, &mut run.state.root_grade_start);
+    panel.generated = crate::inspector::grade_view::snapshot_for_root(&run.state.document.sequences[0], id, root, &[], &mut run.state.pending_corrector, &mut run.state.root_grade_start);
     let mut graph = clip(&run.state, id).grade().clone();
     let theme = crate::theme::KlippTheme::default();
     let frame = FrameSelection { time_secs: run.time, tolerance: 0.02, clip_start: clip(&run.state, id).timeline_in };
@@ -1211,14 +1211,14 @@ fn stand_in_tab(run: &mut Run, which: GradeStandIn, wide: bool, on: crate::state
     });
     panel.generated = None;
     run.panel = Some(panel);
-    super::timeline_grade::stand_down_timeline_grade_on(&mut run.state.sequences[0], &mut run.fresh);
+    super::timeline_grade::stand_down_timeline_grade_on(&mut run.state.document.sequences[0], &mut run.fresh);
     (cmds, rows, texts)
 }
 
 /// The grade a stand-in stands for, as stored: its saved form, `None`
 /// included.
 fn stored(run: &Run, which: GradeStandIn) -> String {
-    let seq = &run.state.sequences[0];
+    let seq = &run.state.document.sequences[0];
     serde_json::to_string(&seq.root_grade(which.root(seq)).unwrap()).unwrap()
 }
 
@@ -1233,7 +1233,7 @@ fn undo_root(state: &mut AppState) {
     let mut command = entry.command;
     if let klipp_document::history::EditCommand::Named { edit, .. } = command { command = *edit; }
     let klipp_document::history::EditCommand::SetRootGrade { root, old, .. } = command else { panic!("a sequence grade step: {command:?}") };
-    state.sequences[0].set_root_grade(root, old.map(|g| *g)).unwrap();
+    state.document.sequences[0].set_root_grade(root, old.map(|g| *g)).unwrap();
 }
 
 /// The timeline grade and a group's pre and post stages draw their tabs
@@ -1244,7 +1244,7 @@ fn a_sequence_grade_s_tabs_are_generated_at_its_root() {
     use crate::state::ColorTab;
     let (mut run, which) = sequence_grades(true);
     for w in which {
-        let root = w.root(&run.state.sequences[0]);
+        let root = w.root(&run.state.document.sequences[0]);
         let before = stored(&run, w);
         for wide in [false, true] {
             let (cmds, rows, _) = stand_in_tab(&mut run, w, wide, ColorTab::Curves, Vec::new());
@@ -1274,7 +1274,7 @@ fn a_sequence_grade_s_edit_shows_on_both_surfaces_and_undoes_exactly() {
         let was = (mix(&mut run, false), mix(&mut run, true));
         drag_with(&mut run, &mut |run, events| stand_in_tab(run, w, false, ColorTab::Curves, events), "Mix", -60.0, false);
         assert_eq!(run.state.active_history().undo_count(), steps + 1, "{w:?}: one step");
-        let seq = &run.state.sequences[0];
+        let seq = &run.state.document.sequences[0];
         let now = seq.root_grade(w.root(seq)).unwrap().unwrap().nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().params.curves_mix;
         assert!(now.is_some_and(|m| m < 1.0), "{w:?}: stored {now:?}");
         let now = now.map(f64::from);
@@ -1298,7 +1298,7 @@ fn a_first_edit_begins_a_sequence_grade_and_undo_takes_it_off() {
         assert!(cmds.is_empty(), "{w:?}: wrote on open");
         let drawn = run.state.root_grade_start.clone().expect("the graph drawn kept").1;
         drag_with(&mut run, &mut |run, events| stand_in_tab(run, w, false, ColorTab::Curves, events), "Mix", -60.0, false);
-        let seq = &run.state.sequences[0];
+        let seq = &run.state.document.sequences[0];
         let made = seq.root_grade(w.root(seq)).unwrap().cloned().expect("the grade begun");
         assert_eq!(made.nodes.iter().map(|n| n.id).collect::<Vec<_>>(), drawn.nodes.iter().map(|n| n.id).collect::<Vec<_>>(), "{w:?}: the ids drawn");
         undo_root(&mut run.state);
@@ -1328,10 +1328,10 @@ fn a_mix_and_channel_edit_on_a_sequence_grade_lands() {
     use klipp_effects::mask_mix::MaskChannel;
     let (mut run, which) = sequence_grades(true);
     for w in which {
-        let seq = &run.state.sequences[0];
+        let seq = &run.state.document.sequences[0];
         let root = w.root(seq);
         let node = seq.root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
-        let blend = |run: &Run| run.state.sequences[0].root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.id == node).unwrap().params.correction_blend;
+        let blend = |run: &Run| run.state.document.sequences[0].root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.id == node).unwrap().params.correction_blend;
         let addr = klipp_graph_format::path::NodePath::new(root, [node]);
         // A track's grade has no stored form for them: refused, nothing
         // changed, no step (#1408).
@@ -1374,7 +1374,7 @@ fn redo_root(state: &mut AppState) {
     let mut command = entry.command;
     if let klipp_document::history::EditCommand::Named { edit, .. } = command { command = *edit; }
     let klipp_document::history::EditCommand::SetRootGrade { root, new, .. } = command else { panic!("a sequence grade step: {command:?}") };
-    state.sequences[0].set_root_grade(root, new.map(|g| *g)).unwrap();
+    state.document.sequences[0].set_root_grade(root, new.map(|g| *g)).unwrap();
 }
 
 /// A drag that closes (not Escape) on a sequence grade that has none yet
@@ -1390,7 +1390,7 @@ fn a_closed_drag_on_a_sequence_grade_without_one_is_one_step() {
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::EndParamEditAt { .. })), "{w:?}: the drag closed");
         assert_eq!(run.state.active_history().undo_count(), steps + 1, "{w:?}: one step");
         let dragged = stored(&run, w);
-        let seq = &run.state.sequences[0];
+        let seq = &run.state.document.sequences[0];
         let mix = seq.root_grade(w.root(seq)).unwrap().unwrap().nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().params.curves_mix;
         assert!(mix.is_some_and(|m| m < 1.0), "{w:?}: the dragged value, {mix:?}");
         undo_root(&mut run.state);
@@ -1433,7 +1433,7 @@ fn the_canvas_s_structure_commands_land_as_path_steps() {
     use crate::panels::node_graph_v2::canvas_command_tests::Harness;
     let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
     let (grade, descent, ids) = at_depth(1);
-    run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap().edit_grade(|g| *g = grade);
+    run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap().edit_grade(|g| *g = grade);
     run.state.graph_descent_path = descent.clone();
     let clip_id = run.clip;
     // The canvas on the compound's level as it stands, its nodes spread out.
@@ -1524,7 +1524,7 @@ fn a_canvas_node_drag_is_one_step_by_path_at_any_depth() {
         let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
         let (grade, descent, ids) = at_depth(depth);
         let clip_id = run.clip;
-        run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+        run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
             *g = grade;
             let level = spread(level_of(g, &descent).unwrap());
             *super::KlippApp::resolve_graph_at_path_mut(g, &descent).unwrap() = level;
@@ -1545,7 +1545,7 @@ fn a_canvas_node_drag_is_one_step_by_path_at_any_depth() {
         let (mut run, which) = sequence_grades(true);
         for w in which {
             let (grade, descent, ids) = at_depth(depth);
-            let seq = &mut run.state.sequences[0];
+            let seq = &mut run.state.document.sequences[0];
             let root = w.root(seq);
             let mut grade = grade;
             let level = spread(level_of(&grade, &descent).unwrap());
@@ -1553,9 +1553,9 @@ fn a_canvas_node_drag_is_one_step_by_path_at_any_depth() {
             seq.set_root_grade(root, Some(grade)).unwrap();
             let stand_in = w.id(seq).unwrap();
             run.state.graph_descent_path = descent.clone();
-            let at = |run: &Run| level_of(run.state.sequences[0].root_grade(root).unwrap().unwrap(), &descent).unwrap().node_positions[&ids[1]];
+            let at = |run: &Run| level_of(run.state.document.sequences[0].root_grade(root).unwrap().unwrap(), &descent).unwrap().node_positions[&ids[1]];
             let (before, stored_before, steps) = (at(&run), stored(&run, w), run.state.active_history().undo_count());
-            let mut h = Harness::on(level_of(run.state.sequences[0].root_grade(root).unwrap().unwrap(), &descent).unwrap(), stand_in);
+            let mut h = Harness::on(level_of(run.state.document.sequences[0].root_grade(root).unwrap().unwrap(), &descent).unwrap(), stand_in);
             h.settle();
             drag(&mut run, &mut h);
             let after = at(&run);
@@ -1583,7 +1583,7 @@ fn auto_layout_is_one_step_by_path_at_any_depth() {
         let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
         let (grade, descent, _) = at_depth(depth);
         let clip_id = run.clip;
-        run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| *g = grade);
+        run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| *g = grade);
         run.state.graph_descent_path = descent.clone();
         let level = |run: &Run| level_of(clip(&run.state, clip_id).grade(), &descent).unwrap();
         let want = { let mut l = level(&run); l.node_positions = klipp_nodes::auto_layout(&l); positions(&l) };
@@ -1598,12 +1598,12 @@ fn auto_layout_is_one_step_by_path_at_any_depth() {
         let (mut run, which) = sequence_grades(true);
         for w in which {
             let (grade, descent, _) = at_depth(depth);
-            let seq = &mut run.state.sequences[0];
+            let seq = &mut run.state.document.sequences[0];
             let root = w.root(seq);
             seq.set_root_grade(root, Some(grade)).unwrap();
             let stand_in = w.id(seq).unwrap();
             run.state.graph_descent_path = descent.clone();
-            let level = |run: &Run| level_of(run.state.sequences[0].root_grade(root).unwrap().unwrap(), &descent).unwrap();
+            let level = |run: &Run| level_of(run.state.document.sequences[0].root_grade(root).unwrap().unwrap(), &descent).unwrap();
             let want = { let mut l = level(&run); l.node_positions = klipp_nodes::auto_layout(&l); positions(&l) };
             let (stored_before, steps) = (stored(&run, w), run.state.active_history().undo_count());
             assert_eq!(run.state.canvas_auto_layout(&AppCommand::AutoLayoutNodeGraph { clip_id: stand_in }), Some(true), "{w:?} depth {depth}: {:?}", run.state.toast.message_for_test());
@@ -1630,7 +1630,7 @@ fn a_masked_grade_node_s_page_picks_its_mask_channel() {
     // A window, from the source, into the Corrector's mask port.
     let corrector = run.node;
     let clip_id = run.clip;
-    run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+    run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
         let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
         let window = Node { id: NodeId::new_v4(), kind: NodeKind::Mask, label: "Window".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() };
         g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: window.id, to_port: 0 });
@@ -1667,7 +1667,7 @@ fn printer_lights_inside_a_compound_make_its_corrector_there() {
         let mut run = Run::new(NodeKind::Corrector).unwrap();
         let (grade, descent) = compounded(deep);
         let top = grade.nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
-        run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap().edit_grade(|g| *g = grade);
+        run.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap().edit_grade(|g| *g = grade);
         run.state.selected_clip = Some(run.clip);
         run.state.graph_descent_path = descent.clone();
         let (before, steps) = (saved(&run.state, run.clip), run.state.active_history().undo_count());
@@ -1787,7 +1787,7 @@ fn the_grade_keys_act_on_the_open_level() {
     use super::shortcuts::grade_node_keys;
     let (mut state, clip_id, _) = graded(NodeKind::Corrector).unwrap();
     let (grade, descent, ids) = at_depth(1);
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| *g = grade);
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| *g = grade);
     state.graph_descent_path = descent.clone();
     state.selected_clip = Some(clip_id);
     state.active_panel = Some(crate::state::PanelKind::NodeGraph);
@@ -1826,7 +1826,7 @@ fn the_grade_keys_act_on_the_open_level() {
     assert!(clip(&state, clip_id).grade().nodes.iter().all(|n| n.enabled), "the top untouched");
     assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
 
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
         let level = super::KlippApp::resolve_graph_at_path_mut(g, &descent).unwrap();
         level.nodes.iter_mut().find(|n| n.id == ids[2]).unwrap().params.contrast = Some(1.4);
     });
@@ -1869,7 +1869,7 @@ fn dispatch_canvas(state: &mut AppState, cmds: &[AppCommand]) {
 fn canvas_at_depth(place: impl Fn(usize) -> (f32, f32)) -> (AppState, ClipId, Vec<NodeId>, crate::panels::node_graph_v2::canvas_command_tests::Harness) {
     let (mut state, clip_id, _) = graded(NodeKind::Corrector).unwrap();
     let (grade, descent, ids) = at_depth(1);
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| *g = grade);
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| *g = grade);
     state.graph_descent_path = descent.clone();
     state.selected_clip = Some(clip_id);
     let mut level = level_of(clip(&state, clip_id).grade(), &descent).unwrap();
@@ -1877,7 +1877,7 @@ fn canvas_at_depth(place: impl Fn(usize) -> (f32, f32)) -> (AppState, ClipId, Ve
         let (x, y) = place(i);
         level.node_positions.insert(n.id, klipp_nodes::NodePos { x, y });
     }
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
         *super::KlippApp::resolve_graph_at_path_mut(g, &descent).unwrap() = level.clone();
     });
     let h = crate::panels::node_graph_v2::canvas_command_tests::Harness::on(level, clip_id);
@@ -1973,7 +1973,7 @@ fn a_grade_note_drag_is_one_step() {
     let (mut state, clip_id, _, _) = canvas_at_depth(|i| ((i as f32 - 2.0) * 230.0, 0.0));
     let note = klipp_nodes::NodeStickyNote { id: klipp_nodes::NodeStickyNoteId::new_v4(), pos: klipp_nodes::NodePos { x: -100.0, y: 300.0 }, width: 200.0, text: String::new(), color_rgba: u32::MAX };
     let descent = state.graph_descent_path.clone();
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
         super::KlippApp::resolve_graph_at_path_mut(g, &descent).unwrap().sticky_notes.push(note.clone());
     });
     let mut h = crate::panels::node_graph_v2::canvas_command_tests::Harness::on(level_of(clip(&state, clip_id).grade(), &descent).unwrap(), clip_id);
@@ -2075,7 +2075,7 @@ fn a_picture_input_is_not_left_unwired_but_a_mask_is_free() {
     let (mut state, clip_id, ids, _, _) = wired();
     let mask = NodeId::new_v4();
     let path = state.graph_descent_path.clone();
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
         let level = crate::app::KlippApp::resolve_graph_at_path_mut(g, &path).unwrap();
         level.nodes.push(Node { id: mask, kind: NodeKind::Mask, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() });
         level.edges.push(klipp_nodes::Edge { from_node: mask, from_port: 0, to_node: ids[1], to_port: 1 });
@@ -2268,7 +2268,7 @@ fn whole(g: &NodeGraph) -> String {
 
 /// The document as undo and redo apply a history step to it.
 fn document_view(state: &mut AppState) -> klipp_document::apply::DocumentView<'_> {
-    klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }
+    klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps }
 }
 
 /// Every wiring edit on a grade with a key on it: one step, undo gives the
@@ -2386,7 +2386,7 @@ fn a_pasted_secondary_is_wired_among_its_own_copies() {
     let path = state.graph_descent_path.clone();
     let (mask, combine) = (NodeId::new_v4(), NodeId::new_v4());
     dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: ids[2] }]);
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
         let level = crate::app::KlippApp::resolve_graph_at_path_mut(g, &path).unwrap();
         level.nodes.push(Node { id: mask, kind: NodeKind::Mask, label: "Window".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() });
         let key = level.edges.iter().position(|e| e.to_node == ids[2] && e.to_port == 1).unwrap();
@@ -2442,7 +2442,7 @@ fn an_edit_lands_in_the_compound_on_the_canvas_when_two_share_ids() {
     let (mut state, clip_id, ids, _, _h) = wired();
     let compound = state.graph_descent_path[0];
     let twin = NodeId::new_v4();
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
         let mut node = g.nodes.iter().find(|n| n.id == compound).unwrap().clone();
         node.id = twin;
         g.nodes.push(node);
@@ -2459,7 +2459,7 @@ fn an_edit_lands_in_the_compound_on_the_canvas_when_two_share_ids() {
 fn a_duplicated_sender_leaves_its_readers_on_the_original() {
     let (mut state, clip_id, ids, _, _h) = wired();
     let path = state.graph_descent_path.clone();
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
         let level = crate::app::KlippApp::resolve_graph_at_path_mut(g, &path).unwrap();
         level.nodes.iter_mut().find(|n| n.id == ids[0]).unwrap().output_link = Some("A".into());
         let reader = level.nodes.iter_mut().find(|n| n.id == ids[2]).unwrap();
@@ -2478,7 +2478,7 @@ fn a_duplicated_sender_leaves_its_readers_on_the_original() {
 fn a_pasted_sender_and_reader_stay_a_pair() {
     let (mut state, clip_id, ids, _, _h) = wired();
     let path = state.graph_descent_path.clone();
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
         let level = crate::app::KlippApp::resolve_graph_at_path_mut(g, &path).unwrap();
         level.nodes.iter_mut().find(|n| n.id == ids[0]).unwrap().output_link = Some("A".into());
         level.nodes.iter_mut().find(|n| n.id == ids[2]).unwrap().input_links = vec![None, Some("A".into())];
@@ -2499,7 +2499,7 @@ fn a_pasted_sender_and_reader_stay_a_pair() {
 fn copying_a_compound_with_a_dangling_wire_leaves_the_wire_out() {
     let (mut state, clip_id, _, _, _h) = wired();
     let compound = state.graph_descent_path[0];
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
         let inner = g.nodes.iter_mut().find(|n| n.id == compound).unwrap().params.compound_subgraph.as_mut().unwrap();
         let out = inner.output_node_id;
         inner.edges.push(klipp_nodes::Edge { from_node: NodeId::new_v4(), from_port: 0, to_node: out, to_port: 1 });
@@ -2569,7 +2569,7 @@ fn ungrouping_keeps_every_reader_of_the_compound() {
     let feed = top.input_of(compound, 0).expect("the compound is fed");
     assert_ne!(feed, frame);
     let mut next = None;
-    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| next = Some(g.insert_corrector(NodeId::new_v4())));
+    state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| next = Some(g.insert_corrector(NodeId::new_v4())));
     let next = next.unwrap();
     assert_eq!(wire_level(&state, clip_id).input_of(next, 0), Some(compound), "the next node reads the compound");
     dispatch_canvas(&mut state, &[AppCommand::LimitWithQualifier { clip_id, node_id: next }]);

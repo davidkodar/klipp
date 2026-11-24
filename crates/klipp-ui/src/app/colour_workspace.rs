@@ -191,7 +191,7 @@ impl KlippApp {
                 // the timeline grade over every clip after its own.
                 ui.label(egui::RichText::new("Grade").color(theme.text_dim));
                 // A track deleted, by undo too, is not graded.
-                if self.state.grade_track.is_some_and(|t| !self.state.sequences[self.state.active_sequence_idx].tracks.iter().any(|x| x.id == t && x.kind == klipp_timeline::TrackKind::Video)) {
+                if self.state.grade_track.is_some_and(|t| !self.state.document.sequences[self.state.active_sequence_idx].tracks.iter().any(|x| x.id == t && x.kind == klipp_timeline::TrackKind::Video)) {
                     self.state.grade_track = None;
                 }
                 let grading_clip = !self.state.grade_timeline && self.state.grade_group_stage.is_none() && self.state.grade_track.is_none();
@@ -208,7 +208,7 @@ impl KlippApp {
                 }
                 // Marked while a timeline grade is doing something, so
                 // its being there shows from Clip mode too.
-                let has_timeline_grade = self.state.sequences.get(self.state.active_sequence_idx)
+                let has_timeline_grade = self.state.document.sequences.get(self.state.active_sequence_idx)
                     .and_then(|s| s.timeline_grade())
                     .is_some_and(|g| !g.is_identity());
                 let timeline_label = if has_timeline_grade && !self.state.grade_timeline {
@@ -405,24 +405,24 @@ impl KlippApp {
             ui.painter().rect_filled(tools_rect, 0.0, theme.bg_panel);
             if let Some(clip_id) = self.state.selected_clip {
                 let seq_idx = self.state.active_sequence_idx;
-                let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.sequences[seq_idx]);
+                let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.document.sequences[seq_idx]);
                 self.node_inspector_panel.printer_point = self.prefs.color.printer_point;
-                self.node_inspector_panel.scene_referred = self.state.sequences[seq_idx].tracks.iter().find_map(|t| t.find_clip(clip_id)).is_some_and(|c| self.state.media_pool.scene_referred(c.media_id()));
+                self.node_inspector_panel.scene_referred = self.state.document.sequences[seq_idx].tracks.iter().find_map(|t| t.find_clip(clip_id)).is_some_and(|c| self.state.document.media_pool.scene_referred(c.media_id()));
                 self.node_inspector_panel.input_colour_space =
                     crate::inspector::color_and_luts::clip_input_colour_space(&self.state, clip_id);
-                let stand_in = GradeStandIn::of(&self.state.sequences[seq_idx], clip_id);
+                let stand_in = GradeStandIn::of(&self.state.document.sequences[seq_idx], clip_id);
                 let grading_timeline = stand_in.is_some();
                 // A stand-in's grade at its own root (M3 step 19), read
                 // before the clip is borrowed to draw.
                 let mut stand_in_snapshot = stand_in.and_then(|w| {
-                    let seq = &self.state.sequences[seq_idx];
+                    let seq = &self.state.document.sequences[seq_idx];
                     crate::inspector::grade_view::snapshot_for_root(seq, clip_id, w.root(seq), &self.state.graph_descent_path, &mut self.state.pending_corrector, &mut self.state.root_grade_start)
                 });
                 // A press inside marks the node inspector the active panel,
                 // so its keys are its own (Ctrl+A stays out of the timeline).
                 // Taken before the clip is borrowed to draw.
                 crate::state::note_active_panel(&mut self.state, crate::state::PanelKind::NodeInspector, ui.ctx(), ui.max_rect());
-                let clip = self.state.sequences[seq_idx].tracks.iter_mut()
+                let clip = self.state.document.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
                     let mask_frame = crate::inspector::keyframe_selection::FrameSelection::new(self.state.playhead, clip.timeline_in, mask_tolerance);
@@ -745,8 +745,8 @@ impl KlippApp {
                 let seq_idx = self.state.active_sequence_idx;
                 // The timeline grade's stand-in keeps no versions: only
                 // its graph is written back.
-                let keeps_versions = GradeStandIn::of(&self.state.sequences[seq_idx], cid).is_none();
-                if let Some(clip) = self.state.sequences[seq_idx].tracks.iter_mut()
+                let keeps_versions = GradeStandIn::of(&self.state.document.sequences[seq_idx], cid).is_none();
+                if let Some(clip) = self.state.document.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(cid))
                 {
                     // Build breadcrumb labels by walking the descent

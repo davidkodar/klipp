@@ -169,7 +169,7 @@ impl KlippApp {
             return;
         }
 
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let ref_clip = seq.all_clips().find(|c| c.id == ref_clip_id);
         let tgt_clip = seq.all_clips().find(|c| c.id == clip_id);
         let (ref_clip, tgt_clip) = match (ref_clip, tgt_clip) {
@@ -189,10 +189,10 @@ impl KlippApp {
             return;
         }};
 
-        let ref_pcm_path = self.state.media_pool.get(&ref_media_id)
+        let ref_pcm_path = self.state.document.media_pool.get(&ref_media_id)
             .and_then(|m| m.audio_cache.as_ref())
             .map(|c| c.pcm_path.clone());
-        let tgt_pcm_path = self.state.media_pool.get(&tgt_media_id)
+        let tgt_pcm_path = self.state.document.media_pool.get(&tgt_media_id)
             .and_then(|m| m.audio_cache.as_ref())
             .map(|c| c.pcm_path.clone());
         let (ref_path, tgt_path) = match (ref_pcm_path, tgt_pcm_path) {
@@ -319,7 +319,7 @@ impl KlippApp {
 
         // Find the target clip's current rate so we create the new timeline_in
         // at a rate that matches other clips in the sequence.
-        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let rate = seq.all_clips().find(|c| c.id == clip_id)
             .map(|c| c.timeline_in.rate)
             .unwrap_or_else(|| {
@@ -360,7 +360,7 @@ impl KlippApp {
                         entry.duration_secs,
                         entry.peaks.len(),
                     );
-                    if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(&media_id) {
                         // Use conform peaks as waveform data for timeline display
                         if item.waveform_data.is_none() {
                             item.waveform_data = Some(entry.peaks.clone());
@@ -384,7 +384,7 @@ impl KlippApp {
     /// two sounds are correlated on a thread and the result arrives as
     /// an event.
     pub(super) fn spawn_media_sync(&mut self, video_id: klipp_core::MediaId, audio_id: klipp_core::MediaId) {
-        let (Some(video), Some(audio)) = (self.state.media_pool.get(&video_id), self.state.media_pool.get(&audio_id)) else {
+        let (Some(video), Some(audio)) = (self.state.document.media_pool.get(&video_id), self.state.document.media_pool.get(&audio_id)) else {
             self.state.toast.show("Sync: one of the clips is no longer in the pool");
             return;
         };

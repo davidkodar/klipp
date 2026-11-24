@@ -18,7 +18,7 @@ fn t(s: f64) -> RationalTime {
 /// no audio track; its tracks as recorded, as after an open.
 fn state() -> AppState {
     let mut s = AppState::default();
-    let seq = &mut s.sequences[0];
+    let seq = &mut s.document.sequences[0];
     seq.tracks.retain(|tr| tr.kind != TrackKind::Audio);
     let primary = seq.primary_track_index().expect("a primary track");
     seq.tracks[primary].clips.push(Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0)));
@@ -52,14 +52,14 @@ fn first_diff(a: &serde_json::Value, b: &serde_json::Value, path: String) -> Opt
 fn undo(s: &mut AppState) {
     let entry = s.take_undo().expect("a step to undo");
     let active = s.active_sequence_idx;
-    klipp_document::apply::DocumentView { sequences: &mut s.sequences, active, media_pool: &mut s.media_pool, fps: &mut s.fps }.apply_inverse(&entry.command);
+    klipp_document::apply::DocumentView { sequences: &mut s.document.sequences, active, media_pool: &mut s.document.media_pool, fps: &mut s.fps }.apply_inverse(&entry.command);
     s.note_recorded_tracks();
 }
 
 fn redo(s: &mut AppState) {
     let entry = s.take_redo().expect("a step to redo");
     let active = s.active_sequence_idx;
-    klipp_document::apply::DocumentView { sequences: &mut s.sequences, active, media_pool: &mut s.media_pool, fps: &mut s.fps }.apply_forward(&entry.command);
+    klipp_document::apply::DocumentView { sequences: &mut s.document.sequences, active, media_pool: &mut s.document.media_pool, fps: &mut s.fps }.apply_forward(&entry.command);
     s.note_recorded_tracks();
 }
 
@@ -184,7 +184,7 @@ fn a_step_that_records_its_own_track_is_not_given_another() {
         let clip = Clip::media(MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
         let (edits, _) = super::placement::media_drop_edits(&seq, clip, primary, Some(None), t(4.0), crate::clip_clipboard::PasteMode::Insert, "Insert").unwrap();
         let active = s.active_sequence_idx;
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut s.sequences, active, media_pool: &mut s.media_pool, fps: &mut s.fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut s.document.sequences, active, media_pool: &mut s.document.media_pool, fps: &mut s.fps };
         for e in &edits {
             view.apply_forward(e);
         }

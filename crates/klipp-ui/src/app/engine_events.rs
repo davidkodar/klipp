@@ -268,7 +268,7 @@ impl KlippApp {
                     // the file itself is unchanged, the caches built from
                     // it. Replacing the item wholesale lost the rating,
                     // tags and bin on every relink.
-                    let previous = self.state.media_pool.remove(&media_id);
+                    let previous = self.state.document.media_pool.remove(&media_id);
                     let file_changed = previous.as_ref().is_some_and(|old| !klipp_media::same_file_as_probed(old, &media_item));
                     if let Some(old) = &previous {
                         klipp_media::merge_reprobed(old, &mut media_item);

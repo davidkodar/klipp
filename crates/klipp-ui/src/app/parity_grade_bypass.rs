@@ -41,7 +41,7 @@ fn with_node(start: &Grade, edit: impl FnOnce(&mut klipp_nodes::Node)) -> Result
     let node = g.node;
     g.with_stand_in(|g| -> Result<(), String> {
         let clip_id = g.clip;
-        let clip = g.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("no clip for the grade")?;
+        let clip = g.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("no clip for the grade")?;
         clip.edit_grade(|graph| graph.nodes.iter_mut().find(|n| n.id == node).map(edit).ok_or_else(|| "no node".to_string()))
     })?;
     Ok(g.twin())
@@ -78,7 +78,7 @@ fn caret_case(start: &Grade, next: bool) -> Result<(), String> {
     g.click_at(at);
     g.drawn();
     let want = if next { 1.25 } else { 0.25 };
-    let lands = |t: f64| g.state.sequences[0].all_clips().any(|c| (t - c.timeline_in.to_secs_f64() - want).abs() < 0.02);
+    let lands = |t: f64| g.state.document.sequences[0].all_clips().any(|c| (t - c.timeline_in.to_secs_f64() - want).abs() < 0.02);
     if g.seeks.len() != 1 || !lands(g.seeks[0].to_secs_f64()) {
         return Err(format!("seeks {:?}, not one to the key at {want}", g.seeks));
     }
@@ -230,7 +230,7 @@ fn opened(kind: NodeKind, page: Surface) -> Result<Grade, String> {
         Some(f) => f,
         None => {
             let (state, clip, _) = super::grade_inspector_tests::graded(NodeKind::Corrector).ok_or("no grade")?;
-            let node = state.sequences[0].all_clips().find(|c| c.id == clip).and_then(|c| c.grade().nodes.iter().find(|n| n.kind == kind).map(|n| n.id)).ok_or_else(|| format!("no {kind:?} node in a grade"))?;
+            let node = state.document.sequences[0].all_clips().find(|c| c.id == clip).and_then(|c| c.grade().nodes.iter().find(|n| n.kind == kind).map(|n| n.id)).ok_or_else(|| format!("no {kind:?} node in a grade"))?;
             (state, clip, node)
         }
     };

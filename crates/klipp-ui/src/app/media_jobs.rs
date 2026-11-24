@@ -104,7 +104,7 @@ impl KlippApp {
     /// from the disk cache when pictures for its current decode settings
     /// exist, freshly decoded otherwise.
     pub(super) fn refresh_media_pictures(&mut self, media_id: MediaId) {
-        let Some((path, duration, is_still)) = self.state.media_pool.get(&media_id)
+        let Some((path, duration, is_still)) = self.state.document.media_pool.get(&media_id)
             .map(|m| (m.path.clone(), m.duration, m.is_still))
         else {
             return;
@@ -371,7 +371,7 @@ impl KlippApp {
     /// the skim transcode when there is one. Marks the request in flight;
     /// the frame (or an empty one on failure) clears it.
     pub(super) fn request_skim_frame(&mut self, media_id: MediaId, time_secs: f64, target: klipp_core::ViewerMode) {
-        let Some(item) = self.state.media_pool.get(&media_id) else { return };
+        let Some(item) = self.state.document.media_pool.get(&media_id) else { return };
         // The frame last asked for is the one on screen. A pointer resting
         // on a clip keeps the UI redrawing, and every redraw used to ask
         // again: each repeat was a fresh seek that could land on a
@@ -402,7 +402,7 @@ impl KlippApp {
     }
 
     pub(super) fn start_source_frame_decode_at(&self, media_id: MediaId, seek_secs: f64) {
-        let Some(item) = self.state.media_pool.get(&media_id) else { return; };
+        let Some(item) = self.state.document.media_pool.get(&media_id) else { return; };
         if item.offline || !item.path.exists() {
             return;
         }
@@ -660,7 +660,7 @@ impl KlippApp {
                     self.state.filmstrip_in_progress.remove(&media_id);
                     self.state.filmstrip_progress.remove(&media_id);
                     self.state.thumbnail_cache.set_filmstrip(media_id, Vec::new());
-                    if let Some((path, duration)) = self.state.media_pool.get(&media_id).map(|m| (m.path.clone(), m.duration)) {
+                    if let Some((path, duration)) = self.state.document.media_pool.get(&media_id).map(|m| (m.path.clone(), m.duration)) {
                         self.spawn_filmstrip(media_id, path, duration);
                     }
                 }
@@ -728,7 +728,7 @@ impl KlippApp {
             self.state.pending_skim_transcodes.push(media_id);
             return;
         }
-        if let Some(item) = self.state.media_pool.get(&media_id).filter(|item| has_picture_to_skim(item)) {
+        if let Some(item) = self.state.document.media_pool.get(&media_id).filter(|item| has_picture_to_skim(item)) {
             let duration_secs = item.duration.to_secs_f64();
             if let Some(existing) = item.skim_file.as_ref().filter(|p| p.exists()) {
                 if skim_file_is_complete(existing, duration_secs) {
@@ -736,11 +736,11 @@ impl KlippApp {
                 }
                 // Cut short by an older version or a crash: made again.
                 let _ = std::fs::remove_file(existing);
-                if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                if let Some(item) = self.state.document.media_pool.get_mut(&media_id) {
                     item.skim_file = None;
                 }
             }
-            let Some(item) = self.state.media_pool.get(&media_id) else { return };
+            let Some(item) = self.state.document.media_pool.get(&media_id) else { return };
             // Dedupe by output path is done after `skim_path` is
             // computed below — see the `skim_in_flight_paths` check.
             let source_path = item.path.clone();
@@ -814,7 +814,7 @@ impl KlippApp {
             if skim_path.exists() {
                 if skim_file_is_complete(&skim_path, duration_secs) {
                     tracing::info!("Skim cache hit for {:?}", source_path);
-                    if let Some(item) = self.state.media_pool.get_mut(&media_id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(&media_id) {
                         item.skim_file = Some(skim_path);
                     }
                     self.sync_media_pool_to_engine();
@@ -1459,7 +1459,7 @@ impl KlippApp {
 
 impl KlippApp {
     pub(super) fn update_thumbnail_textures(&mut self, ctx: &egui::Context) {
-        let media_ids: Vec<MediaId> = self.state.media_pool.all().map(|m| m.id).collect();
+        let media_ids: Vec<MediaId> = self.state.document.media_pool.all().map(|m| m.id).collect();
         for media_id in media_ids {
             // Upload single thumbnail if not yet done
             if !self.state.thumbnail_textures.contains_key(&media_id) {

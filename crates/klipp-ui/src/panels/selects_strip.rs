@@ -63,7 +63,7 @@ pub fn skim_target(seq: &Sequence, t: Timecode) -> Option<(klipp_core::MediaId, 
 fn selects(state: &AppState) -> Option<&Sequence> {
     let id = state.selects_sequence?;
     let cut = state.sequence().id;
-    state.sequences.iter().find(|s| s.id == id && s.id != cut)
+    state.document.sequences.iter().find(|s| s.id == id && s.id != cut)
 }
 
 /// Draw the strip in `rect` and run it.
@@ -84,7 +84,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: e
     ui.scope_builder(egui::UiBuilder::new().max_rect(header.shrink2(egui::vec2(8.0, 2.0))), |ui| {
         ui.horizontal_centered(|ui| {
             ui.label(egui::RichText::new("SELECTS").size(10.0).strong().color(theme.accent));
-            let others: Vec<(SequenceId, String)> = state.sequences.iter().filter(|s| s.id != state.sequence().id).map(|s| (s.id, s.name.clone())).collect();
+            let others: Vec<(SequenceId, String)> = state.document.sequences.iter().filter(|s| s.id != state.sequence().id).map(|s| (s.id, s.name.clone())).collect();
             let mut chosen = seq.id;
             egui::ComboBox::from_id_salt("selects_sequence").selected_text(&seq.name).width(150.0).show_ui(ui, |ui| {
                 for (id, name) in &others {
@@ -99,7 +99,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: e
             if ui.small_button("Edit").on_hover_text("Work on the selects as a timeline of their own, above the cut").clicked() {
                 state.selects_edit = true;
                 // Tall enough to show its tracks (#2324).
-                if let Some(idx) = state.sequences.iter().position(|s| s.id == seq.id) {
+                if let Some(idx) = state.document.sequences.iter().position(|s| s.id == seq.id) {
                     state.selects_height = state.selects_height.max(crate::timeline::stacked::fitting_height(state, idx));
                 }
             }
@@ -152,7 +152,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: e
             painter.rect_filled(r, 2.0, colour);
             if lane_h >= 12.0 && r.width() > 30.0 {
                 let name = match &c.kind {
-                    ClipKind::Media { media_id } => state.media_pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_default(),
+                    ClipKind::Media { media_id } => state.document.media_pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_default(),
                     ClipKind::Title(_) => "Title".into(),
                     _ => String::new(),
                 };
@@ -229,7 +229,7 @@ fn skim(ui: &egui::Ui, state: &mut AppState, seq: &Sequence, t: Timecode, cmds: 
     }
     let Some((media_id, secs)) = skim_target(seq, t) else { return };
     state.browser_skim_active_this_frame = true;
-    let ready = state.media_pool.get(&media_id).and_then(|m| m.skim_file.as_ref()).is_some_and(|p| p.exists());
+    let ready = state.document.media_pool.get(&media_id).and_then(|m| m.skim_file.as_ref()).is_some_and(|p| p.exists());
     if ready {
         if !state.skim_decode_in_flight {
             cmds.push(AppCommand::BrowserSkimFrame { media_id, time_secs: secs, target: klipp_core::ViewerMode::Source });
@@ -270,7 +270,7 @@ mod tests {
         selects.name = "Selects".into();
         selects.tracks[0].clips = vec![Clip::media(media[0], tc(0.0), tc(8.0), tc(0.0), tc(8.0)), Clip::media(media[1], tc(10.0), tc(20.0), tc(5.0), tc(15.0))];
         let id = selects.id;
-        state.sequences.push(selects);
+        state.document.sequences.push(selects);
         state.selects_sequence = Some(id);
         (state, id, media)
     }
@@ -370,7 +370,7 @@ mod tests {
         frame(&ctx, &mut state, Vec::new());
         assert!(state.selects_drag.is_none());
 
-        let seq = state.sequences.iter().find(|s| s.id == id).unwrap();
+        let seq = state.document.sequences.iter().find(|s| s.id == id).unwrap();
         let (m, secs) = skim_target(seq, tc(12.0)).unwrap();
         assert_eq!(m, media[1]);
         assert!((secs - 7.0).abs() < 1e-6, "two seconds into a clip from 5 s: {secs}");

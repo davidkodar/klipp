@@ -86,7 +86,7 @@ impl RelinkPanel {
         if let Some(old) = self.scan.take() {
             old.cancel.store(true, Ordering::Relaxed);
         }
-        let wanted: Vec<Wanted> = state.media_pool.all().filter(|m| m.offline).map(Wanted::from_item).collect();
+        let wanted: Vec<Wanted> = state.document.media_pool.all().filter(|m| m.offline).map(Wanted::from_item).collect();
         let cancel = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(Mutex::new(Progress::default()));
         let (tx, rx) = mpsc::channel();
@@ -130,7 +130,7 @@ impl RelinkPanel {
             ui.label(egui::RichText::new(why).color(theme.marker_error));
         }
 
-        let offline = state.media_pool.all().filter(|m| m.offline).count();
+        let offline = state.document.media_pool.all().filter(|m| m.offline).count();
         if offline == 0 && self.plan.is_none() && self.scan.is_none() {
             ui.label("All media is online.");
             return cmds;
@@ -204,7 +204,7 @@ impl RelinkPanel {
         } else {
             // Before a search: what is missing, each locatable by hand.
             egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                for item in state.media_pool.all().filter(|m| m.offline) {
+                for item in state.document.media_pool.all().filter(|m| m.offline) {
                     ui.horizontal(|ui| {
                         ui.colored_label(theme.marker_error, "OFFLINE");
                         ui.label(&item.filename);
@@ -212,7 +212,7 @@ impl RelinkPanel {
                         browse_button(ui, state, item.id);
                     });
                     // Why one that is there is kept offline, and what to do.
-                    if let Some(why) = state.media_pool.refused.get(&item.id) {
+                    if let Some(why) = state.document.media_pool.refused.get(&item.id) {
                         ui.label(egui::RichText::new(klipp_media::media_check::refused_hint(why)).small().color(theme.marker_warning));
                     }
                 }
@@ -336,7 +336,7 @@ impl Plan {
         egui::ScrollArea::vertical().max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
             for (i, (w, proposal)) in self.wanted.iter().zip(&self.proposals).enumerate() {
                 let row = &mut self.rows[i];
-                let still_offline = state.media_pool.get(&w.media_id).is_some_and(|m| m.offline);
+                let still_offline = state.document.media_pool.get(&w.media_id).is_some_and(|m| m.offline);
                 ui.horizontal(|ui| {
                     ui.add_enabled(still_offline && row.choice.is_some(), egui::Checkbox::without_text(&mut row.apply));
                     ui.label(egui::RichText::new(&w.filename).strong());
@@ -381,7 +381,7 @@ impl Plan {
             .wanted
             .iter()
             .zip(&self.rows)
-            .filter(|(w, r)| r.apply && state.media_pool.get(&w.media_id).is_some_and(|m| m.offline))
+            .filter(|(w, r)| r.apply && state.document.media_pool.get(&w.media_id).is_some_and(|m| m.offline))
             .filter_map(|(w, r)| r.choice.map(|c| (w.media_id, self.found.candidates[c].path.clone())))
             .collect();
         let mut cmds = Vec::new();
@@ -439,7 +439,7 @@ fn browse_button(ui: &mut egui::Ui, state: &AppState, media_id: klipp_core::Medi
     if !ui.small_button("Browse\u{2026}").clicked() {
         return;
     }
-    let Some(item) = state.media_pool.get(&media_id) else { return };
+    let Some(item) = state.document.media_pool.get(&media_id) else { return };
     let ext = item.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
     let title = format!("Locate {}", item.filename);
     crate::file_dialog::spawn(move || {

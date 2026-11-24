@@ -14,7 +14,7 @@ fn viewer() -> (Viewer, klipp_core::ClipId) {
     let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
     let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
     let id = clip.id;
-    let track = v.state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    let track = v.state.document.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
     track.clips.push(clip);
     v.state.selected_clip = Some(id);
     v.state.active_tool = Tool::Mask;
@@ -28,7 +28,7 @@ fn viewer() -> (Viewer, klipp_core::ClipId) {
 fn apply(v: &mut Viewer, clip: klipp_core::ClipId, from: usize) -> Vec<AppCommand> {
     let sent: Vec<AppCommand> = v.sent[from..].to_vec();
     for cmd in &sent {
-        let c = v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+        let c = v.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
         match cmd {
             AppCommand::AddMaskShape { .. } => {
                 c.edit_grade(|g| super::colour::write_node_settings(g, cmd));
@@ -43,7 +43,7 @@ fn apply(v: &mut Viewer, clip: klipp_core::ClipId, from: usize) -> Vec<AppComman
 }
 
 fn masks(v: &Viewer, clip: klipp_core::ClipId) -> Vec<klipp_core::Mask> {
-    let c = v.state.sequences[0].all_clips().find(|c| c.id == clip).unwrap();
+    let c = v.state.document.sequences[0].all_clips().find(|c| c.id == clip).unwrap();
     c.grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Mask).and_then(|n| n.params.masks.clone()).map_or(Vec::new(), |m| m.masks)
 }
 
@@ -253,7 +253,7 @@ fn delete_takes_points_not_the_clip_only_while_the_tool_has_the_keys() {
     key(&mut v, egui::Key::Delete);
     apply(&mut v, id, from);
     assert_eq!(points(&v, id, 0).len(), 3, "the point went");
-    assert!(v.state.sequences[0].all_clips().any(|c| c.id == id), "the clip stayed");
+    assert!(v.state.document.sequences[0].all_clips().any(|c| c.id == id), "the clip stayed");
 
     // Controls: the tool down, then the tool up with nothing selected.
     v.state.mask_edit.selected = [0].into();
@@ -317,7 +317,7 @@ fn the_overlay_reads_on_any_picture() {
 #[test]
 fn a_locked_mask_takes_no_edits() {
     let (mut v, id) = with_shape(square());
-    let c = v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+    let c = v.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
     c.edit_grade(|g| g.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Mask).unwrap().params.masks.as_mut().unwrap().masks[0].locked = true);
     v.frame(Vec::new());
     let from = v.sent.len();
@@ -441,7 +441,7 @@ fn a_keyed_shape_is_edited_at_the_playhead() {
     use klipp_core::mask_path::{PathEase, PathKey};
     let moved = |off: f32| square().into_iter().map(|p| BezierPoint { x: p.x + off, ..p }).collect::<Vec<_>>();
     let (mut v, id) = with_shape(square());
-    let c = v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+    let c = v.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
     c.edit_grade(|g| {
         let m = &mut g.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Mask).unwrap().params.masks.as_mut().unwrap().masks[0];
         m.keyframes.path = vec![
@@ -665,7 +665,7 @@ fn a_corner_pins_handles_are_its_own_and_stay_under_a_window() {
     if let klipp_effects::BuiltinEffect::CornerPin { tl, .. } = &mut pin {
         tl[0] = 0.2;
     }
-    let c = v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+    let c = v.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
     *c = klipp_timeline::test_clip::TestClip::of(c.clone()).effect(pin).build();
     v.frame(Vec::new());
     v.frame(Vec::new());
@@ -692,7 +692,7 @@ fn dragging_a_mask_keeps_the_inspector_and_a_click_opens_its_page() {
     v.state.active_tool = Tool::Select;
     let circle = klipp_core::Mask { shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 }, ..Default::default() };
     let mut node = None;
-    v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().edit_grade(|g| {
+    v.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().edit_grade(|g| {
         let id = g.ensure_corrector_window();
         g.nodes.iter_mut().find(|n| n.id == id).unwrap().params.masks = Some(klipp_core::MaskStack { masks: vec![circle] });
         node = Some(id);
@@ -726,7 +726,7 @@ fn the_viewer_says_it_shows_a_matte_and_the_shortcut_is_the_same_state() {
     let (mut v, clip) = viewer();
     v.state.active_tool = Tool::Select;
     let mut window = None;
-    v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().edit_grade(|g| window = Some(g.ensure_corrector_window()));
+    v.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().edit_grade(|g| window = Some(g.ensure_corrector_window()));
     let window = window.unwrap();
     v.frame(Vec::new());
     assert!(!v.texts.iter().any(|t| t.contains("MATTE")), "{:?}", v.texts);
@@ -760,7 +760,7 @@ fn placed(rotation: f32) -> (Viewer, klipp_core::ClipId) {
     let (mut v, clip) = viewer();
     v.state.active_tool = Tool::Select;
     v.state.show_color_panel = true;
-    let c = v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+    let c = v.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
     *c = klipp_timeline::test_clip::TestClip::of(c.clone())
         .effect(klipp_effects::BuiltinEffect::Transform {
             position_x: 200.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation, anchor_x: 0.5, anchor_y: 0.5,
@@ -768,7 +768,7 @@ fn placed(rotation: f32) -> (Viewer, klipp_core::ClipId) {
         })
         .build();
     let circle = klipp_core::Mask { shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 }, ..Default::default() };
-    v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().edit_grade(|g| {
+    v.state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap().edit_grade(|g| {
         let id = g.ensure_corrector_window();
         g.nodes.iter_mut().find(|n| n.id == id).unwrap().params.masks = Some(klipp_core::MaskStack { masks: vec![circle] });
     });
@@ -787,7 +787,7 @@ fn placed(rotation: f32) -> (Viewer, klipp_core::ClipId) {
 fn a_placed_clips_window_is_drawn_and_dragged_on_its_picture() {
     for rotation in [0.0, 90.0] {
         let (mut v, clip) = placed(rotation);
-        let view = crate::panels::viewer::title_view_of(&v.state, v.state.sequences[0].all_clips().find(|c| c.id == clip).unwrap(), v.image_rect()).expect("a placement the viewer follows");
+        let view = crate::panels::viewer::title_view_of(&v.state, v.state.document.sequences[0].all_clips().find(|c| c.id == clip).unwrap(), v.image_rect()).expect("a placement the viewer follows");
         assert!(view.placement.is_some(), "the clip is placed");
         let start = view.to_screen(0.5, 0.5);
         let end = start + egui::vec2(40.0, 0.0);

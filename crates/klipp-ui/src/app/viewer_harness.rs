@@ -90,7 +90,7 @@ impl Viewer {
                 create_title_in_viewer(state, *x, *y, *box_size, &crate::prefs::TitlePrefs { default_duration_secs: 5.0, ..Default::default() }).expect("a title");
             }
             AppCommand::SetTitleObjectText { clip_id, object_id, text } => {
-                let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(*clip_id)).unwrap();
+                let clip = state.document.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(*clip_id)).unwrap();
                 let klipp_timeline::ClipKind::Title(td) = &mut clip.kind else { panic!("a title") };
                 let Some(klipp_timeline::TitleObject { content: klipp_timeline::TitleObjectContent::TextBox(tb), .. }) =
                     td.object_mut(klipp_timeline::TitleObjectId(*object_id))
@@ -146,7 +146,7 @@ impl Viewer {
     }
 
     pub(super) fn titles(&self) -> Vec<&klipp_timeline::Clip> {
-        self.state.sequences[0].all_clips().filter(|c| c.title_data().is_some()).collect()
+        self.state.document.sequences[0].all_clips().filter(|c| c.title_data().is_some()).collect()
     }
 
     pub(super) fn layer(&self, clip: &klipp_timeline::Clip) -> klipp_timeline::TitleObject {
@@ -208,8 +208,8 @@ mod viewer_menu_tests {
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
         let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0))).build();
         let id = clip.id;
-        let v1 = v.state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        v.state.sequences[0].tracks[v1].clips = vec![clip];
+        let v1 = v.state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        v.state.document.sequences[0].tracks[v1].clips = vec![clip];
         v.state.selected_clip = Some(id);
         v.frame(Vec::new());
         crate::hyperzoom::keep_section_shown(&v.ctx, id);
@@ -230,8 +230,8 @@ mod viewer_menu_tests {
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
         let clip = edit(klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0)))).build();
         let id = clip.id;
-        let v1 = v.state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        v.state.sequences[0].tracks[v1].clips = vec![clip];
+        let v1 = v.state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        v.state.document.sequences[0].tracks[v1].clips = vec![clip];
         v.state.selected_clip = Some(id);
         v.frame(Vec::new());
         v.frame(Vec::new());
@@ -302,8 +302,8 @@ mod viewer_menu_tests {
             .effects([klipp_effects::corner_pin::still()])
             .build();
         let id = clip.id;
-        let v1 = v.state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        v.state.sequences[0].tracks[v1].clips = vec![clip];
+        let v1 = v.state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        v.state.document.sequences[0].tracks[v1].clips = vec![clip];
         v.state.selected_clip = Some(id);
         v.frame(Vec::new());
         v.frame(Vec::new());

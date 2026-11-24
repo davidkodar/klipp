@@ -466,7 +466,7 @@ impl super::KlippApp {
 
     /// The sound linked to the open clip, as Edit plays it.
     fn veylvik_sound(&self, clip: ClipId) -> Option<klipp_veylvik::clip_sound::ClipSound> {
-        klipp_veylvik::clip_sound::ClipSound::new(self.state.sequence(), &self.state.sequences, &self.state.media_pool, clip)
+        klipp_veylvik::clip_sound::ClipSound::new(self.state.sequence(), &self.state.document.sequences, &self.state.document.media_pool, clip)
     }
 
     /// What is below the open clip, for a composition that reads it: the
@@ -479,12 +479,12 @@ impl super::KlippApp {
         if !self.state.compositions.get(&id).is_some_and(|b| klipp_veylvik::bytes_read_below(b)) {
             return None;
         }
-        let item = self.state.media_pool.get(&it.media_id()?)?;
+        let item = self.state.document.media_pool.get(&it.media_id()?)?;
         let media_fps = item.fps.as_f64();
         let frames = (item.duration.to_secs_f64() * media_fps).floor().max(1.0) as u32;
         let below = klipp_veylvik::below::without_from(seq, t);
         let working = klipp_engine::video_decoder::working_colorspace();
-        let snapshot = match klipp_render::SequenceSnapshot::from_sequence_with_all(&below, &self.state.sequences, &self.state.media_pool, &klipp_core::ExportSettings::default(), None, false, working) {
+        let snapshot = match klipp_render::SequenceSnapshot::from_sequence_with_all(&below, &self.state.document.sequences, &self.state.document.media_pool, &klipp_core::ExportSettings::default(), None, false, working) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("the Veylvik page has nothing below the clip: {e}");
@@ -502,7 +502,7 @@ impl super::KlippApp {
         klipp_veylvik::pool::pool_keys(composition)
             .into_iter()
             .filter_map(|key| {
-                let item = self.state.media_pool.get(&klipp_veylvik::pool::media_of_key(&key)?)?;
+                let item = self.state.document.media_pool.get(&klipp_veylvik::pool::media_of_key(&key)?)?;
                 Some((key, EditorFootage::of(item, working, super::engine_sync::media_state(item), self.state.use_proxies, ctx.device(), ctx.queue())))
             })
             .collect()
@@ -512,7 +512,7 @@ impl super::KlippApp {
     fn veylvik_footage(&self, clip: ClipId) -> Option<EditorFootage> {
         let seq = self.state.sequence();
         let (t, c) = seq.find_clip(clip)?;
-        let item = self.state.media_pool.get(&seq.tracks[t].clips[c].media_id()?)?;
+        let item = self.state.document.media_pool.get(&seq.tracks[t].clips[c].media_id()?)?;
         let ctx = klipp_effects::gpu_context::GpuContext::shared()?;
         // From its proxy when Edit plays from proxies.
         Some(EditorFootage::of(item, klipp_engine::video_decoder::working_colorspace(), super::engine_sync::media_state(item), self.state.use_proxies, ctx.device(), ctx.queue()))
@@ -701,7 +701,7 @@ impl super::KlippApp {
                     };
                     let (after, label) = match action {
                         A::AddMedia(media) => {
-                            let item = self.state.media_pool.get(&media).ok_or("the media is no longer in the pool")?;
+                            let item = self.state.document.media_pool.get(&media).ok_or("the media is no longer in the pool")?;
                             (klipp_veylvik::pool::with_media(&bytes, media, &item.filename, &item.path)?, format!("Veylvik: Add {}", item.filename))
                         }
                         _ if klipp_veylvik::bytes_read_below(&bytes) => continue,
@@ -786,7 +786,7 @@ fn paste_source(
 fn fresh_composition(state: &crate::state::AppState, it: &klipp_timeline::Clip) -> Result<(klipp_veylvik::Composition, Arc<[u8]>), String> {
     let seq = state.sequence();
         let media = it.media_id().ok_or("the clip has no media")?;
-        let item = state.media_pool.get(&media).ok_or("the clip's media is not in the project")?;
+        let item = state.document.media_pool.get(&media).ok_or("the clip's media is not in the project")?;
         let fps = item.fps.as_f64();
         let rate = klipp_veylvik::Time { ticks: (fps * 1000.0).round() as i64, rate: 1000 };
         let rate = if (fps - fps.round()).abs() < 1e-6 { klipp_veylvik::Time { ticks: fps.round() as i64, rate: 1 } } else if ((fps * 1001.0 / 1000.0) - (fps * 1001.0 / 1000.0).round()).abs() < 1e-3 { klipp_veylvik::Time { ticks: (fps * 1001.0 / 1000.0).round() as i64 * 1000, rate: 1001 } } else { rate };
@@ -905,7 +905,7 @@ fn clip_time<T>(state: &crate::state::AppState, clip: ClipId, f: impl FnOnce(&kl
     let seq = state.sequence();
     let (t, c) = seq.find_clip(clip)?;
     let it = &seq.tracks[t].clips[c];
-    let media_fps = state.media_pool.get(&it.media_id()?)?.fps.as_f64();
+    let media_fps = state.document.media_pool.get(&it.media_id()?)?.fps.as_f64();
     let fps = seq.fps.as_f64();
     (fps > 0.0 && media_fps > 0.0).then(|| f(&klipp_veylvik::clip_time::ClipTime { clip: it, fps, media_fps }))
 }
@@ -916,7 +916,7 @@ fn clip_name(state: &crate::state::AppState, clip: ClipId) -> Option<String> {
     let seq = state.sequence();
     let (t, c) = seq.find_clip(clip)?;
     let it = &seq.tracks[t].clips[c];
-    let file = it.media_id().and_then(|m| state.media_pool.get(&m)).map(|m| m.filename.clone()).unwrap_or_default();
+    let file = it.media_id().and_then(|m| state.document.media_pool.get(&m)).map(|m| m.filename.clone()).unwrap_or_default();
     Some(it.label(&file).to_owned()).filter(|n| !n.trim().is_empty())
 }
 
@@ -927,7 +927,7 @@ fn relink(state: &mut crate::state::AppState, clip: Option<ClipId>, missing: &st
     let offline = clip.and_then(|clip| {
         let seq = state.sequence();
         let (t, c) = seq.find_clip(clip)?;
-        state.media_pool.get(&seq.tracks[t].clips[c].media_id()?).map(|m| m.offline)
+        state.document.media_pool.get(&seq.tracks[t].clips[c].media_id()?).map(|m| m.offline)
     });
     if offline == Some(true) {
         state.show_relink_dialog = true;
@@ -966,7 +966,7 @@ mod tests {
         let mut seq = Sequence::new_default();
         // The first track is the top one, as the renders stack them.
         seq.tracks = vec![v2, v1];
-        let mut s = crate::state::AppState { sequences: vec![seq], ..Default::default() };
+        let mut s = crate::state::AppState { document: klipp_document::Document { sequences: vec![seq], ..Default::default() }, ..Default::default() };
         let opened = |s: &crate::state::AppState| match target(s) {
             Target::Clip(id) => Some(id),
             Target::Nothing(_) => None,
@@ -975,7 +975,7 @@ mod tests {
         assert_eq!(opened(&s), Some(high_id), "the top one under the playhead");
         s.playhead = t(0.5);
         assert_eq!(opened(&s), Some(low_id));
-        s.sequences[0].tracks[0].visible = false;
+        s.document.sequences[0].tracks[0].visible = false;
         s.playhead = t(2.0);
         assert_eq!(opened(&s), Some(low_id), "a hidden track's clip is not shown");
         s.selected_clip = Some(high_id);
@@ -1019,7 +1019,7 @@ mod tests {
     }
 
     fn steps(s: &crate::state::AppState) -> (usize, usize) {
-        (s.project_history.undo_entries().len(), s.project_history.redo_entries().len())
+        (s.document.project_history.undo_entries().len(), s.document.project_history.redo_entries().len())
     }
 
     /// An edit in the tab is one step of Klipp's, named for the editor's;
@@ -1035,7 +1035,7 @@ mod tests {
         s.take_composition_change(id, C::Edit, "Move node", bytes("v1"));
         s.take_composition_change(id, C::Edit, "Blur", bytes("v2"));
         assert_eq!(steps(&s), (2, 0));
-        assert_eq!(s.project_history.undo_label(), Some("Veylvik: Blur"));
+        assert_eq!(s.document.project_history.undo_label(), Some("Veylvik: Blur"));
 
         // The editor's undo, then its redo: Klipp's list moves, no more.
         s.take_composition_change(id, C::Undo, "Blur", bytes("v1"));
@@ -1054,7 +1054,7 @@ mod tests {
         s.push_history(crate::history::EditCommand::SetComposition { id: CompositionId::new(), before: None, after: Some(bytes("other")), label: "Other".into() });
         s.take_composition_change(id, C::Undo, "Blur", bytes("v1"));
         assert_eq!(steps(&s).0, 4);
-        assert_eq!(s.project_history.undo_label(), Some("Veylvik: Undo Blur"));
+        assert_eq!(s.document.project_history.undo_label(), Some("Veylvik: Undo Blur"));
 
         // Klipp's undo of that step: the bytes before it.
         let entry = s.take_undo().expect("a step");
@@ -1076,10 +1076,10 @@ mod tests {
         let mut v1 = Track::new("V1", TrackKind::Video);
         v1.clips = vec![clip];
         seq.tracks = vec![v1];
-        let mut s = crate::state::AppState { sequences: vec![seq], ..Default::default() };
-        s.media_pool.add(item.clone());
+        let mut s = crate::state::AppState { document: klipp_document::Document { sequences: vec![seq], ..Default::default() }, ..Default::default() };
+        s.document.media_pool.add(item.clone());
         assert_eq!(clip_name(&s, id).as_deref(), Some("Handheld.mp4"), "its media's file name");
-        s.sequences[0].tracks[0].clips[0].name = Some("Opening shot".into());
+        s.document.sequences[0].tracks[0].clips[0].name = Some("Opening shot".into());
         assert_eq!(clip_name(&s, id).as_deref(), Some("Opening shot"), "its own name first");
 
         let none = std::collections::BTreeMap::new();
@@ -1088,7 +1088,7 @@ mod tests {
         let missing = std::collections::BTreeMap::from([("grain.png".to_owned(), "not found".to_owned())]);
         relink(&mut s, Some(id), &missing);
         assert!(!s.show_relink_dialog, "the composition's own file is not Klipp's media");
-        s.media_pool.get_mut(&item.id).unwrap().offline = true;
+        s.document.media_pool.get_mut(&item.id).unwrap().offline = true;
         relink(&mut s, Some(id), &missing);
         assert!(s.show_relink_dialog, "offline media: Klipp's Relink");
     }
@@ -1110,8 +1110,8 @@ mod tests {
         let mut v1 = Track::new("V1", TrackKind::Video);
         v1.clips = vec![clip];
         seq.tracks = vec![v1];
-        let mut s = crate::state::AppState { sequences: vec![seq], ..Default::default() };
-        s.media_pool.add(item);
+        let mut s = crate::state::AppState { document: klipp_document::Document { sequences: vec![seq], ..Default::default() }, ..Default::default() };
+        s.document.media_pool.add(item);
         for f in [100, 117, 147] {
             let time = clip_time(&s, id, |t| t.composition_time(at(f))).expect("a clip with media");
             let back = clip_time(&s, id, |t| t.timeline_frame_at(time)).flatten().expect("a frame the clip shows");
@@ -1135,7 +1135,7 @@ mod tests {
         let mut v1 = Track::new("V1", TrackKind::Video);
         v1.clips = vec![Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0))];
         seq.tracks = vec![v1];
-        let mut state = crate::state::AppState { sequences: vec![seq], project_path: Some("/projects/a.klipp".into()), active_panel: Some(crate::state::PanelKind::Timeline), ..Default::default() };
+        let mut state = crate::state::AppState { document: klipp_document::Document { sequences: vec![seq], ..Default::default() }, project_path: Some("/projects/a.klipp".into()), active_panel: Some(crate::state::PanelKind::Timeline), ..Default::default() };
         let kb = crate::keybindings::KeyBindings::default();
         let pressed = |state: &crate::state::AppState, key: egui::Key| {
             let ctx = egui::Context::default();

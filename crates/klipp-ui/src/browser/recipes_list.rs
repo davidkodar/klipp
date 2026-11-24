@@ -66,7 +66,7 @@ pub(crate) fn target(state: &AppState) -> Option<(ClipId, String)> {
         .find_map(|t| t.clips.iter().find(|c| c.id == clip))?;
     let name = c
         .media_id()
-        .and_then(|m| state.media_pool.get(&m))
+        .and_then(|m| state.document.media_pool.get(&m))
         .map_or_else(|| "the selected clip".to_string(), |it| klipp_core::quote::quoted(&it.filename));
     Some((clip, name))
 }
@@ -99,9 +99,9 @@ fn slot_row(ui: &mut egui::Ui, state: &AppState, clip: Option<ClipId>, recipe: &
                 }
             }
             SlotKind::Media => {
-                let shown = state.media_pool.all().find(|m| m.id.0.to_string() == value).map_or("Choose\u{2026}".to_string(), |m| m.filename.clone());
+                let shown = state.document.media_pool.all().find(|m| m.id.0.to_string() == value).map_or("Choose\u{2026}".to_string(), |m| m.filename.clone());
                 egui::ComboBox::from_id_salt(id.with("media")).selected_text(shown).width(160.0).show_ui(ui, |ui| {
-                    for m in state.media_pool.all() {
+                    for m in state.document.media_pool.all() {
                         ui.selectable_value(&mut value, m.id.0.to_string(), &m.filename);
                     }
                 });

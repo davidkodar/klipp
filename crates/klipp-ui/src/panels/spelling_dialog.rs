@@ -26,8 +26,8 @@ pub struct SpellingDialog {
 /// The dialog, while `state.show_spelling_dialog` is set. Its commands.
 pub fn show_spelling_dialog(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
-    let scope: Vec<usize> = if state.spelling_dialog.every_sequence { (0..state.sequences.len()).collect() } else { vec![state.active_sequence_idx] };
-    let (found, missing) = crate::spelling::find_all(&state.spelling, ctx, &state.sequences, &scope);
+    let scope: Vec<usize> = if state.spelling_dialog.every_sequence { (0..state.document.sequences.len()).collect() } else { vec![state.active_sequence_idx] };
+    let (found, missing) = crate::spelling::find_all(&state.spelling, ctx, &state.document.sequences, &scope);
     let dialog = &state.spelling_dialog;
     let found: Vec<Found> = found.into_iter().filter(|f| !dialog.skipped.iter().any(|(c, o, s, w)| *c == f.clip_id && *o == f.object.0 && *s == f.start && *w == f.word)).collect();
     let mut open = state.show_spelling_dialog;
@@ -38,7 +38,7 @@ pub fn show_spelling_dialog(ctx: &egui::Context, state: &mut AppState) -> Vec<Ap
         .default_width(480.0)
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
-            if state.sequences.len() > 1 {
+            if state.document.sequences.len() > 1 {
                 ui.checkbox(&mut state.spelling_dialog.every_sequence, "Every sequence");
             }
             if !state.spelling.enabled {
@@ -58,9 +58,9 @@ pub fn show_spelling_dialog(ctx: &egui::Context, state: &mut AppState) -> Vec<Ap
             }
             egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                 for (k, f) in found.iter().enumerate() {
-                    let fps = state.sequences[f.sequence].fps.rate();
+                    let fps = state.document.sequences[f.sequence].fps.rate();
                     let at = Timecode::from_secs_f64(f.at_secs, fps);
-                    let where_ = if state.spelling_dialog.every_sequence { format!("{} · ", state.sequences[f.sequence].name) } else { String::new() };
+                    let where_ = if state.spelling_dialog.every_sequence { format!("{} · ", state.document.sequences[f.sequence].name) } else { String::new() };
                     let label = format!("{where_}{}  {}  \u{2014} {}", state.timecode_display().position(at), f.word, f.line.trim());
                     if ui.selectable_label(state.spelling_dialog.selected == Some(k), label).clicked() {
                         state.spelling_dialog.selected = Some(k);
@@ -158,7 +158,7 @@ mod tests {
         for (k, text) in ["Teh lazy dog", "Teh brown fox"].into_iter().enumerate() {
             let mut clip = klipp_timeline::Clip::gap(t(k as f64 * 2.0), t(k as f64 * 2.0 + 1.0));
             clip.kind = ClipKind::Title(TitleData::single_text(TextBox { text: text.into(), language: Some("en".into()), ..Default::default() }));
-            state.sequences[0].tracks[0].clips.push(clip);
+            state.document.sequences[0].tracks[0].clips.push(clip);
         }
         state
     }
@@ -211,7 +211,7 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows[0].contains("Teh lazy dog") && rows[1].contains("Teh brown fox"), "{rows:?}");
 
-        let second = state.sequences[0].tracks[0].clips[1].id;
+        let second = state.document.sequences[0].tracks[0].clips[1].id;
         let rows: Vec<String> = rows.into_iter().cloned().collect();
         let cmds = click(&mut frame, &mut state, &rows[1]);
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::SelectClip(Some(id)) if *id == second)), "goes to it: {cmds:?}");

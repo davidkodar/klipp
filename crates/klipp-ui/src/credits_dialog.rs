@@ -45,15 +45,15 @@ pub fn free_text_track(seq: &klipp_timeline::Sequence, from: klipp_core::Timecod
 pub fn place(state: &mut crate::state::AppState, dialog: &CreditsDialog) -> Vec<AppCommand> {
     let (td, secs) = dialog.title();
     let seq_idx = state.active_sequence_idx;
-    let fps_rate = state.sequences[seq_idx].fps.rate();
+    let fps_rate = state.document.sequences[seq_idx].fps.rate();
     let duration_frames = (secs * fps_rate as f32).round().max(1.0) as u32;
     let from = state.playhead;
     let to = from + klipp_core::RationalTime::from_frames(i64::from(duration_frames), fps_rate);
-    let track_index = match free_text_track(&state.sequences[seq_idx], from, to) {
+    let track_index = match free_text_track(&state.document.sequences[seq_idx], from, to) {
         Some(i) => i,
         None => {
-            let n = state.sequences[seq_idx].tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text).count() + 1;
-            state.sequences[seq_idx].tracks.insert(0, klipp_timeline::Track::new(&format!("Text {n}"), klipp_timeline::TrackKind::Text));
+            let n = state.document.sequences[seq_idx].tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text).count() + 1;
+            state.document.sequences[seq_idx].tracks.insert(0, klipp_timeline::Track::new(&format!("Text {n}"), klipp_timeline::TrackKind::Text));
             0
         }
     };

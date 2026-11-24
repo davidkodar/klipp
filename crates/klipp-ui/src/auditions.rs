@@ -163,7 +163,7 @@ pub fn show_take(state: &mut crate::state::AppState, shared: &klipp_timeline::Sh
     let Some(p) = state.take_preview.clone() else { return Vec::new() };
     let Some(take) = p.take() else { return Vec::new() };
     // Made from the document, never from a take already standing in.
-    let made = take_sequence(state.sequence(), &state.media_pool, p.clip_id, take, state.ripple_enabled)
+    let made = take_sequence(state.sequence(), &state.document.media_pool, p.clip_id, take, state.ripple_enabled)
         .and_then(|seq| preview_range(&seq, p.clip_id).map(|r| (seq, r)).ok_or_else(|| "the clip is no longer in the sequence".to_string()));
     match made {
         Ok((seq, range)) => {
@@ -376,11 +376,11 @@ mod tests {
     fn a_takes_name_field_is_wide_enough_to_read() {
         let (seq, pool, id, _) = fixture();
         let mut state = crate::state::AppState::default();
-        state.sequences[0] = seq;
-        state.media_pool = pool;
-        let (edits, _) = plan(state.sequence(), &state.media_pool, id, &AuditionEdit::Create).unwrap();
+        state.document.sequences[0] = seq;
+        state.document.media_pool = pool;
+        let (edits, _) = plan(state.sequence(), &state.document.media_pool, id, &AuditionEdit::Create).unwrap();
         let mut fps = state.fps;
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut fps };
         for e in &edits {
             view.apply_forward(e);
         }
@@ -497,11 +497,11 @@ mod tests {
     fn the_picker_lists_the_takes_and_switches_to_one() {
         let (seq, pool, id, _) = fixture();
         let mut state = crate::state::AppState::default();
-        state.sequences[0] = seq;
-        state.media_pool = pool;
-        let (edits, _) = plan(state.sequence(), &state.media_pool, id, &AuditionEdit::Create).unwrap();
+        state.document.sequences[0] = seq;
+        state.document.media_pool = pool;
+        let (edits, _) = plan(state.sequence(), &state.document.media_pool, id, &AuditionEdit::Create).unwrap();
         let mut fps = state.fps;
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut fps };
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut fps };
         for e in &edits {
             view.apply_forward(e);
         }
@@ -564,12 +564,12 @@ mod tests {
     fn a_take_preview_plays_the_take_and_leaves_the_project_untouched() {
         let (seq, pool, id, close) = fixture();
         let mut state = crate::state::AppState::default();
-        state.sequences[0] = seq;
-        state.media_pool = pool;
+        state.document.sequences[0] = seq;
+        state.document.media_pool = pool;
         for edit in [AuditionEdit::Create, AuditionEdit::AddMedia { media_ids: vec![close] }] {
-            let (edits, _) = plan(state.sequence(), &state.media_pool, id, &edit).unwrap();
+            let (edits, _) = plan(state.sequence(), &state.document.media_pool, id, &edit).unwrap();
             let mut fps = state.fps;
-            let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut fps };
+            let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut fps };
             for e in &edits {
                 view.apply_forward(e);
             }

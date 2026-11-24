@@ -987,7 +987,7 @@ pub fn show(
     let mut lives: Vec<(usize, klipp_core::TrackId, klipp_core::automation::TrackParam, f32)> = Vec::new();
     // Each strip's automation (#2306): a control shows its value as moved,
     // or its keys' value at the playhead when played from them.
-    let strip_automation: Vec<StripAutomation> = state.sequences[state.active_sequence_idx].tracks.iter().map(|t| {
+    let strip_automation: Vec<StripAutomation> = state.document.sequences[state.active_sequence_idx].tracks.iter().map(|t| {
         use klipp_core::automation::TrackParam;
         let pass = &state.automation_pass;
         let shown = |param: TrackParam, set: f32| pass.live(t.id, param).or_else(|| t.automation.plays(param).then(|| t.automation.value_at(param, playhead_secs, set)));
@@ -999,14 +999,14 @@ pub fn show(
             live_pan: goes_live(t, TrackParam::Pan, playing),
         }
     }).collect();
-    let seq = &mut state.sequences[state.active_sequence_idx];
+    let seq = &mut state.document.sequences[state.active_sequence_idx];
     let track_count = seq.tracks.len();
 
     // Collect track data with track IDs and kinds; a track that cannot
     // be heard gets no strip (#2696).
     let mut track_data: Vec<(String, klipp_core::TrackId, klipp_timeline::TrackKind, f32, f32, bool, bool, bool)> = seq.tracks.iter()
         .map(|t| {
-            let heard = is_heard(seq, t, &state.media_pool);
+            let heard = is_heard(seq, t, &state.document.media_pool);
             (t.name.clone(), t.id, t.kind, t.volume, t.pan, t.muted, t.solo, heard)
         })
         .collect();
@@ -1433,8 +1433,8 @@ mod tests {
         for panel_h in [220.0, MIXER_MIN_H] {
             let ctx = egui::Context::default();
             let mut state = AppState::default();
-            let seq = &state.sequences[state.active_sequence_idx];
-            let tracks = seq.tracks.iter().filter(|t| is_heard(seq, t, &state.media_pool)).count();
+            let seq = &state.document.sequences[state.active_sequence_idx];
+            let tracks = seq.tracks.iter().filter(|t| is_heard(seq, t, &state.document.media_pool)).count();
             assert!(tracks > 0, "the default sequence has a track to hear");
             mixer_frame(&ctx, &mut state, panel_h, None);
             let (shapes, _) = mixer_frame(&ctx, &mut state, panel_h, None);
@@ -1483,8 +1483,8 @@ mod tests {
         for panel_h in [220.0, MIXER_MIN_H] {
             let ctx = egui::Context::default();
             let mut state = AppState::default();
-            let seq = &state.sequences[state.active_sequence_idx];
-            let tracks = seq.tracks.iter().filter(|t| is_heard(seq, t, &state.media_pool)).count();
+            let seq = &state.document.sequences[state.active_sequence_idx];
+            let tracks = seq.tracks.iter().filter(|t| is_heard(seq, t, &state.document.media_pool)).count();
             mixer_frame(&ctx, &mut state, panel_h, None);
             let (shapes, _) = mixer_frame(&ctx, &mut state, panel_h, None);
             let sends = shown_whole(&shapes, "Sends");
@@ -1570,7 +1570,7 @@ mod tests {
         let media = klipp_core::MediaId::new();
         let mut item = klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), tc(4.0), klipp_core::Fps::new(24, 1));
         item.has_audio = true;
-        state.media_pool.add(item);
+        state.document.media_pool.add(item);
         let clip = || Clip::media(media, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
 
         let mut own_sound = Track::new("V1", TrackKind::Video);
@@ -1580,11 +1580,11 @@ mod tests {
         let mut linked = Track::new("V2", TrackKind::Video);
         linked.clips.push(Clip { linked_clip_id: Some(partner.clips[0].id), ..clip() });
         let text = Track::new("T1", TrackKind::Text);
-        let seq = &mut state.sequences[state.active_sequence_idx];
+        let seq = &mut state.document.sequences[state.active_sequence_idx];
         seq.tracks = vec![text, linked, own_sound, partner];
 
-        let seq = &state.sequences[state.active_sequence_idx];
-        let heard: Vec<bool> = seq.tracks.iter().map(|t| is_heard(seq, t, &state.media_pool)).collect();
+        let seq = &state.document.sequences[state.active_sequence_idx];
+        let heard: Vec<bool> = seq.tracks.iter().map(|t| is_heard(seq, t, &state.document.media_pool)).collect();
         assert_eq!(heard, [false, false, true, true]);
 
         let ctx = egui::Context::default();
@@ -1606,7 +1606,7 @@ mod tests {
     fn each_strip_shows_its_whole_automation_mode() {
         use klipp_core::automation::AutomationMode;
         let mut state = AppState::default();
-        let seq = &mut state.sequences[state.active_sequence_idx];
+        let seq = &mut state.document.sequences[state.active_sequence_idx];
         seq.tracks.push(klipp_timeline::Track::new("A2", klipp_timeline::TrackKind::Audio));
         seq.tracks.push(klipp_timeline::Track::new("A3", klipp_timeline::TrackKind::Audio));
         for t in seq.tracks.iter_mut() {

@@ -13,7 +13,7 @@ pub(super) fn drag_key(clip_id: ClipId) -> String {
 }
 
 pub(super) fn snapshot_title(state: &AppState, clip_id: ClipId) -> Option<klipp_timeline::TitleData> {
-    state.sequences[state.active_sequence_idx].tracks.iter()
+    state.document.sequences[state.active_sequence_idx].tracks.iter()
         .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
         .and_then(|c| c.title_data())
         .cloned()
@@ -126,7 +126,7 @@ fn edit_object(
 ) -> Option<ClipId> {
     let old = snapshot_title(state, clip_id)?;
     let target = klipp_timeline::TitleObjectId(object_id);
-    let o = state.sequences[state.active_sequence_idx]
+    let o = state.document.sequences[state.active_sequence_idx]
         .tracks
         .iter_mut()
         .find_map(|t| t.clips.iter_mut().find(|c| c.id == clip_id))
@@ -165,7 +165,7 @@ mod tests {
         let id = clip.id;
         let mut track = klipp_timeline::Track::new("Text 1", klipp_timeline::TrackKind::Text);
         track.clips.push(clip);
-        v.state.sequences[0].tracks.insert(0, track);
+        v.state.document.sequences[0].tracks.insert(0, track);
         v.state.selected_clip = Some(id);
         v.state.selected_clips = vec![id];
         v.state.selected_title_object = Some((id, first));
@@ -178,18 +178,18 @@ mod tests {
     #[test]
     fn a_caption_s_text_is_named_as_a_caption_s() {
         let (mut v, title_id) = viewer(&[("Hello", (0.5, 0.5), 0.0)]);
-        let mut caption = v.state.sequences[0].all_clips().find(|c| c.id == title_id).unwrap().clone();
+        let mut caption = v.state.document.sequences[0].all_clips().find(|c| c.id == title_id).unwrap().clone();
         caption.id = ClipId::new();
         let caption_id = caption.id;
         let mut track = klipp_timeline::Track::new("Captions", klipp_timeline::TrackKind::Subtitle);
         track.clips.push(caption);
-        v.state.sequences[0].tracks.push(track);
+        v.state.document.sequences[0].tracks.push(track);
         assert_eq!(text_edit_name(&v.state, title_id), "Edit Title Text");
         assert_eq!(text_edit_name(&v.state, caption_id), "Edit Caption Text");
         let depth = v.state.undo_depth();
         for typed in ["Hellp", "Help"] {
             let old = snapshot_title(&v.state, caption_id).unwrap();
-            let clip = v.state.sequences[0].all_clips_mut().find(|c| c.id == caption_id).unwrap();
+            let clip = v.state.document.sequences[0].all_clips_mut().find(|c| c.id == caption_id).unwrap();
             let klipp_timeline::ClipKind::Title(td) = &mut clip.kind else { unreachable!() };
             if let TitleObjectContent::TextBox(tb) = &mut td.objects[0].content { tb.text = typed.into(); }
             let name = text_edit_name(&v.state, caption_id);
@@ -200,7 +200,7 @@ mod tests {
     }
 
     fn title(v: &Viewer, id: ClipId) -> TitleData {
-        v.state.sequences[0].all_clips().find(|c| c.id == id).unwrap().title_data().unwrap().clone()
+        v.state.document.sequences[0].all_clips().find(|c| c.id == id).unwrap().title_data().unwrap().clone()
     }
 
     fn layer(v: &Viewer, id: ClipId, n: usize) -> TitleObject {
@@ -237,9 +237,9 @@ mod tests {
     fn undo(v: &mut Viewer) {
         let entry = v.state.active_history_mut().undo().expect("a step");
         let mut doc = klipp_document::apply::DocumentView {
-            sequences: &mut v.state.sequences,
+            sequences: &mut v.state.document.sequences,
             active: v.state.active_sequence_idx,
-            media_pool: &mut v.state.media_pool,
+            media_pool: &mut v.state.document.media_pool,
             fps: &mut v.state.fps,
         };
         doc.apply_inverse(&entry.command);
@@ -253,7 +253,7 @@ mod tests {
     /// over the clip: `lanes` of `(param, value)`, positions in frame
     /// pixels.
     fn place(v: &mut Viewer, id: ClipId, lanes: &[(&str, f32)]) {
-        let seq = &mut v.state.sequences[0];
+        let seq = &mut v.state.document.sequences[0];
         let clip = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == id).unwrap();
         let mut b = klipp_timeline::test_clip::TestClip::of(clip.clone());
         for (param, value) in lanes {
@@ -512,7 +512,7 @@ mod tests {
     fn a_left_aligned_layer_snaps_by_the_box_drawn() {
         let (mut v, id) = viewer(&[("Hello", (0.2, 0.35), 0.0)]);
         {
-            let clip = v.state.sequences[0].tracks[0].find_clip_mut(id).unwrap();
+            let clip = v.state.document.sequences[0].tracks[0].find_clip_mut(id).unwrap();
             let klipp_timeline::ClipKind::Title(td) = &mut clip.kind else { unreachable!() };
             let TitleObjectContent::TextBox(tb) = &mut td.objects[0].content else { unreachable!() };
             tb.alignment = klipp_timeline::TextAlignment::Left;
@@ -555,7 +555,7 @@ mod tests {
     fn the_path_start_handle_turns_the_arcs_start() {
         let (mut v, id) = viewer(&[("Round and round", (0.5, 0.5), 0.0)]);
         {
-            let clip = v.state.sequences[0].tracks[0].find_clip_mut(id).unwrap();
+            let clip = v.state.document.sequences[0].tracks[0].find_clip_mut(id).unwrap();
             let klipp_timeline::ClipKind::Title(td) = &mut clip.kind else { unreachable!() };
             let TitleObjectContent::TextBox(tb) = &mut td.objects[0].content else { unreachable!() };
             tb.text_path = Some(klipp_timeline::TextPath::Arc { radius: 300.0, start_angle: 180.0, sweep: 120.0 });

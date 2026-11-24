@@ -8,7 +8,7 @@ impl KlippApp {
     /// Whether `clip_id` sits on a locked track; when it does, a toast
     /// names the track.
     pub(super) fn refused_by_lock(&mut self, clip_id: &ClipId) -> bool {
-        let locked = self.state.sequences[self.state.active_sequence_idx]
+        let locked = self.state.document.sequences[self.state.active_sequence_idx]
             .tracks
             .iter()
             .find(|t| t.locked && t.clips.iter().any(|c| c.id == *clip_id))

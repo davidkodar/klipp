@@ -25,7 +25,7 @@ impl KlippApp {
             // checks below would find the item itself, say "already in
             // the media pool", and drop it, so a relinked clip kept its
             // old duration and an externally edited one never reloaded.
-            if self.state.media_pool.get(media_id).is_some() {
+            if self.state.document.media_pool.get(media_id).is_some() {
                 return false;
             }
             // Only media is imported, by any way in, as a project's is
@@ -41,7 +41,7 @@ impl KlippApp {
                 self.state.toast.show(format!("{name} was not imported: {why}"));
                 return true;
             }
-            if let Some(existing) = self.state.media_pool.find_by_path(path) {
+            if let Some(existing) = self.state.document.media_pool.find_by_path(path) {
                 let existing_id = existing.id;
                 self.state.pending_undo_imports.remove(media_id);
                 self.state.pending_import_bins.remove(media_id);
@@ -58,7 +58,7 @@ impl KlippApp {
                 return true;
             }
             if let Some(fp) = compute_media_fingerprint(path) {
-                if let Some(existing) = self.state.media_pool.find_by_fingerprint(fp) {
+                if let Some(existing) = self.state.document.media_pool.find_by_fingerprint(fp) {
                     let existing_id = existing.id;
                     self.state.pending_undo_imports.remove(media_id);
                     let existing_name = existing.filename.clone();
@@ -157,7 +157,7 @@ impl KlippApp {
                         }
                         klipp_core::events::ClipDrop::OnTrackAt { track_index, at, overwrite } => {
                             // A title asset has no drop position of its own.
-                            if matches!(self.state.media_pool.get(media_id).map(|i| &i.kind), Some(klipp_media::MediaItemKind::SyntheticTitle)) {
+                            if matches!(self.state.document.media_pool.get(media_id).map(|i| &i.kind), Some(klipp_media::MediaItemKind::SyntheticTitle)) {
                                 self.append_title_asset_to_timeline(*media_id, *track_index);
                                 return true;
                             }
@@ -213,7 +213,7 @@ impl KlippApp {
                         return true;
                     }
                     self.suppress_fps_prompt = false;
-                    if let Some(item) = self.state.media_pool.get(media_id).cloned() {
+                    if let Some(item) = self.state.document.media_pool.get(media_id).cloned() {
                         let is_audio_only = item.video_codec.is_empty();
                         self.adopt_first_clip_format(&item);
 
@@ -225,17 +225,17 @@ impl KlippApp {
                         } else {
                             klipp_timeline::TrackKind::Video
                         };
-                        let track_index = self.state.sequences[self.state.active_sequence_idx]
+                        let track_index = self.state.document.sequences[self.state.active_sequence_idx]
                             .source_track(target_kind)
                             .unwrap_or(0);
-                        let appended_id = append_whole_file(&mut self.state.sequences[self.state.active_sequence_idx], &item, track_index);
+                        let appended_id = append_whole_file(&mut self.state.document.sequences[self.state.active_sequence_idx], &item, track_index);
                         if let Some(clip_id) = appended_id {
                             self.apply_input_defaults(clip_id, *media_id);
                             // The file's audio, linked to this clip. Without
                             // it the timeline is silent and so is every
                             // render made from it.
                             let audio = self.append_linked_audio(*media_id, clip_id);
-                            let clip = self.state.sequences[self.state.active_sequence_idx].tracks[track_index].find_clip(clip_id).unwrap().clone();
+                            let clip = self.state.document.sequences[self.state.active_sequence_idx].tracks[track_index].find_clip(clip_id).unwrap().clone();
                             match audio {
                                 // One history entry for the pair, so a
                                 // single undo takes both back.
@@ -267,25 +267,25 @@ impl KlippApp {
                     // Only for media that has sound to attach; asking
                     // for it on a silent file would otherwise lay down a
                     // clip of nothing.
-                    let has_audio = self.state.sequences[seq_idx]
+                    let has_audio = self.state.document.sequences[seq_idx]
                         .all_clips()
                         .find(|c| c.id == *clip_id)
                         .and_then(|c| match c.kind {
                             klipp_timeline::ClipKind::Media { media_id } => Some(media_id),
                             _ => None,
                         })
-                        .and_then(|m| self.state.media_pool.get(&m))
+                        .and_then(|m| self.state.document.media_pool.get(&m))
                         .is_some_and(|i| i.has_audio || i.synced_audio.is_some());
                     if !has_audio {
                         self.state.toast.show("That clip's media has no audio");
                         return true;
                     }
-                    let external = self.state.sequences[seq_idx]
+                    let external = self.state.document.sequences[seq_idx]
                         .all_clips()
                         .find(|c| c.id == *clip_id)
                         .and_then(|c| c.media_id())
                         .and_then(|m| self.external_audio_of(m));
-                    match attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], *clip_id, external) {
+                    match attach_linked_audio_to_clip(&mut self.state.document.sequences[seq_idx], *clip_id, external) {
                         Some(a) => {
                             self.state.push_history(EditCommand::LinkedImport {
                                 video: None,
@@ -305,11 +305,11 @@ impl KlippApp {
                     true
                 }
                 AppCommand::AppendMediaBatchToTrack { media_ids, track_index } => {
-                    let Some(kind) = self.state.sequences[self.state.active_sequence_idx].tracks.get(*track_index).map(|t| t.kind) else {
+                    let Some(kind) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get(*track_index).map(|t| t.kind) else {
                         return true;
                     };
                     let (fit, skipped): (Vec<_>, Vec<_>) = media_ids.iter().partition(|id| {
-                        self.state.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, kind))
+                        self.state.document.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, kind))
                     });
                     if fit.is_empty() {
                         self.state.toast.show(format!("None of the {} clips can go on that track", media_ids.len()));
@@ -317,7 +317,7 @@ impl KlippApp {
                     }
                     // One prompt for the batch, on its first video clip; answered,
                     // the batch comes back with the prompt suppressed.
-                    if let Some(first) = fit.iter().find(|id| self.state.media_pool.get(id).is_some_and(|i| !i.video_codec.is_empty())) {
+                    if let Some(first) = fit.iter().find(|id| self.state.document.media_pool.get(id).is_some_and(|i| !i.video_codec.is_empty())) {
                         if self.maybe_prompt_framerate_mismatch(first, cmd.clone()) {
                             return true;
                         }
@@ -345,7 +345,7 @@ impl KlippApp {
                     // title clip linked to the asset rather than a
                     // media clip; the MediaItem is just a discoverable
                     // entry in the pool.
-                    let item_kind = self.state.media_pool.get(media_id).map(|i| i.kind.clone());
+                    let item_kind = self.state.document.media_pool.get(media_id).map(|i| i.kind.clone());
                     if matches!(item_kind, Some(klipp_media::MediaItemKind::SyntheticTitle)) {
                         self.append_title_asset_to_timeline(*media_id, *track_index);
                         return true;
@@ -368,8 +368,8 @@ impl KlippApp {
                     // handler).
                     let active_idx = self.state.active_sequence_idx;
                     let result = insert_audio_media_clip_into_seq(
-                        &mut self.state.sequences[active_idx],
-                        &self.state.media_pool,
+                        &mut self.state.document.sequences[active_idx],
+                        &self.state.document.media_pool,
                         *media_id,
                         *track_index,
                         *timeline_in,
@@ -396,7 +396,7 @@ impl KlippApp {
                         return true;
                     }
                     self.suppress_fps_prompt = false;
-                    let Some(item) = self.state.media_pool.get(media_id).cloned() else {
+                    let Some(item) = self.state.document.media_pool.get(media_id).cloned() else {
                         self.state.toast.show("That clip is no longer in the media pool");
                         return true;
                     };
@@ -431,11 +431,11 @@ impl KlippApp {
                                 value: (sel.range_out_secs * rate as f64).round() as i64,
                                 rate,
                             };
-                            let fps = self.state.sequences[self.state.active_sequence_idx].fps;
+                            let fps = self.state.document.sequences[self.state.active_sequence_idx].fps;
                             // Never past the picture's last whole frame.
                             placed_range(src_in, src_out.min(item.placed_length(fps)).max(src_in), fps)
                         } else {
-                            source_marks_range(&item, self.state.sequences[self.state.active_sequence_idx].fps)
+                            source_marks_range(&item, self.state.document.sequences[self.state.active_sequence_idx].fps)
                         };
 
                         let has_video = !item.video_codec.is_empty();
@@ -458,7 +458,7 @@ impl KlippApp {
                             // V1 / first existing A track (auto-create A
                             // only if missing).
                             let video_track_idx = if *on_new_tracks {
-                                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                                 let video_count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
                                 seq.add_video_track(format!("Video {}", video_count + 1));
                                 // add_video_track inserts at index 0.
@@ -467,21 +467,21 @@ impl KlippApp {
                             } else {
                                 // The main track, V1, unless the source is
                                 // patched elsewhere: not the top one.
-                                self.state.sequences[self.state.active_sequence_idx].source_track(klipp_timeline::TrackKind::Video)
+                                self.state.document.sequences[self.state.active_sequence_idx].source_track(klipp_timeline::TrackKind::Video)
                             };
                             let audio_track_idx = if *on_new_tracks {
-                                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                                 let audio_count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
                                 seq.add_audio_track(format!("Audio {}", audio_count + 1));
                                 let new_idx = seq.tracks.len() - 1;
                                 hist_created_audio_track_at = Some(new_idx);
                                 Some(new_idx)
                             } else {
-                                match self.state.sequences[self.state.active_sequence_idx].source_track(klipp_timeline::TrackKind::Audio) {
+                                match self.state.document.sequences[self.state.active_sequence_idx].source_track(klipp_timeline::TrackKind::Audio) {
                                     Some(i) => Some(i),
                                     None => {
                                         // Auto-create audio track to host the imported audio.
-                                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                                        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                                         let audio_count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
                                         seq.add_audio_track(format!("Audio {}", audio_count + 1));
                                         let new_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio);
@@ -496,17 +496,17 @@ impl KlippApp {
                                 // side by side (#3448): each at its own
                                 // track's end put the sound under some
                                 // other picture.
-                                let end = self.state.sequences[self.state.active_sequence_idx].total_duration();
-                                let video_clip_id = self.state.sequences[self.state.active_sequence_idx].tracks[vi].append_clip_from(*media_id, use_duration, end);
-                                apply_range(&mut self.state.sequences[self.state.active_sequence_idx].tracks[vi], video_clip_id);
-                                let audio_clip_id = self.state.sequences[self.state.active_sequence_idx].tracks[ai].append_clip_from(*media_id, use_duration, end);
-                                apply_range(&mut self.state.sequences[self.state.active_sequence_idx].tracks[ai], audio_clip_id);
+                                let end = self.state.document.sequences[self.state.active_sequence_idx].total_duration();
+                                let video_clip_id = self.state.document.sequences[self.state.active_sequence_idx].tracks[vi].append_clip_from(*media_id, use_duration, end);
+                                apply_range(&mut self.state.document.sequences[self.state.active_sequence_idx].tracks[vi], video_clip_id);
+                                let audio_clip_id = self.state.document.sequences[self.state.active_sequence_idx].tracks[ai].append_clip_from(*media_id, use_duration, end);
+                                apply_range(&mut self.state.document.sequences[self.state.active_sequence_idx].tracks[ai], audio_clip_id);
 
-                                if let Some(vc) = self.state.sequences[self.state.active_sequence_idx].tracks[vi].find_clip_mut(video_clip_id) {
+                                if let Some(vc) = self.state.document.sequences[self.state.active_sequence_idx].tracks[vi].find_clip_mut(video_clip_id) {
                                     vc.linked_clip_id = Some(audio_clip_id);
                                     vc.source_rotation = item.source_rotation;
                                 }
-                                if let Some(ac) = self.state.sequences[self.state.active_sequence_idx].tracks[ai].find_clip_mut(audio_clip_id) {
+                                if let Some(ac) = self.state.document.sequences[self.state.active_sequence_idx].tracks[ai].find_clip_mut(audio_clip_id) {
                                     ac.linked_clip_id = Some(video_clip_id);
                                 }
 
@@ -520,10 +520,10 @@ impl KlippApp {
                                 // imported clip.
                                 self.apply_input_defaults(video_clip_id, *media_id);
 
-                                if let Some(vc) = self.state.sequences[self.state.active_sequence_idx].tracks[vi].find_clip(video_clip_id) {
+                                if let Some(vc) = self.state.document.sequences[self.state.active_sequence_idx].tracks[vi].find_clip(video_clip_id) {
                                     hist_video = Some((vc.clone(), vi));
                                 }
-                                if let Some(ac) = self.state.sequences[self.state.active_sequence_idx].tracks[ai].find_clip(audio_clip_id) {
+                                if let Some(ac) = self.state.document.sequences[self.state.active_sequence_idx].tracks[ai].find_clip(audio_clip_id) {
                                     hist_audio = Some((ac.clone(), ai));
                                 }
 
@@ -538,7 +538,7 @@ impl KlippApp {
                                 klipp_timeline::TrackKind::Audio
                             };
                             let track_idx = if *on_new_tracks {
-                                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
                                 let count = seq.tracks.iter().filter(|t| t.kind == target_kind).count();
                                 if has_video {
                                     seq.add_video_track(format!("Video {}", count + 1));
@@ -551,10 +551,10 @@ impl KlippApp {
                                     idx
                                 }
                             } else {
-                                self.state.sequences[self.state.active_sequence_idx].source_track(target_kind).unwrap_or(0)
+                                self.state.document.sequences[self.state.active_sequence_idx].source_track(target_kind).unwrap_or(0)
                             };
-                            let end = self.state.sequences[self.state.active_sequence_idx].total_duration();
-                            if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(track_idx) {
+                            let end = self.state.document.sequences[self.state.active_sequence_idx].total_duration();
+                            if let Some(track) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(track_idx) {
                                 let clip_id = track.append_clip_from(*media_id, use_duration, end);
                                 apply_range(track, clip_id);
                                 if has_video {
@@ -568,7 +568,7 @@ impl KlippApp {
                                 if has_video {
                                     self.apply_input_defaults(clip_id, *media_id);
                                 }
-                                if let Some(c) = self.state.sequences[self.state.active_sequence_idx].tracks[track_idx].find_clip(clip_id) {
+                                if let Some(c) = self.state.document.sequences[self.state.active_sequence_idx].tracks[track_idx].find_clip(clip_id) {
                                     let snap = (c.clone(), track_idx);
                                     if has_video { hist_video = Some(snap); } else { hist_audio = Some(snap); }
                                 }
@@ -623,7 +623,7 @@ impl KlippApp {
                         }
                     }
                     self.state.proxy_generating.remove(media_id);
-                    let filename = self.state.media_pool.get(media_id)
+                    let filename = self.state.document.media_pool.get(media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_default();
                     tracing::info!("Proxy generation cancelled for {}", filename);
@@ -659,7 +659,7 @@ impl KlippApp {
     fn handle_media_relinking(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
                 AppCommand::ExportMetadataSheet { path, ale } => {
-                    let mut items: Vec<&klipp_media::MediaItem> = self.state.media_pool.all().filter(|m| matches!(m.kind, klipp_media::MediaItemKind::File)).collect();
+                    let mut items: Vec<&klipp_media::MediaItem> = self.state.document.media_pool.all().filter(|m| matches!(m.kind, klipp_media::MediaItemKind::File)).collect();
                     items.sort_by_key(|m| m.filename.to_lowercase());
                     let text = if *ale {
                         klipp_project::metadata_sheet::export_ale(&items, self.state.fps)
@@ -690,12 +690,12 @@ impl KlippApp {
                     };
                     let (mut applied, mut unmatched) = (0usize, 0usize);
                     for row in &rows {
-                        let ids: Vec<klipp_core::MediaId> = self.state.media_pool.all().filter(|m| klipp_project::metadata_sheet::row_names(m, &row.name)).map(|m| m.id).collect();
+                        let ids: Vec<klipp_core::MediaId> = self.state.document.media_pool.all().filter(|m| klipp_project::metadata_sheet::row_names(m, &row.name)).map(|m| m.id).collect();
                         if ids.is_empty() {
                             unmatched += 1;
                         }
                         for id in ids {
-                            if let Some(item) = self.state.media_pool.get_mut(&id) {
+                            if let Some(item) = self.state.document.media_pool.get_mut(&id) {
                                 if klipp_project::metadata_sheet::apply_row(item, row) {
                                     applied += 1;
                                 }
@@ -716,7 +716,7 @@ impl KlippApp {
                     // again and the item keeps what the user said about it.
                     let files: Vec<(klipp_core::MediaId, std::path::PathBuf)> = media_ids
                         .iter()
-                        .filter_map(|id| self.state.media_pool.get(id))
+                        .filter_map(|id| self.state.document.media_pool.get(id))
                         .filter(|m| matches!(m.kind, klipp_media::MediaItemKind::File) && !m.offline)
                         .map(|m| (m.id, m.path.clone()))
                         .collect();
@@ -848,7 +848,7 @@ impl KlippApp {
                     // What the project knew of the clip, taken before the
                     // relink overwrites it, then checked against the file
                     // off the UI thread (it is read with ffmpeg).
-                    if let Some(item) = self.state.media_pool.get(media_id) {
+                    if let Some(item) = self.state.document.media_pool.get(media_id) {
                         let wanted = klipp_media::relink::Wanted::from_item(item);
                         let (tx, path) = (self.relink_check_tx.clone(), new_path.clone());
                         let _ = std::thread::Builder::new().name("klipp-relink-check".into()).spawn(move || {
@@ -863,9 +863,9 @@ impl KlippApp {
                 AppCommand::RelinkMedia { media_id, new_path } => {
                     // A step undo takes back (#2086); several relinked at
                     // once arrive in one batch, one step.
-                    let before = self.state.media_pool.get(media_id).cloned();
+                    let before = self.state.document.media_pool.get(media_id).cloned();
                     self.relink_media(*media_id, new_path);
-                    if let (Some(old), Some(item)) = (before, self.state.media_pool.get(media_id)) {
+                    if let (Some(old), Some(item)) = (before, self.state.document.media_pool.get(media_id)) {
                         let edit = crate::history::EditCommand::RelinkMedia { media_id: *media_id, old_path: old.path.clone(), old_offline: old.offline, old_item: Box::new(old), new_path: item.path.clone(), new_offline: item.offline };
                         self.state.push_history(edit);
                     }
@@ -895,7 +895,7 @@ impl KlippApp {
     fn handle_media_pool(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
                 AppCommand::AddMediaTag { media_id, tag } => {
-                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
                         if !item.tags.contains(tag) {
                             item.tags.push(tag.clone());
                             self.state.dirty = true;
@@ -907,7 +907,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::RemoveMediaTag { media_id, tag_index } => {
-                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
                         if *tag_index < item.tags.len() {
                             item.tags.remove(*tag_index);
                             self.state.dirty = true;
@@ -918,25 +918,25 @@ impl KlippApp {
                 }
                 // Media pool management
                 AppCommand::RemoveFromPool { media_id } => {
-                    let usage = media_usage_count(*media_id, &self.state.sequences);
+                    let usage = media_usage_count(*media_id, &self.state.document.sequences);
                     if usage > 0 {
                         self.state.show_remove_media_confirm = Some(*media_id);
-                    } else if self.state.media_pool.get(media_id).is_some() {
+                    } else if self.state.document.media_pool.get(media_id).is_some() {
                         // Cascade: drop any subclips pointing at this parent.
                         // Subclips are virtual (no files on disk), so removing
                         // them doesn't require confirmation even if the
                         // parent prompt would otherwise have fired.
-                        let child_ids: Vec<klipp_core::MediaId> = self.state.media_pool
+                        let child_ids: Vec<klipp_core::MediaId> = self.state.document.media_pool
                             .all()
                             .filter(|i| i.parent_media_id == Some(*media_id))
                             .map(|i| i.id)
                             .collect();
                         for child_id in &child_ids {
-                            self.state.media_pool.remove(child_id);
+                            self.state.document.media_pool.remove(child_id);
                         }
                         // Pool removals don't go on the timeline-edit undo
                         // stack — see the comment on the import path.
-                        self.state.media_pool.remove(media_id);
+                        self.state.document.media_pool.remove(media_id);
                         if !child_ids.is_empty() {
                             let n = child_ids.len();
                             self.state.toast.show(format!(
@@ -960,19 +960,19 @@ impl KlippApp {
                         self.state.skim_audio_session = None;
                     }
                     // Cascade: drop any subclips pointing at this parent.
-                    let child_ids: Vec<klipp_core::MediaId> = self.state.media_pool
+                    let child_ids: Vec<klipp_core::MediaId> = self.state.document.media_pool
                         .all()
                         .filter(|i| i.parent_media_id == Some(*media_id))
                         .map(|i| i.id)
                         .collect();
                     for child_id in &child_ids {
-                        self.state.media_pool.remove(child_id);
+                        self.state.document.media_pool.remove(child_id);
                     }
                     // Pool removals don't go on the timeline-edit undo stack
                     // (FCP / Premiere convention). The user has already
                     // confirmed via the modal, and we don't want a stray
                     // ctrl+z on a timeline edit to resurrect deleted media.
-                    self.state.media_pool.remove(media_id);
+                    self.state.document.media_pool.remove(media_id);
                     if !child_ids.is_empty() {
                         let n = child_ids.len();
                         self.state.toast.show(format!(
@@ -990,7 +990,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::ClearSyncedAudio { video_id } => {
-                    if let Some(item) = self.state.media_pool.get_mut(video_id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(video_id) {
                         if item.synced_audio.take().is_some() {
                             self.state.dirty = true;
                         }
@@ -1002,7 +1002,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::RemoveMediaMarker { media_id, index } => {
-                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
                         if *index < item.markers.len() {
                             item.markers.remove(*index);
                             self.state.dirty = true;
@@ -1011,7 +1011,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::RenameMediaMarker { media_id, index, name } => {
-                    if let Some(m) = self.state.media_pool.get_mut(media_id).and_then(|i| i.markers.get_mut(*index)) {
+                    if let Some(m) = self.state.document.media_pool.get_mut(media_id).and_then(|i| i.markers.get_mut(*index)) {
                         if m.name != *name {
                             m.name = name.clone();
                             self.state.dirty = true;
@@ -1020,7 +1020,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetMediaLog { media_id, log } => {
-                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
                         if item.log != *log {
                             item.log = log.clone();
                             self.state.dirty = true;
@@ -1029,7 +1029,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetMediaRating { media_id, rating } => {
-                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
                         let old_rating = item.rating;
                         let new_rating = (*rating).min(5);
                         if old_rating != new_rating {
@@ -1047,7 +1047,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetMediaTags { media_id, tags } => {
-                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
                         let old_tags = item.tags.clone();
                         if old_tags != *tags {
                             item.tags = tags.clone();
@@ -1064,7 +1064,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetMediaColorLabel { media_id, label } => {
-                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
                         let old_label = item.color_label.to_u8();
                         if old_label != *label {
                             item.color_label = klipp_media::ColorLabel::from_u8(*label);
@@ -1081,14 +1081,14 @@ impl KlippApp {
                     true
                 }
                 AppCommand::DeleteUnusedMedia => {
-                    let unused_count = self.state.media_pool.all()
-                        .filter(|item| media_usage_count(item.id, &self.state.sequences) == 0)
+                    let unused_count = self.state.document.media_pool.all()
+                        .filter(|item| media_usage_count(item.id, &self.state.document.sequences) == 0)
                         .count();
                     if unused_count == 0 {
                         self.state.toast.show("All media is used in the timeline");
                     } else {
-                        let total_bytes: u64 = self.state.media_pool.all()
-                            .filter(|item| media_usage_count(item.id, &self.state.sequences) == 0)
+                        let total_bytes: u64 = self.state.document.media_pool.all()
+                            .filter(|item| media_usage_count(item.id, &self.state.document.sequences) == 0)
                             .map(|m| m.file_size_bytes)
                             .sum();
                         self.state.show_delete_unused_confirm = Some((unused_count, total_bytes));
@@ -1096,8 +1096,8 @@ impl KlippApp {
                     true
                 }
                 AppCommand::ConfirmDeleteUnusedMedia => {
-                    let unused_ids: Vec<klipp_core::MediaId> = self.state.media_pool.all()
-                        .filter(|item| media_usage_count(item.id, &self.state.sequences) == 0)
+                    let unused_ids: Vec<klipp_core::MediaId> = self.state.document.media_pool.all()
+                        .filter(|item| media_usage_count(item.id, &self.state.document.sequences) == 0)
                         .map(|m| m.id)
                         .collect();
                     // Pool removals don't go on the timeline-edit undo stack
@@ -1105,7 +1105,7 @@ impl KlippApp {
                     // via the modal; ctrl+z on a timeline edit shouldn't
                     // resurrect deleted media one item at a time.
                     for id in &unused_ids {
-                        self.state.media_pool.remove(id);
+                        self.state.document.media_pool.remove(id);
                     }
                     self.state.show_delete_unused_confirm = None;
                     self.state.dirty = true;
@@ -1200,7 +1200,7 @@ impl KlippApp {
                         span: None,
                     };
                     let span_path = media_item.path.clone();
-                    self.state.media_pool.add(media_item);
+                    self.state.document.media_pool.add(media_item);
                     self.refresh_spans_beside(&span_path);
                     // Imports stay off the timeline-edit undo stack (FCP /
                     // Premiere convention). Mixing them in caused two
@@ -1224,7 +1224,7 @@ impl KlippApp {
     fn handle_media_bins(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
                 AppCommand::SaveSmartBin { bin } => {
-                    let bins = &mut self.state.media_pool.smart_bins;
+                    let bins = &mut self.state.document.media_pool.smart_bins;
                     match bins.iter_mut().find(|b| b.id == bin.id) {
                         Some(existing) => *existing = bin.clone(),
                         None => bins.push(bin.clone()),
@@ -1233,13 +1233,13 @@ impl KlippApp {
                     true
                 }
                 AppCommand::DeleteSmartBin { id } => {
-                    self.state.media_pool.smart_bins.retain(|b| b.id != *id);
+                    self.state.document.media_pool.smart_bins.retain(|b| b.id != *id);
                     self.state.dirty = true;
                     true
                 }
                 AppCommand::CreateBin { name } => {
                     // Create a root-level bin in the bins collection
-                    let _bin_id = self.state.media_pool.find_or_create_bin(name);
+                    let _bin_id = self.state.document.media_pool.find_or_create_bin(name);
                     tracing::info!("Bin created: {}", name);
                     self.state.dirty = true;
                     true
@@ -1250,25 +1250,25 @@ impl KlippApp {
                         name: name.clone(),
                         parent_id: Some(*parent_id),
                     };
-                    self.state.media_pool.bins.push(bin);
+                    self.state.document.media_pool.bins.push(bin);
                     tracing::info!("Sub-bin created: {} (parent: {})", name, parent_id);
                     self.state.dirty = true;
                     true
                 }
                 AppCommand::DeleteBin { name } => {
                     // Move all items in this bin back to root
-                    let ids: Vec<MediaId> = self.state.media_pool.all()
+                    let ids: Vec<MediaId> = self.state.document.media_pool.all()
                         .filter(|m| m.bin.as_deref() == Some(name.as_str()))
                         .map(|m| m.id)
                         .collect();
                     for id in ids {
-                        if let Some(item) = self.state.media_pool.get_mut(&id) {
+                        if let Some(item) = self.state.document.media_pool.get_mut(&id) {
                             item.bin = None;
                             item.bin_id = None;
                         }
                     }
                     // Remove the bin from the collection
-                    self.state.media_pool.bins.retain(|b| b.name != *name);
+                    self.state.document.media_pool.bins.retain(|b| b.name != *name);
                     tracing::info!("Bin deleted: {}", name);
                     self.state.dirty = true;
                     true
@@ -1282,7 +1282,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::NewBin { media_ids } => {
-                    let name = self.state.media_pool.unused_bin_name();
+                    let name = self.state.document.media_pool.unused_bin_name();
                     self.state.new_bin(&name, media_ids);
                     // Shown, all of the pool, the name ready to type over.
                     self.state.show_browser_panel = true;
@@ -1297,7 +1297,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::RenameMediaItem { media_id, new_filename } => {
-                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                    if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
                         let old = item.filename.clone();
                         if old != *new_filename {
                             item.filename = new_filename.clone();
@@ -1322,7 +1322,7 @@ impl KlippApp {
                     // entirely so undo only captures real changes.
                     let mut undo_changes: Vec<(MediaId, String, String)> = Vec::new();
                     for (media_id, new_filename) in changes {
-                        if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                        if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
                             let old = item.filename.clone();
                             if old != *new_filename {
                                 item.filename = new_filename.clone();
@@ -1346,19 +1346,19 @@ impl KlippApp {
                 }
                 AppCommand::RenameBin { old_name, new_name } => {
                     // Rename the Bin record itself
-                    for bin in &mut self.state.media_pool.bins {
+                    for bin in &mut self.state.document.media_pool.bins {
                         if bin.name == *old_name {
                             bin.name = new_name.clone();
                             break;
                         }
                     }
                     // Update legacy item.bin field (will be removed when UI migrates to bin_id)
-                    let ids: Vec<MediaId> = self.state.media_pool.all()
+                    let ids: Vec<MediaId> = self.state.document.media_pool.all()
                         .filter(|m| m.bin.as_deref() == Some(old_name.as_str()))
                         .map(|m| m.id)
                         .collect();
                     for id in ids {
-                        if let Some(item) = self.state.media_pool.get_mut(&id) {
+                        if let Some(item) = self.state.document.media_pool.get_mut(&id) {
                             item.bin = Some(new_name.clone());
                             // bin_id intentionally unchanged — rename doesn't change the bin's identity
                         }
@@ -1389,7 +1389,7 @@ impl KlippApp {
             AppCommand::OpenInExternalApp { media_id } => {
                 // Look up the item; bail silently if it vanished between menu
                 // draw and dispatch (race with RemoveFromPool, etc).
-                let (path, filename, offline, is_still, has_audio, has_video) = match self.state.media_pool.get(media_id) {
+                let (path, filename, offline, is_still, has_audio, has_video) = match self.state.document.media_pool.get(media_id) {
                     Some(item) => (
                         item.path.clone(),
                         item.filename.clone(),
@@ -1456,7 +1456,7 @@ impl KlippApp {
                 self.state.selected_media_ids.insert(*media_id);
                 self.state.last_clicked_media_id = Some(*media_id);
                 // Switch to correct bin
-                if let Some(item) = self.state.media_pool.get(media_id) {
+                if let Some(item) = self.state.document.media_pool.get(media_id) {
                     self.browser.media_selected_bin = item.bin.clone();
                 }
                 // Request scroll on next frame
@@ -1470,7 +1470,7 @@ impl KlippApp {
             AppCommand::RegenerateSkimTranscode { media_id } => {
                 let mid = *media_id;
                 // Delete existing skim file and cache
-                if let Some(item) = self.state.media_pool.get_mut(&mid) {
+                if let Some(item) = self.state.document.media_pool.get_mut(&mid) {
                     if let Some(ref skim_path) = item.skim_file {
                         let _ = std::fs::remove_file(skim_path);
                     }
@@ -1483,7 +1483,7 @@ impl KlippApp {
             AppCommand::RegenerateFilmstrip { media_id } => {
                 let mid = *media_id;
                 // Delete disk cache
-                if let Some(item) = self.state.media_pool.get(&mid) {
+                if let Some(item) = self.state.document.media_pool.get(&mid) {
                     // All heights and pipeline versions. (This deleted
                     // `{key}.strip`, a name that stopped matching the real
                     // files when the height joined it, so "regenerate" just
@@ -1499,7 +1499,7 @@ impl KlippApp {
                 }
                 self.state.filmstrip_in_progress.remove(&mid);
                 // Re-queue
-                if let Some(item) = self.state.media_pool.get(&mid) {
+                if let Some(item) = self.state.document.media_pool.get(&mid) {
                     let path = item.path.clone();
                     let duration = item.duration;
                     self.state.filmstrip_generating = true;
@@ -1527,7 +1527,7 @@ impl KlippApp {
 
                 // Look up PCM path from the media item's audio cache entry (content-hash based)
                 // Fall back to media-ID-based path for older caches
-                let pcm_path = self.state.media_pool.get(media_id)
+                let pcm_path = self.state.document.media_pool.get(media_id)
                     .and_then(|item| item.audio_cache.as_ref())
                     .map(|cache| cache.pcm_path.clone())
                     .unwrap_or_else(|| {
@@ -1660,7 +1660,7 @@ impl KlippApp {
                 // legacy fallback location.
                 let pcm_path = self
                     .state
-                    .media_pool
+                    .document.media_pool
                     .get(media_id)
                     .and_then(|item| item.audio_cache.as_ref())
                     .map(|cache| cache.pcm_path.clone())
@@ -1739,7 +1739,7 @@ impl KlippApp {
                 if busy {
                     return true;
                 }
-                if let Some(item) = self.state.media_pool.get(media_id) {
+                if let Some(item) = self.state.document.media_pool.get(media_id) {
                     let path = item.path.clone();
                     let tx = self.filmstrip_tx.clone();
                     let mid = *media_id;
@@ -1805,13 +1805,13 @@ impl KlippApp {
         match &refused {
             Some(why) => {
                 self.state.toast.show(klipp_media::media_check::refused_hint(why));
-                self.state.media_pool.refused.insert(media_id, why.clone());
+                self.state.document.media_pool.refused.insert(media_id, why.clone());
             }
             None => {
-                self.state.media_pool.refused.remove(&media_id);
+                self.state.document.media_pool.refused.remove(&media_id);
             }
         }
-        let Some(item) = self.state.media_pool.get_mut(&media_id) else { return };
+        let Some(item) = self.state.document.media_pool.get_mut(&media_id) else { return };
         let changed = item.path != new_path;
         item.path = new_path.to_path_buf();
         item.offline = !new_path.exists() || refused.is_some();
@@ -1858,8 +1858,8 @@ impl KlippApp {
     /// LUT heads the new clip's grade.
     pub(super) fn apply_input_defaults(&mut self, clip_id: klipp_core::ClipId, media_id: klipp_core::MediaId) {
         let state = &mut self.state;
-        let Some(media) = state.media_pool.get(&media_id) else { return };
-        let seq = &mut state.sequences[state.active_sequence_idx];
+        let Some(media) = state.document.media_pool.get(&media_id) else { return };
+        let seq = &mut state.document.sequences[state.active_sequence_idx];
         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
             input_defaults_on(clip, media, state.project_default_input_format, state.project_default_input_lut.as_deref());
         }
@@ -1868,15 +1868,15 @@ impl KlippApp {
     /// A favourite or rejected stretch of the source clip: between its
     /// in and out points, or the whole clip when none are set.
     pub(super) fn source_range_marker(&self, kind: klipp_core::MediaMarkerKind) -> Option<klipp_core::MediaMarker> {
-        let media = self.state.media_pool.get(&self.state.source_media_id?)?;
+        let media = self.state.document.media_pool.get(&self.state.source_media_id?)?;
         let from = media.default_source_in.map(|t| t.to_secs_f64()).unwrap_or(0.0);
         let to = media.default_source_out.map(|t| t.to_secs_f64()).unwrap_or_else(|| media.duration.to_secs_f64());
         (to > from).then(|| klipp_core::MediaMarker::range(kind, from, to))
     }
 
     pub(super) fn apply_media_sync(&mut self, video_id: klipp_core::MediaId, sync: klipp_core::SyncedAudio) {
-        let audio_name = self.state.media_pool.get(&sync.audio_media_id).map(|m| m.filename.clone()).unwrap_or_default();
-        let Some(video) = self.state.media_pool.get_mut(&video_id) else { return };
+        let audio_name = self.state.document.media_pool.get(&sync.audio_media_id).map(|m| m.filename.clone()).unwrap_or_default();
+        let Some(video) = self.state.document.media_pool.get_mut(&video_id) else { return };
         let message = format!("Synced {} to {audio_name}: {}", video.filename, sync.describe());
         video.synced_audio = Some(sync);
         self.state.dirty = true;
@@ -1912,8 +1912,8 @@ impl KlippApp {
             return;
         }
 
-        let media_pool = self.state.media_pool.clone();
-        let sequences = self.state.sequences.clone();
+        let media_pool = self.state.document.media_pool.clone();
+        let sequences = self.state.document.sequences.clone();
         let color = klipp_project::ColorSettings {
             global_lut_path: self.state.global_lut_path.clone(),
             global_lut_opacity: self.state.global_lut_opacity,
@@ -1937,7 +1937,7 @@ impl KlippApp {
             looks: self.state.looks.clone(),
             compositions: self.state.compositions.clone(),
             // The titles' fonts as this machine has them (#3009).
-            fonts: klipp_project::project_fonts::fonts_used(&self.state.sequences)
+            fonts: klipp_project::project_fonts::fonts_used(&self.state.document.sequences)
                 .into_iter()
                 .filter(|f| !klipp_title::bundled::BUNDLED.iter().any(|b| b.family.eq_ignore_ascii_case(f)))
                 .map(|family| {
@@ -2362,8 +2362,8 @@ impl crate::state::AppState {
     /// Make the bin `name` with the items `ids` moved into it (none for
     /// an empty bin): one undo step, which takes the bin away too.
     pub(crate) fn new_bin(&mut self, name: &str, ids: &[klipp_core::MediaId]) {
-        let id = self.media_pool.find_or_create_bin(name);
-        let Some(bin) = self.media_pool.bins.iter().find(|b| b.id == id).cloned() else { return };
+        let id = self.document.media_pool.find_or_create_bin(name);
+        let Some(bin) = self.document.media_pool.bins.iter().find(|b| b.id == id).cloned() else { return };
         let batch = !self.project_history_mut().is_batching();
         if batch {
             self.project_history_mut().begin_batch();
@@ -2381,13 +2381,13 @@ impl crate::state::AppState {
     /// many move.
     pub(crate) fn move_media_to_bin(&mut self, ids: &[klipp_core::MediaId], bin: Option<&str>) {
         let to_bin = bin.map(str::to_string);
-        let to_bin_id = bin.map(|name| self.media_pool.find_or_create_bin(name));
+        let to_bin_id = bin.map(|name| self.document.media_pool.find_or_create_bin(name));
         let batch = !self.project_history_mut().is_batching();
         if batch {
             self.project_history_mut().begin_batch();
         }
         for id in ids {
-            let Some(item) = self.media_pool.get_mut(id) else { continue };
+            let Some(item) = self.document.media_pool.get_mut(id) else { continue };
             if item.bin == to_bin {
                 continue;
             }
@@ -2405,7 +2405,7 @@ impl crate::state::AppState {
 
     /// The editor's marker on media item `id`, in time order: an edit.
     pub(crate) fn add_media_marker(&mut self, id: klipp_core::MediaId, marker: klipp_core::MediaMarker) {
-        if let Some(item) = self.media_pool.get_mut(&id) {
+        if let Some(item) = self.document.media_pool.get_mut(&id) {
             item.markers.push(marker);
             item.markers.sort_by(|a, b| a.secs.total_cmp(&b.secs));
             self.dirty = true;

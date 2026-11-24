@@ -160,7 +160,7 @@ pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, ca
     // switch re-bases every grade and changes its look.
     let pending_id = ui.id().with("cm_ws_pending");
     if ws != state.project_working_colorspace {
-        let graded = state.sequences.iter().flat_map(|s| s.all_clips()).any(|c| !c.grade().is_identity());
+        let graded = state.document.sequences.iter().flat_map(|s| s.all_clips()).any(|c| !c.grade().is_identity());
         if graded {
             ui.data_mut(|d| d.insert_temp(pending_id, ws));
         } else {
@@ -402,7 +402,7 @@ pub fn colour_edit(state: &AppState, mut new: klipp_core::ProjectColour, convert
     let mut grades = Vec::new();
     let (from, to) = (old.working_colorspace, new.working_colorspace);
     if convert && from != to {
-        for sequence in &state.sequences {
+        for sequence in &state.document.sequences {
             for clip in sequence.tracks.iter().flat_map(|t| &t.clips) {
                 let mut converted = clip.clone();
                 if converted.edit_grade(|g| g.migrate_working_space(from, to)) {
@@ -430,7 +430,7 @@ pub(crate) fn apply_colour_change(state: &mut AppState, colour: klipp_core::Proj
 #[cfg(test)]
 pub(crate) fn apply_colour_step(state: &mut AppState, edit: &klipp_document::history::EditCommand, undo: bool) {
     let active = state.active_sequence_idx;
-    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
     let effects = if undo { view.apply_inverse(edit) } else { view.apply_forward(edit) };
     if let Some(colour) = effects.project_colour {
         take_project_colour(state, &colour);
@@ -503,8 +503,8 @@ mod tests {
     /// A project with a graded clip in each of two sequences.
     fn graded_in_two_sequences() -> AppState {
         let mut state = AppState::default();
-        state.sequences.push(klipp_timeline::Sequence::new_default());
-        for (k, seq) in state.sequences.iter_mut().enumerate() {
+        state.document.sequences.push(klipp_timeline::Sequence::new_default());
+        for (k, seq) in state.document.sequences.iter_mut().enumerate() {
             let mut clip = klipp_timeline::Clip::gap(klipp_core::Timecode::from_secs_f64(0.0, 24), klipp_core::Timecode::from_secs_f64(1.0, 24));
             let id = clip.edit_grade(|g| g.ensure_corrector());
             assert!(clip.set_grade_param(id, "exposure", 0.3 + k as f32 * 0.2));
@@ -517,7 +517,7 @@ mod tests {
 
     /// Every sequence as it is saved.
     fn saved(state: &AppState) -> Vec<String> {
-        state.sequences.iter().map(|s| serde_json::to_string(s).unwrap()).collect()
+        state.document.sequences.iter().map(|s| serde_json::to_string(s).unwrap()).collect()
     }
 
     /// #1875: a working-space switch that converts the grades is one undo
@@ -555,12 +555,12 @@ mod tests {
         let to = klipp_core::ProjectColour { working_colorspace: WorkingColorspace::AcesCG, ..project_colour(&state) };
         let (edit, ..) = colour_edit(&state, to, true).expect("a change");
         apply_colour_step(&mut state, &edit, false);
-        let kept_after = serde_json::to_string(&state.sequences[0]).unwrap();
-        state.sequences.remove(1);
+        let kept_after = serde_json::to_string(&state.document.sequences[0]).unwrap();
+        state.document.sequences.remove(1);
         apply_colour_step(&mut state, &edit, true);
-        assert_ne!(serde_json::to_string(&state.sequences[0]).unwrap(), kept_after, "undone in the sequence that is left");
+        assert_ne!(serde_json::to_string(&state.document.sequences[0]).unwrap(), kept_after, "undone in the sequence that is left");
         apply_colour_step(&mut state, &edit, false);
-        assert_eq!(serde_json::to_string(&state.sequences[0]).unwrap(), kept_after, "and redone there");
+        assert_eq!(serde_json::to_string(&state.document.sequences[0]).unwrap(), kept_after, "and redone there");
         apply_colour_step(&mut state, &edit, true);
         restore_globals();
     }
@@ -620,7 +620,7 @@ mod tests {
         let id = clip.edit_grade(|g| g.ensure_corrector());
         assert!(clip.set_grade_param(id, "exposure", 0.5));
         assert!(!clip.grade().is_identity());
-        state.sequences[0].tracks[0].clips.push(clip);
+        state.document.sequences[0].tracks[0].clips.push(clip);
         {
             let mut run = page(&mut state);
             let texts = choose(&ctx, &mut run, "ACEScg (AP1)", "BT.2020 (linear)");
