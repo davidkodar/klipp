@@ -181,6 +181,12 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             enabled: sel_count > 0,
         });
     }
+    // The Export page's Cover section (#3311), a creator's tool shown only
+    // where it fits until asked for.
+    e.push(PaletteEntry { label: Cow::Borrowed("Show Cover in Export"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Cmd(AppCommand::ShowCoverSection { shown: true }), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Hide Cover in Export"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Cmd(AppCommand::ShowCoverSection { shown: false }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Export Subtitles…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ExportSubtitles), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Export FCPXML…"), shortcut: Cow::Borrowed(""),

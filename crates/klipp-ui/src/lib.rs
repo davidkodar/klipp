@@ -97,6 +97,7 @@ pub mod inspector;
 pub(crate) mod screen_texts;
 pub mod spelling;
 pub mod auditions;
+pub mod cover_section;
 pub mod role_badge;
 pub mod keybindings;
 pub mod welcome;
