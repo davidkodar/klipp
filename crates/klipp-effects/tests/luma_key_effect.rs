@@ -144,7 +144,7 @@ fn the_cpu_key_is_the_grade_nodes_matte_turned_round() {
 #[test]
 fn the_luma_key_effect_matches_between_cpu_and_gpu() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let (input, w, h) = frame();

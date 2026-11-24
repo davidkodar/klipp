@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 #[test]
 fn the_scopes_refresh_while_playing_without_a_readback() {
     let Some(ctx) = klipp_effects::gpu_context::GpuContext::new() else {
-        eprintln!("no GPU; skipping");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     if klipp_effects::gpu_context::GpuContext::install_shared(ctx).is_err() {

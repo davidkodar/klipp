@@ -23,6 +23,7 @@ uuid = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [dev-dependencies]
+klipp-testing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # Serde round-trips for node params: a project saved before a field
 # existed has to keep its picture, and that is only checkable as JSON.

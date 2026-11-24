@@ -432,7 +432,7 @@ mod neighbour_room_tests {
     #[test]
     fn a_neighbour_without_room_is_refused_in_time() {
         let Some(gpu) = GpuEffectsPipeline::new() else {
-            eprintln!("no GPU adapter: skipped");
+            klipp_testing::gpu::missing("no GPU adapter: skipped");
             return;
         };
         assert!(gpu.make_room_for_neighbour(), "room with nothing in flight");

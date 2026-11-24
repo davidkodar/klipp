@@ -14,6 +14,10 @@
 # target/sweep/<part>.log.
 
 set -u
+# The sweeps that render on the GPU fail, not skip, when it is missing;
+# KLIPP_TEST_REQUIRE_GPU=0 on a machine that has none.
+: "${KLIPP_TEST_REQUIRE_GPU:=1}"
+export KLIPP_TEST_REQUIRE_GPU
 cd "$(dirname "$0")/.." || exit 1
 mkdir -p target/sweep
 

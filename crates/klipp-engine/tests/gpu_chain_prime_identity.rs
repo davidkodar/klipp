@@ -84,7 +84,7 @@ fn pattern_u8(width: u32, height: u32) -> Vec<u8> {
 #[test]
 fn prime_chain_from_u8_matches_cpu_upload_path() {
     let Some(ctx) = GpuContext::shared() else {
-        eprintln!("skipping: no usable GpuContext");
+        klipp_testing::gpu::missing("no usable GpuContext");
         return;
     };
     let bytes = pattern_u8(W, H);
@@ -101,7 +101,7 @@ fn prime_chain_from_u8_matches_cpu_upload_path() {
         .execute_linear(&linear_cpu, &graph, W, H, 0.0, 0, None, None)
         .expect("CPU-upload path must succeed");
     if !exec_a.has_gpu() {
-        eprintln!("skipping: no GPU executor on this machine");
+        klipp_testing::gpu::missing("no GPU executor on this machine");
         return;
     }
 
@@ -160,7 +160,7 @@ fn prime_chain_from_u8_matches_cpu_upload_path() {
 #[test]
 fn empty_source_with_primed_chain_matches_the_cpu_upload_path() {
     let Some(ctx) = GpuContext::shared() else {
-        eprintln!("skipping: no usable GpuContext");
+        klipp_testing::gpu::missing("no usable GpuContext");
         return;
     };
     let bytes = pattern_u8(W, H);
@@ -173,7 +173,7 @@ fn empty_source_with_primed_chain_matches_the_cpu_upload_path() {
         .execute_linear(&linear_cpu, &graph, W, H, 0.0, 0, None, None)
         .expect("CPU-upload path must succeed");
     if !exec_ref.has_gpu() {
-        eprintln!("skipping: no GPU executor on this machine");
+        klipp_testing::gpu::missing("no GPU executor on this machine");
         return;
     }
 
@@ -232,7 +232,7 @@ fn empty_source_with_primed_chain_matches_the_cpu_upload_path() {
 #[test]
 fn a_seed_made_at_another_resolution_is_refused_not_reinterpreted() {
     let Some(ctx) = GpuContext::shared() else {
-        eprintln!("skipping: no usable GpuContext");
+        klipp_testing::gpu::missing("no usable GpuContext");
         return;
     };
     let bytes = pattern_u8(W, H);
@@ -249,7 +249,7 @@ fn a_seed_made_at_another_resolution_is_refused_not_reinterpreted() {
 
     let mut exec = GraphExecutor::new();
     if !exec.prime_chain_from_gpu_u8_buffer(&input_buf, W, H) {
-        eprintln!("skipping: prime refused (no GPU)");
+        klipp_testing::gpu::missing("prime refused (no GPU)");
         return;
     }
     // Same executor, same seed, half the resolution and no CPU pixels.
@@ -269,7 +269,7 @@ fn a_seed_made_at_another_resolution_is_refused_not_reinterpreted() {
 #[test]
 fn an_unconsumed_seed_does_not_leak_into_the_next_run() {
     let Some(ctx) = GpuContext::shared() else {
-        eprintln!("skipping: no usable GpuContext");
+        klipp_testing::gpu::missing("no usable GpuContext");
         return;
     };
     let graph = color_balance_graph();
@@ -286,7 +286,7 @@ fn an_unconsumed_seed_does_not_leak_into_the_next_run() {
         .execute_linear(&fresh_linear, &graph, W, H, 0.0, 0, None, None)
         .expect("CPU-upload path must succeed");
     if !exec_ref.has_gpu() {
-        eprintln!("skipping: no GPU executor on this machine");
+        klipp_testing::gpu::missing("no GPU executor on this machine");
         return;
     }
 

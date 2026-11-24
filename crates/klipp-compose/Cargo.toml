@@ -29,6 +29,7 @@ rayon             = { workspace = true }
 tracing           = { workspace = true }
 
 [dev-dependencies]
+klipp-testing = { workspace = true }
 # Its own test-only fault (`fault`), on for its tests alone.
 klipp-compose = { workspace = true, features = ["fault-hook", "bounds-hook"] }
 klipp-timeline = { workspace = true, features = ["test-clip"] }

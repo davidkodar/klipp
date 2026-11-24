@@ -84,7 +84,7 @@ fn gpu_linear(conv: &mut GpuP010Converter, yb: &[u8], uvb: &[u8], ids: [u32; 4],
 #[test]
 fn the_planar_10bit_converter_matches_the_p010_shader() {
     let Some(mut conv) = GpuP010Converter::new() else {
-        eprintln!("skipping: no GPU P010 converter");
+        klipp_testing::gpu::missing("no GPU P010 converter");
         return;
     };
     let (y, u, v) = samples();

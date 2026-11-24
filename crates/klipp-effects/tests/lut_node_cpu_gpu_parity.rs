@@ -27,7 +27,7 @@ fn frame() -> Vec<f32> {
 #[test]
 fn a_bundled_look_is_the_same_on_the_cpu_and_the_gpu() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("no GPU adapter; skipping");
+        klipp_testing::gpu::missing("no GPU adapter; skipping");
         return;
     };
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/luts/fuji-xtrans/fuji_xtrans_iii_classic_chrome.cube");

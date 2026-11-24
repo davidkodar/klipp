@@ -111,7 +111,7 @@ fn gpu_curve(ctx: &klipp_effects::gpu_context::GpuContext, transfer: u32, codes:
 #[test]
 fn shader_camera_log_curves_match_their_references() {
     let Some(ctx) = klipp_effects::gpu_context::GpuContext::shared() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let mut failures = Vec::new();

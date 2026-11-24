@@ -442,7 +442,7 @@ fn a_curve_keeps_the_highlights_above_white() {
 #[test]
 fn every_grade_control_matches_between_cpu_and_gpu() {
     if klipp_effects::gpu::GpuEffectsPipeline::new().is_none() {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     }
     let ungraded = render(NodeKind::Corrector, &NodeParams::default(), true);

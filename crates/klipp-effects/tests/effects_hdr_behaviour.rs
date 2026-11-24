@@ -101,7 +101,7 @@ const INPUTS: [[f32; 3]; 3] = [[0.9, 0.35, 0.2], [3.6, 1.4, 0.8], [10.8, 4.2, 2.
 fn every_effect_survives_a_picture_brighter_than_white() {
     let mut gpu = klipp_effects::gpu::GpuEffectsPipeline::new();
     if gpu.is_none() {
-        eprintln!("no GPU: checking the CPU paths only");
+        klipp_testing::gpu::missing("no GPU: checking the CPU paths only");
     }
     let mut failures = Vec::new();
     for (name, effect, highlights) in cases() {

@@ -47,7 +47,7 @@ fn diff(a: &[f32], b: &[f32]) -> (i32, usize) {
 #[test]
 fn every_transition_matches_between_cpu_and_gpu() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let (from, to) = frames();

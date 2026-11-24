@@ -20,7 +20,7 @@ fn place(scale: f32, tilt: f32) -> E {
 #[ignore = "4K performance measurement"]
 fn measure_card_chain_passes() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let card: Vec<f32> = (0..W * H).flat_map(|i| [(i % 97) as f32 / 97.0, 0.4, 0.6, 1.0]).collect();
@@ -82,7 +82,7 @@ fn measure_card_chain_passes() {
 #[ignore = "4K performance measurement"]
 fn frame_budget_of_four_cards() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let best = |mut run: Box<dyn FnMut() -> f64 + '_>| -> f64 {

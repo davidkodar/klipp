@@ -236,7 +236,7 @@ fn direct_present_is_the_renderers_frame() {
 #[test]
 fn a_node_not_wired_to_the_output_does_not_force_the_full_path() {
     let Some(ctx) = GpuContext::shared() else {
-        eprintln!("skipping: no usable GpuContext");
+        klipp_testing::gpu::missing("no usable GpuContext");
         return;
     };
     let bytes = sdr_bytes();
@@ -271,7 +271,7 @@ fn a_node_not_wired_to_the_output_does_not_force_the_full_path() {
 #[test]
 fn the_graded_fast_path_is_the_renderers_frame() {
     let Some(ctx) = GpuContext::shared() else {
-        eprintln!("skipping: no usable GpuContext");
+        klipp_testing::gpu::missing("no usable GpuContext");
         return;
     };
     let bytes = sdr_bytes();
@@ -320,7 +320,7 @@ fn the_graded_fast_path_is_the_renderers_frame() {
 #[test]
 fn the_graded_fast_path_is_the_renderers_frame_in_a_bt2020_project() {
     let Some(ctx) = GpuContext::shared() else {
-        eprintln!("skipping: no usable GpuContext");
+        klipp_testing::gpu::missing("no usable GpuContext");
         return;
     };
     const WS: WorkingColorspace = WorkingColorspace::Bt2020Linear;
@@ -413,7 +413,7 @@ fn an_ungraded_frame_is_not_its_own_bytes_in_an_aces_project() {
 #[test]
 fn the_graded_fast_path_is_the_renderers_frame_in_an_aces_project() {
     let Some(ctx) = GpuContext::shared() else {
-        eprintln!("skipping: no usable GpuContext");
+        klipp_testing::gpu::missing("no usable GpuContext");
         return;
     };
     const WS: WorkingColorspace = WorkingColorspace::AcesCG;
@@ -465,7 +465,7 @@ fn the_graded_fast_path_is_the_renderers_frame_in_an_aces_project() {
 #[test]
 fn the_graded_fast_path_is_the_renderers_frame_for_pq() {
     let Some(mut conv) = GpuP010Converter::new() else {
-        eprintln!("skipping: P010 GPU converter unavailable");
+        klipp_testing::gpu::missing("P010 GPU converter unavailable");
         return;
     };
     let mut y = Vec::new();
@@ -517,7 +517,7 @@ fn the_graded_fast_path_is_the_renderers_frame_for_pq() {
 #[test]
 fn the_gpu_export_of_a_wide_gamut_pq_clip_is_the_viewers_picture() {
     let Some(mut conv) = GpuP010Converter::new() else {
-        eprintln!("skipping: P010 GPU converter unavailable");
+        klipp_testing::gpu::missing("P010 GPU converter unavailable");
         return;
     };
     let mut y = Vec::new();
@@ -607,7 +607,7 @@ impl klipp_compose::GpuPixels for OnGpu {
 #[test]
 fn a_gpu_resident_frame_is_graded_where_it_is() {
     let Some(ctx) = GpuContext::shared() else {
-        eprintln!("skipping: no usable GpuContext");
+        klipp_testing::gpu::missing("no usable GpuContext");
         return;
     };
     let bytes = sdr_bytes();
@@ -669,7 +669,7 @@ fn pq_codes(shift: u32) -> Vec<u32> {
 #[test]
 fn a_parked_frame_seeded_from_memory_is_the_renderers_frame() {
     if GpuContext::shared().is_none() {
-        eprintln!("skipping: no usable GpuContext");
+        klipp_testing::gpu::missing("no usable GpuContext");
         return;
     }
     let (seq, clip) = one_clip(keyframed_grade(None));
@@ -738,7 +738,7 @@ fn a_parked_frame_seeded_from_memory_is_the_renderers_frame() {
 fn the_graded_fast_path_is_the_renderers_frame_under_hdr_monitoring() {
     const PEAK: f32 = 1000.0;
     let Some(mut conv) = GpuP010Converter::new() else {
-        eprintln!("skipping: P010 GPU converter unavailable");
+        klipp_testing::gpu::missing("P010 GPU converter unavailable");
         return;
     };
     // The same PQ fixture the SDR monitoring-off test uses.

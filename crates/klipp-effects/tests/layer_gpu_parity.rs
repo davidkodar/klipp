@@ -6,7 +6,7 @@ use klipp_effects::{
 fn pipeline() -> Option<GpuEffectsPipeline> {
     let adapters = pollster::block_on(klipp_effects::gpu_context::instance().enumerate_adapters(klipp_effects::gpu_context::backends()));
     if adapters.is_empty() {
-        eprintln!("skipping layer parity: no GPU adapter");
+        klipp_testing::gpu::missing("layer parity: no GPU adapter");
         return None;
     }
     for adapter in adapters {

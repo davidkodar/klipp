@@ -66,7 +66,7 @@ fn rows() -> Vec<RowTransform> {
 #[test]
 fn stabilisation_and_rolling_shutter_match_between_cpu_and_gpu() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     gpu.set_luma_coefs(LUMA);
@@ -114,7 +114,7 @@ fn without_motion_data_both_arms_pass_the_frame_through() {
     let cpu = apply_effects_with_motion(&fx, input.clone(), W, H, LUMA, &MotionData::default());
     assert_eq!(cpu, input, "the CPU arm warped without motion data");
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping the GPU half: no GPU");
+        klipp_testing::gpu::missing("the GPU half: no GPU");
         return;
     };
     // Data from an earlier clip, then cleared, as the compositor clears it

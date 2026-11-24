@@ -388,6 +388,18 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &wgpu::Buffer, 
 
 #[cfg(test)]
 mod tests {
+    /// The page view's two shaders parse and validate without a GPU: an
+    /// error in them would otherwise show only on a machine with one, as
+    /// a page left blank.
+    #[test]
+    fn the_page_view_shaders_compile() {
+        for (name, source) in [("display_in", include_str!("display_in.wgsl")), ("display_out", include_str!("display_out.wgsl"))] {
+            if let Err(e) = klipp_effects::shader_check::validate(source) {
+                panic!("{name}: {e}");
+            }
+        }
+    }
+
     use super::*;
 
     /// The page's view of a picture is Klipp's viewer's, byte for byte: the

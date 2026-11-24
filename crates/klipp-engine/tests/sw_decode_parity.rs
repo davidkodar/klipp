@@ -54,7 +54,7 @@ fn compare(label: &str, gpu: &[u32], cpu: &[u32]) {
 #[test]
 fn cpu_codes_match_the_p010_shader() {
     let Some(mut conv) = GpuP010Converter::new() else {
-        eprintln!("skipping: P010 GPU converter unavailable");
+        klipp_testing::gpu::missing("P010 GPU converter unavailable");
         return;
     };
     let (y, u, v) = pattern_10bit();
@@ -81,7 +81,7 @@ fn cpu_codes_match_the_p010_shader() {
 #[test]
 fn cpu_codes_match_the_nv12_shader() {
     let Some(mut conv) = GpuNv12Converter::new() else {
-        eprintln!("skipping: NV12 GPU converter unavailable");
+        klipp_testing::gpu::missing("NV12 GPU converter unavailable");
         return;
     };
     let (y10, u10, v10) = pattern_10bit();

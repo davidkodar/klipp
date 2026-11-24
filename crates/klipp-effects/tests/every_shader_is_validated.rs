@@ -21,6 +21,7 @@ const VALIDATED: &[(&str, &str)] = &[
     ("klipp-compose/src/title3d_gpu.rs", "title3d_gpu::tests::the_shaders_compile"),
     ("klipp-ui/src/viewer_lut.rs", "viewer_lut::tests::the_shader_compiles"),
     ("klipp-veylvik/src/compose.rs", "compose::tests::the_bridge_shader_compiles"),
+    ("klipp-veylvik/src/display.rs", "display::tests::the_page_view_shaders_compile"),
     ("klipp-hdr-out/src/main.rs", "shader_tests::the_shader_compiles"),
 ];
 

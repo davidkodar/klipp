@@ -105,7 +105,7 @@ fn diff(a: &[f32], b: &[f32]) -> (f32, f32) {
 #[test]
 fn the_pivot_gives_the_same_picture_on_cpu_and_gpu() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let input = frame();
@@ -194,7 +194,7 @@ fn every_grade_encoding_gives_the_same_picture_on_cpu_and_gpu() {
         assert!((b[0] / a[0] - 2.0).abs() < 1e-3, "{} -> {}", a[0], b[0]);
     }
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping the GPU half: no GPU");
+        klipp_testing::gpu::missing("the GPU half: no GPU");
         return;
     };
     for enc in [Encoding::Bt1886, Encoding::AcesCct, Encoding::AcesCc] {
@@ -246,7 +246,7 @@ fn wheel_ranges_and_luma_mix_match_on_cpu_and_gpu() {
     let moved = on_cpu(&input, &graded(Encoding::Bt1886, true, WheelShape { low_range: 0.30, high_range: 0.65, ..Default::default() }));
     assert!(diff(&on_cpu(&input, &graded(Encoding::Bt1886, true, WheelShape::default())), &moved).0 > 1e-3, "the ranges do nothing");
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping the GPU half: no GPU");
+        klipp_testing::gpu::missing("the GPU half: no GPU");
         return;
     };
     for enc in [Encoding::Bt1886, Encoding::AcesCct, Encoding::AcesCc] {

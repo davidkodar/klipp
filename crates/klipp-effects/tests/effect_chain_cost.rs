@@ -17,7 +17,7 @@ use klipp_effects::BuiltinEffect as E;
 #[ignore]
 fn eight_effect_chain_at_4k() {
     let Some(mut g) = GpuEffectsPipeline::new() else {
-        eprintln!("UNVERIFIED: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let (w, h) = (3840, 2160);

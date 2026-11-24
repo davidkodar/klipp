@@ -79,7 +79,7 @@ fn a_neutral_corrector_keeps_a_gpu_frame_on_the_gpu() {
     // the run gets no CPU pixels to fall back to. (The GPU comes up on
     // first use, so the seed is what says whether there is one.)
     if !exec.prime_chain_from_srgb8(&Arc::new(frame_srgb8()), W, H) {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     }
     let run = exec.execute_linear(&[], &g, W, H, 0.0, 0, None, None);

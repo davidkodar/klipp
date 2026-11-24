@@ -144,7 +144,7 @@ fn the_order_says_which_pieces_go_first() {
 #[test]
 fn piece_transitions_match_between_cpu_and_gpu() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     // A textured outgoing picture, so a pixel taken from the wrong place
@@ -288,7 +288,7 @@ fn the_shards_tile_the_frame() {
 #[test]
 fn posed_pieces_match_between_cpu_and_gpu() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let mut from = Vec::new();
@@ -433,7 +433,7 @@ fn the_subject_stays_while_the_rest_breaks_away() {
 fn a_subject_cut_out_matches_between_cpu_and_gpu() {
     use klipp_core::piece_transition::{SubjectCut, SubjectMotion};
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
-        eprintln!("skipping: no GPU");
+        klipp_testing::gpu::missing("no GPU");
         return;
     };
     let from = ramp();

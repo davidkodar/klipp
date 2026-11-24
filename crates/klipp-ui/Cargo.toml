@@ -89,6 +89,7 @@ libc = "0.2"
 smithay-clipboard = "0.7.3"
 
 [dev-dependencies]
+klipp-testing = { workspace = true }
 klipp-timeline = { workspace = true, features = ["test-clip"] }
 # Measures a face's glyphs in the interface font tests.
 fontdue = "0.9"
