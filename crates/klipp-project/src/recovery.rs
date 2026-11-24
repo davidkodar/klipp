@@ -106,10 +106,7 @@ mod tests {
     }
 
     fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("klipp-recovery-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+        klipp_testing::scratch::fresh_dir(&format!("klipp-recovery-{name}"))
     }
 
     /// An auto-save written after the last save is offered, and a lock

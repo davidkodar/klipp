@@ -8,10 +8,7 @@ use klipp_project::{load_grade_stills, load_looks, save_grade_stills, save_looks
 use klipp_timeline::Look;
 
 fn scratch(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("klipp_{tag}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    klipp_testing::scratch::fresh_dir(&format!("klipp_{tag}"))
 }
 
 /// Every "Corrector" kind in `path`'s JSON renamed to one from a newer Klipp.

@@ -48,13 +48,13 @@ pub use ten_bit::codes as ten_bit_codes;
 /// sRGB → linear-light (IEC 61966-2-1).
 #[inline]
 fn srgb_to_linear_scalar(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    crate::srgb::decode(c)
 }
 
 /// Linear-light → sRGB (IEC 61966-2-1).
 #[inline]
 fn linear_to_srgb_scalar(c: f32) -> f32 {
-    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    crate::srgb::encode(c)
 }
 
 /// sRGB-u8 RGBA → linear-f32 RGBA (interleaved). Used at the u8 boundary
@@ -2493,7 +2493,7 @@ mod bridge_u8_tests {
     fn cpu_linear_to_u8(linear: &[f32]) -> Vec<u8> {
         fn enc(c: f32) -> u8 {
             let x = c.clamp(0.0, 1.0);
-            let y = if x <= 0.0031308 { x * 12.92 } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+            let y = crate::srgb::encode(x);
             (y.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
         }
         let mut out = Vec::with_capacity(linear.len());

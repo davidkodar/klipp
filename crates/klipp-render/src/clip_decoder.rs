@@ -1865,7 +1865,7 @@ mod upscale_tests {
     /// Linear light to an 8-bit sRGB level, where the difference is read.
     pub(super) fn srgb8(v: f32) -> f32 {
         let v = v.clamp(0.0, 1.0);
-        255.0 * if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+        255.0 * klipp_core::srgb::encode(v)
     }
 
     /// The same frame decoded on the GPU and through swscale, at `w` x

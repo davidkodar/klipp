@@ -195,7 +195,7 @@ pub(crate) fn runs(layers: &[Layer]) -> Vec<Vec<usize>> {
 /// A picture laid by `over_encoded`, back in linear light, straight: a run
 /// of still layers, laid once, to lay again as one layer.
 pub(crate) fn decoded(laid: &[f32]) -> Vec<f32> {
-    let linear = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+    let linear = |c: f32| klipp_core::srgb::decode(c);
     laid.chunks_exact(4).flat_map(|p| [linear(p[0]), linear(p[1]), linear(p[2]), p[3]]).collect()
 }
 
@@ -234,7 +234,7 @@ pub(crate) fn shift(src: &[f32], width: u32, height: u32, by: [f32; 2]) -> Vec<f
 }
 
 fn encoded(x: f32) -> f32 {
-    if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.max(0.0).powf(1.0 / 2.4) - 0.055 }
+    klipp_core::srgb::encode(x)
 }
 
 /// `src` (straight RGBA, linear authored light) laid over `dst` (straight,

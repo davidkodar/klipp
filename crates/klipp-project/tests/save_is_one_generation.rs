@@ -8,10 +8,7 @@ use klipp_timeline::Sequence;
 use std::path::{Path, PathBuf};
 
 fn fresh(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("klipp_generation_{name}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    klipp_testing::scratch::fresh_dir(&format!("klipp_generation_{name}"))
 }
 
 fn pool_of(dir: &Path, names: &[&str]) -> MediaPool {

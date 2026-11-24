@@ -14,7 +14,7 @@ const FPS: u32 = 24;
 const SECS: u32 = 8;
 
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    klipp_testing::ffmpeg::available()
 }
 
 /// A crescendo: a 220 Hz tone growing from about −40 to −30 dBFS. Made

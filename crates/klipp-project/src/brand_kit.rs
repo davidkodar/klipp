@@ -573,10 +573,7 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("klipp-brand-kit-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+        klipp_testing::scratch::fresh_dir(&format!("klipp-brand-kit-{name}"))
     }
 
     #[test]

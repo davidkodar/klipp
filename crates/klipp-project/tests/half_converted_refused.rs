@@ -8,10 +8,7 @@ use std::path::{Path, PathBuf};
 use klipp_graph_lift::journal::{self, Step};
 
 fn temp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("klipp-half-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    klipp_testing::scratch::fresh_dir(&format!("klipp-half-{tag}"))
 }
 
 fn refused(dir: &Path) -> Option<String> {

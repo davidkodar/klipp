@@ -86,7 +86,7 @@ fn rand3(a: u32, b: u32, c: u32) -> f32 {
 
 fn srgb_to_linear(c: u8) -> f32 {
     let c = c as f32 / 255.0;
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    crate::srgb::decode(c)
 }
 
 impl BuiltinEffect {

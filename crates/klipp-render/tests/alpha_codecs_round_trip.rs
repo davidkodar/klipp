@@ -11,7 +11,7 @@ const W: u32 = 64;
 const H: u32 = 32;
 
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    klipp_testing::ffmpeg::available()
 }
 
 fn snapshot() -> SequenceSnapshot {

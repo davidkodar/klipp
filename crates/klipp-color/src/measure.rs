@@ -27,7 +27,7 @@ impl Lab {
 }
 
 fn srgb_decode(v: f32) -> f32 {
-    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    klipp_core::srgb::decode(v)
 }
 
 /// Linear BT.709 / sRGB → XYZ (D65).
@@ -154,7 +154,7 @@ pub fn lab_to_linear(c: Lab) -> [f32; 3] {
 pub fn lab_to_srgb8(c: Lab) -> [u8; 3] {
     let enc = |v: f32| {
         let v = v.clamp(0.0, 1.0);
-        let s = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+        let s = klipp_core::srgb::encode(v);
         (s * 255.0).round().clamp(0.0, 255.0) as u8
     };
     let lin = lab_to_linear(c);

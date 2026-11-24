@@ -13545,7 +13545,7 @@ fn material_ask(spec: &MaterialSpec, i: usize) -> Result<Option<MaterialAsk>, Re
     };
     let linear = |c: [u8; 3]| c.map(|v| {
         let x = f32::from(v) / 255.0;
-        if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) }
+        klipp_core::srgb::decode(x)
     });
     Ok(Some(MaterialAsk {
         preset: f.preset.as_deref().map(preset).transpose()?,

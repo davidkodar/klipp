@@ -141,11 +141,11 @@ pub fn curve_encode(table: &[f32], linear: f32) -> f32 {
 /// The sRGB encoding, as the LUT lookup and the display-scale effects use
 /// it, carried on below 0.
 fn encode_srgb(c: f32) -> f32 {
-    if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    crate::srgb::encode(c)
 }
 
 fn decode_srgb(c: f32) -> f32 {
-    if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    crate::srgb::decode(c)
 }
 
 /// One pixel's colour through `t`: read through the input curve (the

@@ -644,10 +644,7 @@ mod tests {
     use super::*;
 
     fn project(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("klipp-lock-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        klipp_testing::scratch::fresh_dir(&format!("klipp-lock-{name}"))
     }
 
     fn other(host: &str, pid: u32) -> Holder {

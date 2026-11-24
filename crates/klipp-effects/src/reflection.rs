@@ -90,7 +90,7 @@ pub struct Params {
 /// An sRGB byte as linear light, as the tint is given.
 pub fn linear(c: u8) -> f32 {
     let v = c as f32 / 255.0;
-    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    crate::srgb::decode(v)
 }
 
 /// Where the pixel `d` rows below the line comes from, across and down,

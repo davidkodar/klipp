@@ -26,6 +26,7 @@ use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, Mutex};
 
 use serde_json::{json, Value};
 
+mod tool_kinds;
 mod diagnostics;
 mod edit_schema;
 mod graph_schema;
@@ -58,33 +59,6 @@ static LAST_PROJECT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic
 static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(u64::MAX);
 
-/// Tools that change what the viewer should show. Any of them arms the
-/// next screenshot to wait for a fresh frame.
-const WRITE_TOOLS: &[&str] = &[
-    "klipp_graph", "klipp_import_timeline", "klipp_alternatives",
-    "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
-    "klipp_append_clip", "klipp_clear_frozen", "klipp_show_matte", "klipp_set_playback_quality", "klipp_set_background_render", "klipp_bounce_track", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
-    "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
-    "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
-    "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_translate_captions", "klipp_apply",
-    "klipp_open_project", "klipp_close_project", "klipp_switch_sequence", "klipp_duplicate_sequence", "klipp_remove_sequence", "klipp_track_subject",
-];
-
-/// Calls with side effects may be replayed after a lost socket reply. The
-/// control server owns deduplication, including tools that queue background
-/// analysis or export work rather than changing the viewer immediately.
-const RETRYABLE_TOOLS: &[&str] = &[
-    "klipp_analyze", "klipp_analysis_queue", "klipp_import_media", "klipp_grade_to_target",
-    "klipp_adopt_look", "klipp_match_scenes", "klipp_grade_chain", "klipp_review",
-    "klipp_narrate", "klipp_record", "klipp_auto_sfx", "klipp_auto_redact",
-    "klipp_add_music", "klipp_match_grade", "klipp_align_audio", "klipp_normalize", "klipp_look",
-    "klipp_orient", "klipp_set_brief", "klipp_set_edit_plan", "klipp_approve_edit_plan",
-    "klipp_build_edit_plan", "klipp_rename_sequence", "klipp_create_multicam",
-    "klipp_switch_angle", "klipp_set_multicam_sound", "klipp_add_marker",
-    "klipp_update_marker", "klipp_remove_marker", "klipp_new_project", "klipp_new_sequence",
-    "klipp_save_project", "klipp_relink_media", "klipp_tag_media", "klipp_make_proxies",
-    "klipp_cancel_job",
-];
 
 fn main() {
     diagnostics::build();
@@ -146,7 +120,7 @@ fn main() {
         let method = req.get("method").and_then(Value::as_str).unwrap_or("");
         if method == "tools/call" {
             let name = req["params"]["name"].as_str().unwrap_or("");
-            if WRITE_TOOLS.contains(&name) || RETRYABLE_TOOLS.contains(&name) {
+            if tool_kinds::queued(name) {
                 if write_tx.try_send(req).is_err() {
                     send_response(&stdout, &busy_response(id, "write queue is full; retry shortly"));
                 }
@@ -1922,7 +1896,7 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
         return Err(format!("This MCP server ({}) does not advertise {name}. Reconnect the Klipp MCP connection in your client and refresh its tool list; restarting the Klipp app alone does not refresh this server.", diagnostics::label()));
     }
     let mut cmd = tool_to_command(name, args)?;
-    if (WRITE_TOOLS.contains(&name) || RETRYABLE_TOOLS.contains(&name))
+    if tool_kinds::queued(name)
         && cmd.get("idempotency_key").is_none()
     {
         cmd["idempotency_key"] = json!(uuid::Uuid::new_v4().to_string());
@@ -1958,7 +1932,7 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
 fn project_changed_under(name: &str, seen: u64, now: u64) -> bool {
     seen != u64::MAX
         && seen != now
-        && !matches!(name, "klipp_new_project" | "klipp_open_project" | "klipp_close_project" | "klipp_save_project")
+        && !tool_kinds::moves_the_project(name)
 }
 
 fn has_structured_output(name: &str) -> bool {
@@ -2004,7 +1978,7 @@ fn made_lines(made: &[Value]) -> String {
 
 fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
     let result = result.clone();
-    if WRITE_TOOLS.contains(&name) {
+    if tool_kinds::shows(name) {
         if let Some(g) = result.get("generation").and_then(|v| v.as_u64()) {
             // Keep the *latest* outstanding write: after a burst of edits
             // the frame worth capturing is one newer than the last of
@@ -2226,7 +2200,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 }
 
 fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str>) -> Value {
-    if WRITE_TOOLS.contains(&name) || RETRYABLE_TOOLS.contains(&name) {
+    if tool_kinds::queued(name) {
         // What it is, said once, in klipp_guide's description: here it
         // was the same sentence on 62 tools (#1984).
         properties["idempotency_key"] = json!({ "type": "string" });
@@ -3233,7 +3207,7 @@ mod interface_tests {
         // klipp_guide, not again on each tool (#1984).
         let guide = tools.iter().find(|t| t["name"] == "klipp_guide").unwrap();
         assert!(guide["description"].as_str().unwrap().contains("idempotency_key"));
-        for t in tools.iter().filter(|t| WRITE_TOOLS.contains(&t["name"].as_str().unwrap())) {
+        for t in tools.iter().filter(|t| tool_kinds::shows(t["name"].as_str().unwrap())) {
             let key = &t["inputSchema"]["properties"]["idempotency_key"];
             assert_eq!(key, &json!({ "type": "string" }), "{}", t["name"]);
         }
@@ -3637,7 +3611,7 @@ mod wait_tests {
         assert_eq!(tool_to_command("klipp_delivery_specs",&json!({})).unwrap(),json!({"method":"delivery_specs"}));
         assert_eq!(tool_to_command("klipp_check_delivery",&json!({"spec":"delivery-ebu-r128","file":"/x/a.mov"})).unwrap(),json!({"method":"check_delivery","spec":"delivery-ebu-r128","file":"/x/a.mov"}));
         assert!(!project_changed_under("klipp_close_project",1,2));
-        assert!(WRITE_TOOLS.contains(&"klipp_close_project"));
+        assert!(tool_kinds::shows("klipp_close_project"));
         for bad in [json!({"save":"true"}),json!({"save":true,"discard_changes":true})] {
             assert!(tool_to_command("klipp_close_project",&bad).is_err());
         }
@@ -4144,15 +4118,16 @@ mod catalogue_trim_tests {
 
     /// The catalogue is under 56.5 KB (raised from 54 for covers, #3311,
     /// from 55 for klipp_pick_grey and klipp_read_chart, and from 56 for
-    /// klipp_track_mask and klipp_show_matte, and to 56.7 for
-    /// klipp_veylvik_composition);
+    /// klipp_track_mask and klipp_show_matte, to 56.7 for
+    /// klipp_veylvik_composition, and to 58 for the writes that ran as
+    /// reads taking an idempotency_key);
     /// every tool names its guide topic; and each moved sentence is in its tool's
     /// topic, under Arguments, and no longer on the argument.
     #[test]
     fn the_catalogue_is_a_tenth_under_its_budget_and_nothing_moved_is_lost() {
         let tools = tool_definitions_for(false);
         let total = serde_json::to_vec(&tools).unwrap().len();
-        assert!(total < 56_700, "the catalogue is {total} bytes");
+        assert!(total < 58_000, "the catalogue is {total} bytes");
         for t in &tools {
             let name = t["name"].as_str().unwrap();
             if name != "klipp_guide" {

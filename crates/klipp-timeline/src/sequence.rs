@@ -3911,6 +3911,13 @@ const SPLIT_STEP_FPS: f64 = 60.0;
 pub const SPEED_MIN: f64 = 0.1;
 pub const SPEED_MAX: f64 = 16.0;
 
+/// `speed` brought into the range a clip plays at, its direction kept: a
+/// negative speed plays backward (#617), and zero would stall playback.
+pub fn clamp_speed(speed: f64) -> f64 {
+    let magnitude = if speed.is_finite() { speed.abs().clamp(SPEED_MIN, SPEED_MAX) } else { 1.0 };
+    if speed < 0.0 { -magnitude } else { magnitude }
+}
+
 /// Evaluate the keyframed speed curve at `clip_time_secs`. Returns `default_speed`
 /// if there are no keyframes, otherwise interpolates via `klipp_core::keyframe::evaluate`.
 /// Does NOT clamp — callers that feed this into the clock must clamp themselves.
@@ -5962,5 +5969,24 @@ mod sound_settings_tests {
         assert_eq!(seq.sound_settings_clip(&picture).id, picture.id);
         assert_eq!(seq.sound_settings_clip(&left).id, left.id, "a sound linked to a sound keeps its own");
         assert_eq!(seq.sound_settings_clip(&right).id, right.id);
+    }
+}
+
+#[cfg(test)]
+mod clamp_speed_tests {
+    use super::{clamp_speed, SPEED_MAX, SPEED_MIN};
+
+    /// A speed is brought into the range a clip plays at with its
+    /// direction kept; one that is no number plays at 1x.
+    #[test]
+    fn a_speed_is_clamped_with_its_direction_kept() {
+        assert_eq!(clamp_speed(2.0), 2.0);
+        assert_eq!(clamp_speed(-2.0), -2.0);
+        assert_eq!(clamp_speed(0.0), SPEED_MIN);
+        assert_eq!(clamp_speed(-0.01), -SPEED_MIN);
+        assert_eq!(clamp_speed(100.0), SPEED_MAX);
+        assert_eq!(clamp_speed(-100.0), -SPEED_MAX);
+        assert_eq!(clamp_speed(f64::NAN), 1.0);
+        assert_eq!(clamp_speed(f64::INFINITY), 1.0);
     }
 }

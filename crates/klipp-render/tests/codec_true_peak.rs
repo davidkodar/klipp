@@ -16,7 +16,7 @@ const RATE: u32 = 48000;
 const FRAMES: u64 = 150;
 
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    klipp_testing::ffmpeg::available()
 }
 
 /// Six seconds of transients, stereo, written once as `name`: a low tone

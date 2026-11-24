@@ -43,7 +43,7 @@ fn grab(file: &Path, secs: f64, w: u32, h: u32) -> Vec<u8> {
 fn linear(srgb: &[u8]) -> Vec<f32> {
     let lin = |c: u8| {
         let v = c as f32 / 255.0;
-        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        klipp_core::srgb::decode(v)
     };
     srgb.chunks(4).flat_map(|p| [lin(p[0]), lin(p[1]), lin(p[2]), p[3] as f32 / 255.0]).collect()
 }

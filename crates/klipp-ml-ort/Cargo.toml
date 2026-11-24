@@ -38,3 +38,6 @@ libloading  = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+klipp-testing = { workspace = true }

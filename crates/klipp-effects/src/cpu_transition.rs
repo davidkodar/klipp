@@ -37,7 +37,7 @@ impl std::ops::Index<u32> for Buf {
 }
 
 fn srgb_to_linear_component(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    crate::srgb::decode(c)
 }
 
 fn unpack(v: V4) -> V4 {
