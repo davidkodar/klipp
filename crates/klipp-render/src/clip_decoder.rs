@@ -263,9 +263,14 @@ impl RenderDecoder {
             ffmpeg_next::codec::context::Context::from_parameters(video_stream.parameters())
                 .map_err(RenderError::Decode)?;
 
-        // Try hardware acceleration: CUDA → VAAPI → Software
+        // Try hardware acceleration: CUDA → VAAPI → Software. A stream the
+        // GPU decodes wrongly goes to software, as playback sends it (#3735).
+        let wrong_on_gpu = unsafe {
+            let par = video_stream.parameters().as_ptr();
+            klipp_core::gpu_vendor::must_decode_in_software((*par).codec_id == ffmpeg_next::ffi::AVCodecID::AV_CODEC_ID_H264, (*par).profile)
+        };
         let hw_accel = unsafe {
-            if software_only() {
+            if software_only() || wrong_on_gpu {
                 HwAccel::Software
             } else if try_init_cuda(codec_ctx.as_mut_ptr()) {
                 HwAccel::Cuda
@@ -2092,5 +2097,30 @@ mod software_on_gpu_tests {
         let _ = std::fs::remove_file(&path);
         assert!(on_gpu, "a frame went to the CPU");
         assert!(gpu_ms < cpu_ms, "the GPU route is not quicker");
+    }
+}
+
+#[cfg(test)]
+mod software_only_streams_tests {
+    use super::RenderDecoder;
+
+    /// An H.264 High 4:4:4 file is read in software by the export, as
+    /// playback reads it: NVDEC decodes it wrongly with no error (#3735).
+    /// Plain High 4:2:0 may still go to the GPU.
+    #[test]
+    fn a_high_444_file_exports_through_software() {
+        let path = std::env::temp_dir().join(format!("klipp-high444-{}.mp4", std::process::id()));
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=25:d=1", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv444p", "-profile:v", "high444"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            eprintln!("UNVERIFIED: no ffmpeg with libx264");
+            return;
+        }
+        let d = RenderDecoder::open(&path, 0.0, f64::INFINITY, 320, 180, 25.0, 0).expect("it opens");
+        assert_eq!(d.hw_accel_name(), "Software");
+        let _ = std::fs::remove_file(&path);
     }
 }

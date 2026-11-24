@@ -36,10 +36,12 @@
 //!
 //! # Hardware paths
 //!
-//! Decoder selection is CUDA NVDEC → VAAPI → software. VAAPI is
-//! currently broken on NVIDIA for AV1/VP9 (all-zero frames from the
-//! nvidia-vaapi-driver), so those codecs skip directly to software
-//! even when VAAPI is available. See `open_gpu_decoder`.
+//! Decoder selection is NVDEC's own decoders (cuvid) → CUDA hwaccel →
+//! VAAPI → software. VAAPI never opens NVIDIA's VAAPI driver
+//! (`GpuVendor::vaapi_nodes` in klipp-core says why), and a stream the
+//! GPU decodes wrongly goes straight to software
+//! (`klipp_core::gpu_vendor::must_decode_in_software`), as export and
+//! thumbnails send it. See `open_video_decoder`.
 
 use crate::frame::GpuFrame;
 use crate::types::{FrameQueue, LinearFrame, SharedFrameQueue};
@@ -955,21 +957,15 @@ pub(crate) enum HwAccel {
     Software,
 }
 
-/// A stream the GPU decoder opens and then gets wrong, with no error: H.264
-/// High 4:4:4 Predictive, as lossless encodes are, came out with a flat patch
-/// as a gradient (38 down to 20), where a software decode of the file is flat.
-fn gpu_decodes_wrongly(params: &ffmpeg_next::codec::Parameters) -> bool {
+/// A stream the GPU decoder opens and then gets wrong, with no error
+/// ([`klipp_core::gpu_vendor::must_decode_in_software`]).
+pub(crate) fn gpu_decodes_wrongly(params: &ffmpeg_next::codec::Parameters) -> bool {
     // SAFETY: the pointer is the live stream's parameters, read here only.
     let (id, profile) = unsafe {
         let par = params.as_ptr();
         ((*par).codec_id, (*par).profile)
     };
-    is_h264_high_444(id == ffmpeg_next::ffi::AVCodecID::AV_CODEC_ID_H264, profile)
-}
-
-fn is_h264_high_444(is_h264: bool, profile: i32) -> bool {
-    const HIGH_444_PREDICTIVE: i32 = 244;
-    is_h264 && profile == HIGH_444_PREDICTIVE
+    klipp_core::gpu_vendor::must_decode_in_software(id == ffmpeg_next::ffi::AVCodecID::AV_CODEC_ID_H264, profile)
 }
 
 /// Callback for FFmpeg codec negotiation — selects the preferred HW pixel format.
@@ -4442,15 +4438,5 @@ mod sw_frames_on_gpu_tests {
             eprintln!("{pix_fmt}: mean {mean:.5}, worst {worst:.5}");
             assert!(mean < 0.003 && worst < 0.02, "{pix_fmt}: the GPU's picture differs from the CPU's: mean {mean}, worst {worst}");
         }
-    }
-}
-
-#[cfg(test)]
-mod gpu_decode_tests {
-    #[test]
-    fn only_h264_high_444_is_kept_from_the_gpu() {
-        assert!(super::is_h264_high_444(true, 244));
-        assert!(!super::is_h264_high_444(true, 100), "High");
-        assert!(!super::is_h264_high_444(false, 244), "another codec's number");
     }
 }
