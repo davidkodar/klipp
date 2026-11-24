@@ -98,7 +98,7 @@ mod reorder_effect_tests {
 }
 
 /// Snapshot of all keyframe data for a clip (used for undo/redo).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct KeyframeSnapshot {
     pub volume_keyframes: Vec<Keyframe>,
     pub pan_keyframes: Vec<Keyframe>,

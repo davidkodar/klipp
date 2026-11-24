@@ -124,3 +124,45 @@ fn review_comments_imported_are_one_step() {
     assert!(app.state.sequence().markers.is_empty());
     assert_eq!(app.state.undo_depth(), 0);
 }
+
+/// A clip and its linked partner as the app holds them: a picture on the
+/// first video track, its sound on the first audio track.
+fn linked_pair(app: &mut KlippApp) -> (klipp_core::ClipId, klipp_core::ClipId) {
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let media = klipp_core::MediaId::new();
+    let (mut picture, mut sound) = (klipp_timeline::Clip::media(media, at(0.0), at(4.0), at(0.0), at(4.0)), klipp_timeline::Clip::media(media, at(0.0), at(4.0), at(0.0), at(4.0)));
+    (picture.linked_clip_id, sound.linked_clip_id) = (Some(sound.id), Some(picture.id));
+    let ids = (picture.id, sound.id);
+    let active = app.state.active_sequence_idx;
+    let tracks = &mut app.state.document.sequences[active].tracks;
+    tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(picture);
+    tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap().clips.push(sound);
+    ids
+}
+
+/// An audio key added and removed on a picture goes to its linked sound
+/// too, each one step that undo takes back from both, and the engine is
+/// told each time.
+#[test]
+fn an_audio_key_is_one_step_for_the_pair() {
+    let (mut app, engine) = KlippApp::for_test();
+    let (picture, sound) = linked_pair(&mut app);
+    let keys = |app: &KlippApp| {
+        let n = |id| app.state.sequence().all_clips().find(|c| c.id == id).unwrap().volume_keyframes.len();
+        (n(picture), n(sound))
+    };
+    let param = klipp_core::AudioParam::Volume;
+    app.send_commands(vec![AppCommand::AddAudioKeyframe { clip_id: picture, param, time_secs: 1.0, value: 0.5 }]);
+    app.send_commands(vec![AppCommand::AddAudioKeyframe { clip_id: picture, param, time_secs: 2.0, value: 0.8 }]);
+    assert_eq!((keys(&app), app.state.undo_depth()), ((2, 2), 2));
+    assert!(engine.commands.try_iter().any(|c| matches!(c, AppCommand::SequenceUpdated)), "the engine told");
+    app.send_commands(vec![AppCommand::RemoveAudioKeyframe { clip_id: picture, param, time_secs: 1.0 }]);
+    assert_eq!(keys(&app), (1, 1));
+    app.send_commands(vec![AppCommand::RemoveAudioKeyframe { clip_id: picture, param, time_secs: 3.0 }]);
+    assert_eq!(app.state.undo_depth(), 3, "taking off a key that isn't there is no step");
+
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(keys(&app), (2, 2), "both back");
+    app.send_commands(vec![AppCommand::Undo, AppCommand::Undo]);
+    assert_eq!(keys(&app), (0, 0));
+}
