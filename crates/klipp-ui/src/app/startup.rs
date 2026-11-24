@@ -3,36 +3,53 @@
 
 use super::*;
 
+/// What the app is built from: what main hands over (the engine's ends,
+/// the shared buffers) and what startup reads (preferences, theme, layout,
+/// keys, fonts, the sound device's rate, the desktop's appearance). The
+/// real app reads these from the machine; a test passes stand-ins.
+pub(crate) struct Parts {
+    pub veylvik_tab: super::veylvik_tab::VeylvikTab,
+    pub cmd_tx: Sender<AppCommand>,
+    pub event_rx: Receiver<AppEvent>,
+    pub frame_buffer: SharedFrameBuffer,
+    pub source_frame_buffer: SharedFrameBuffer,
+    pub sequence: Arc<klipp_timeline::SharedSequence>,
+    pub media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
+    pub skim_consumer: klipp_engine::audio_output::SkimConsumer,
+    pub spectrum_buf: Option<Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>>,
+    pub spectrum_sample_rate: u32,
+    pub perf_ring: klipp_engine::perf::SharedPerfRing,
+    pub param_change_queue: Arc<ArrayQueue<ParamChange>>,
+    pub foreground_activity: Arc<klipp_jobs::ForegroundActivity>,
+    pub prefs: crate::prefs::Preferences,
+    pub theme_registry: crate::theme::ThemeRegistry,
+    pub theme: KlippTheme,
+    pub layout: LayoutState,
+    pub title_renderer: klipp_title::TitleRenderer,
+    pub key_bindings: crate::keybindings::KeyBindings,
+    pub cpal_sample_rate: u32,
+    pub desktop_appearance: crate::theme::portal::PortalWatch,
+}
+
+/// What a test keeps of the engine's side: what the app sent it, and a way
+/// to send the app the engine's events.
+#[cfg(test)]
+pub(crate) struct TestEngine {
+    pub commands: Receiver<AppCommand>,
+    /// Held so the app's event channel stays open; a test may send on it.
+    #[allow(dead_code)]
+    pub events: Sender<AppEvent>,
+}
+
 impl KlippApp {
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        cmd_tx: Sender<AppCommand>,
-        event_rx: Receiver<AppEvent>,
-        frame_buffer: SharedFrameBuffer,
-        source_frame_buffer: SharedFrameBuffer,
-        sequence: Arc<klipp_timeline::SharedSequence>,
-        media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
-        skim_consumer: klipp_engine::audio_output::SkimConsumer,
-        spectrum_buf: Option<Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>>,
-        spectrum_sample_rate: u32,
-        perf_ring: klipp_engine::perf::SharedPerfRing,
-        param_change_queue: Arc<ArrayQueue<ParamChange>>,
-        foreground_activity: Arc<klipp_jobs::ForegroundActivity>,
-    ) -> Self {
-        use klipp_core::startup_timer::LogTimer;
-
-        // AI mask cache LRU sweep — trim
-        // ~/.cache/klipp/ai_masks/ to AI_MASK_CACHE_BYTES_CAP if
-        // it's overgrown. Cheap (stat-only walk + delete oldest)
-        // and runs once at startup so it doesn't cost during
-        // editing. See execute_apply_mask_to_clip for the schema
-        // these files are written under.
-        prune_ai_mask_cache();
-
-        // A clip shown through a Veylvik composition gets its picture in
-        // every render; nothing starts until a project holds one.
-        klipp_veylvik::install();
-
+    /// The app from `p`, every field set: shared by [`Self::new`] and
+    /// [`Self::for_test`], so the two can't drift apart.
+    fn assemble(p: Parts) -> Self {
+        let Parts {
+            veylvik_tab, cmd_tx, event_rx, frame_buffer, source_frame_buffer, sequence, media_pool_shared, skim_consumer,
+            spectrum_buf, spectrum_sample_rate, perf_ring, param_change_queue, foreground_activity, prefs, theme_registry,
+            theme, layout, title_renderer, key_bindings, cpal_sample_rate, desktop_appearance,
+        } = p;
         let (thumb_tx, thumb_rx) = crossbeam_channel::unbounded();
         let (source_frame_tx, source_frame_rx) = crossbeam_channel::unbounded();
         let (filmstrip_tx, filmstrip_rx) = crossbeam_channel::unbounded();
@@ -40,87 +57,9 @@ impl KlippApp {
         let (audio_conform_tx, audio_conform_rx) = crossbeam_channel::unbounded();
         let (proxy_event_tx, proxy_event_rx) = crossbeam_channel::unbounded();
         let (proxy_progress_tx, proxy_progress_rx) = crossbeam_channel::unbounded();
-        let prefs = {
-            let _t = LogTimer::new("ui: Preferences::load");
-            crate::prefs::Preferences::load()
-        };
-        let theme_registry = {
-            let _t = LogTimer::new("ui: ThemeRegistry::load");
-            crate::theme::ThemeRegistry::load()
-        };
-        let theme = KlippTheme::from_prefs(&prefs.appearance, &theme_registry);
-        {
-            let _t = LogTimer::new("ui: theme + fonts apply (egui)");
-            theme.apply_to_egui(&cc.egui_ctx);
-            theme.apply_fonts_with_size(&cc.egui_ctx, prefs.appearance.ui_text_size);
-            crate::icons::install(&cc.egui_ctx);
-            // A drop on Wayland arrives on the clipboard's thread while the
-            // window gets no input; it asks for a frame to be taken in.
-            #[cfg(target_os = "linux")]
-            {
-                let ctx = cc.egui_ctx.clone();
-                smithay_clipboard::set_drop_waker(move || ctx.request_repaint());
-            }
-        }
-
-
-        // Apply UI scale — Auto (0) detects system DPI via native pixels_per_point
-        let scale_pct = prefs.appearance.ui_scale_percent;
-        if scale_pct == 0 {
-            // Auto: let egui use the system's native scale (zoom_factor = 1.0)
-            // egui already reads the system DPI from Wayland/X11
-            cc.egui_ctx.set_zoom_factor(1.0);
-        } else {
-            // Manual: override with user's chosen percentage
-            // System already provides native_pixels_per_point, so zoom_factor
-            // should be relative: e.g. 100% = 1.0, 125% = 1.25
-            cc.egui_ctx.set_zoom_factor(scale_pct as f32 / 100.0);
-        }
-        let layout = LayoutState::load();
-        // Panel visibility is persisted, so a panel collapsed last
-        // session is still collapsed. AppState's defaults say visible;
-        // the saved layout is what the user actually last chose.
-        let (restore_browser, restore_inspector) = (layout.browser_visible, layout.inspector_visible);
-
-        // The fonts the built-in templates and starter kits use ship with
-        // the app: put in the fonts folder, so a built-in never
-        // fetches one. Written only when not there at its size.
-        match klipp_title::catalogue::install_shipped() {
-            Ok(0) => {}
-            Ok(n) => tracing::info!("{n} shipped font files put in the fonts folder"),
-            Err(e) => tracing::warn!("the shipped fonts could not be put in place: {e}"),
-        }
-
-        // Heavy field inits — extracted from the struct literal so we can
-        // measure each one independently for STARTUP_PERF.
-        let title_renderer_ui = {
-            let _t = LogTimer::new("ui: TitleRenderer::new (font discovery, second instance)");
-            klipp_title::TitleRenderer::new()
-        };
-        let key_bindings = {
-            let _t = LogTimer::new("ui: KeyBindings::load");
-            crate::keybindings::KeyBindings::load()
-        };
-        let cpal_sample_rate = {
-            let _t = LogTimer::new("ui: cpal probe_sample_rate (duplicate)");
-            klipp_engine::audio_output::probe_sample_rate()
-        };
-        // NOTE: Audio device cache is NOT primed at startup. An earlier
-        // version spawned a background thread for this, but libasound
-        // (ALSA) is not thread-safe for concurrent device enumeration.
-        // Running enumerate_output_devices() simultaneously with the
-        // engine's AudioOutput::new() corrupted cpal's device handles
-        // and silently broke audio output. The cache is now populated
-        // lazily on first visit to the Audio HW preferences tab — the
-        // 5-50ms hitch is acceptable for a one-time UI interaction.
-
-        // Capture the scheduler policy from prefs BEFORE moving
-        // `prefs` into the struct literal below.
-        let initial_scheduler_policy =
-            prefs.playback.background_performance.to_scheduler_policy();
-
-        let mut app = Self {
-            veylvik_tab: super::veylvik_tab::VeylvikTab::new(cc.wgpu_render_state.clone()),
+        let initial_scheduler_policy = prefs.playback.background_performance.to_scheduler_policy();
+        Self {
+            veylvik_tab,
             cmd_tx: klipp_engine::commands::EngineSender::new(cmd_tx),
             event_rx,
             control_inbox: None,
@@ -151,7 +90,7 @@ impl KlippApp {
             proxy_look: None,
             proxy_looked_at: None,
             viewer: ViewerPanel::default(),
-            title_renderer: title_renderer_ui,
+            title_renderer,
             markers: MarkersPanel::default(),
             edit_list: Default::default(),
             transcript_panel: crate::panels::transcript::TranscriptPanel::new(),
@@ -296,7 +235,7 @@ impl KlippApp {
             media_watcher: None,
             system_theme_watcher: None,
             system_theme_changed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            desktop_appearance: crate::theme::portal::start(cc.egui_ctx.clone()),
+            desktop_appearance,
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
             scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
             scope_dock_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
@@ -313,7 +252,178 @@ impl KlippApp {
             freeze_jobs: Default::default(),
             bounces: Default::default(),
             playback_note_looked: None,
+        }
+    }
+
+    /// An app for a test: no window, no engine, nothing read from or written
+    /// to the machine (preferences, theme, layout and keys are defaults; no
+    /// fonts are scanned, no sound device probed, no project opened). The
+    /// returned [`TestEngine`] holds what the app sends the engine, so a
+    /// test drives the real handlers through `send_commands` and asserts
+    /// what was sent and what the state became.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> (Self, TestEngine) {
+        let (cmd_tx, commands) = crossbeam_channel::unbounded();
+        let (events, event_rx) = crossbeam_channel::unbounded();
+        let prefs = crate::prefs::Preferences::default();
+        let theme_registry = crate::theme::ThemeRegistry::builtins();
+        let theme = KlippTheme::from_prefs(&prefs.appearance, &theme_registry);
+        let app = Self::assemble(Parts {
+            veylvik_tab: super::veylvik_tab::VeylvikTab::new(None),
+            cmd_tx,
+            event_rx,
+            frame_buffer: Arc::new(std::sync::Mutex::new(klipp_engine::texture::FrameBuffer::new(64, 36))),
+            source_frame_buffer: Arc::new(std::sync::Mutex::new(klipp_engine::texture::FrameBuffer::new(64, 36))),
+            sequence: Arc::new(klipp_timeline::SharedSequence::new(klipp_timeline::Sequence::new_default())),
+            media_pool_shared: Arc::new(RwLock::new(klipp_media::MediaPool::new())),
+            skim_consumer: Default::default(),
+            spectrum_buf: None,
+            spectrum_sample_rate: 48_000,
+            perf_ring: klipp_engine::perf::shared(),
+            param_change_queue: Arc::new(ArrayQueue::new(256)),
+            foreground_activity: klipp_jobs::ForegroundActivity::new(),
+            prefs,
+            theme_registry,
+            theme,
+            layout: LayoutState::default(),
+            title_renderer: klipp_title::TitleRenderer::default(),
+            key_bindings: crate::keybindings::KeyBindings::default(),
+            cpal_sample_rate: 48_000,
+            desktop_appearance: Default::default(),
+        });
+        (app, TestEngine { commands, events })
+    }
+}
+
+impl KlippApp {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        cmd_tx: Sender<AppCommand>,
+        event_rx: Receiver<AppEvent>,
+        frame_buffer: SharedFrameBuffer,
+        source_frame_buffer: SharedFrameBuffer,
+        sequence: Arc<klipp_timeline::SharedSequence>,
+        media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
+        skim_consumer: klipp_engine::audio_output::SkimConsumer,
+        spectrum_buf: Option<Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>>,
+        spectrum_sample_rate: u32,
+        perf_ring: klipp_engine::perf::SharedPerfRing,
+        param_change_queue: Arc<ArrayQueue<ParamChange>>,
+        foreground_activity: Arc<klipp_jobs::ForegroundActivity>,
+    ) -> Self {
+        use klipp_core::startup_timer::LogTimer;
+
+        // AI mask cache LRU sweep — trim
+        // ~/.cache/klipp/ai_masks/ to AI_MASK_CACHE_BYTES_CAP if
+        // it's overgrown. Cheap (stat-only walk + delete oldest)
+        // and runs once at startup so it doesn't cost during
+        // editing. See execute_apply_mask_to_clip for the schema
+        // these files are written under.
+        prune_ai_mask_cache();
+
+        // A clip shown through a Veylvik composition gets its picture in
+        // every render; nothing starts until a project holds one.
+        klipp_veylvik::install();
+
+        let prefs = {
+            let _t = LogTimer::new("ui: Preferences::load");
+            crate::prefs::Preferences::load()
         };
+        let theme_registry = {
+            let _t = LogTimer::new("ui: ThemeRegistry::load");
+            crate::theme::ThemeRegistry::load()
+        };
+        let theme = KlippTheme::from_prefs(&prefs.appearance, &theme_registry);
+        {
+            let _t = LogTimer::new("ui: theme + fonts apply (egui)");
+            theme.apply_to_egui(&cc.egui_ctx);
+            theme.apply_fonts_with_size(&cc.egui_ctx, prefs.appearance.ui_text_size);
+            crate::icons::install(&cc.egui_ctx);
+            // A drop on Wayland arrives on the clipboard's thread while the
+            // window gets no input; it asks for a frame to be taken in.
+            #[cfg(target_os = "linux")]
+            {
+                let ctx = cc.egui_ctx.clone();
+                smithay_clipboard::set_drop_waker(move || ctx.request_repaint());
+            }
+        }
+
+
+        // Apply UI scale — Auto (0) detects system DPI via native pixels_per_point
+        let scale_pct = prefs.appearance.ui_scale_percent;
+        if scale_pct == 0 {
+            // Auto: let egui use the system's native scale (zoom_factor = 1.0)
+            // egui already reads the system DPI from Wayland/X11
+            cc.egui_ctx.set_zoom_factor(1.0);
+        } else {
+            // Manual: override with user's chosen percentage
+            // System already provides native_pixels_per_point, so zoom_factor
+            // should be relative: e.g. 100% = 1.0, 125% = 1.25
+            cc.egui_ctx.set_zoom_factor(scale_pct as f32 / 100.0);
+        }
+        let layout = LayoutState::load();
+        // Panel visibility is persisted, so a panel collapsed last
+        // session is still collapsed. AppState's defaults say visible;
+        // the saved layout is what the user actually last chose.
+        let (restore_browser, restore_inspector) = (layout.browser_visible, layout.inspector_visible);
+
+        // The fonts the built-in templates and starter kits use ship with
+        // the app: put in the fonts folder, so a built-in never
+        // fetches one. Written only when not there at its size.
+        match klipp_title::catalogue::install_shipped() {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("{n} shipped font files put in the fonts folder"),
+            Err(e) => tracing::warn!("the shipped fonts could not be put in place: {e}"),
+        }
+
+        // Heavy field inits — extracted from the struct literal so we can
+        // measure each one independently for STARTUP_PERF.
+        let title_renderer_ui = {
+            let _t = LogTimer::new("ui: TitleRenderer::new (font discovery, second instance)");
+            klipp_title::TitleRenderer::new()
+        };
+        let key_bindings = {
+            let _t = LogTimer::new("ui: KeyBindings::load");
+            crate::keybindings::KeyBindings::load()
+        };
+        let cpal_sample_rate = {
+            let _t = LogTimer::new("ui: cpal probe_sample_rate (duplicate)");
+            klipp_engine::audio_output::probe_sample_rate()
+        };
+        // NOTE: Audio device cache is NOT primed at startup. An earlier
+        // version spawned a background thread for this, but libasound
+        // (ALSA) is not thread-safe for concurrent device enumeration.
+        // Running enumerate_output_devices() simultaneously with the
+        // engine's AudioOutput::new() corrupted cpal's device handles
+        // and silently broke audio output. The cache is now populated
+        // lazily on first visit to the Audio HW preferences tab — the
+        // 5-50ms hitch is acceptable for a one-time UI interaction.
+
+        // Capture the scheduler policy from prefs BEFORE moving
+        // `prefs` into the struct literal below.
+        let mut app = Self::assemble(Parts {
+            veylvik_tab: super::veylvik_tab::VeylvikTab::new(cc.wgpu_render_state.clone()),
+            cmd_tx,
+            event_rx,
+            frame_buffer,
+            source_frame_buffer,
+            sequence,
+            media_pool_shared,
+            skim_consumer,
+            spectrum_buf,
+            spectrum_sample_rate,
+            perf_ring,
+            param_change_queue,
+            foreground_activity,
+            prefs,
+            theme_registry,
+            theme,
+            layout,
+            title_renderer: title_renderer_ui,
+            key_bindings,
+            cpal_sample_rate,
+            desktop_appearance: crate::theme::portal::start(cc.egui_ctx.clone()),
+        });
         // Analysis waits while the person is playing, scrubbing or has
         // just touched the controls, unless they chose throughput over
         // responsiveness for background work.
