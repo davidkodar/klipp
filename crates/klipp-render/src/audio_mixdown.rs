@@ -716,15 +716,18 @@ fn envelope_samples(samples: &mut [f32], shape: &AudioClipShape, from_secs: f64,
     let crossfading = shape.crossfade_in_secs > 0.0 || shape.crossfade_out_secs > 0.0;
     let ext_dur = head + shape.clip_duration_secs + shape.tail_secs;
     let dur = shape.clip_duration_secs;
+    // The clip's fades and the anti-click ramp, as the playback feeder
+    // applies them (klipp_core::clip_fade).
+    let (fades, ramp) = (fades_of(shape), klipp_core::clip_fade::anti_click_secs());
     for (i, pair) in samples.chunks_mut(2).enumerate() {
         let pos = from_secs + i as f64 / sample_rate as f64 - head;
         let own = if shape.crossfade_in_secs > 0.0 {
             // Fading in from silence already: no click to ramp out,
             // and the anti-click ramp at the in point would dip the
             // middle of the crossfade.
-            fade_out_only(pos, dur, shape.fade_out_secs as f64, shape.fade_out_curve)
+            klipp_core::clip_fade::fade_out_gain(pos, dur, &fades, ramp)
         } else {
-            fade_envelope(pos, dur, shape.fade_in_secs as f64, shape.fade_out_secs as f64, shape.fade_in_curve, shape.fade_out_curve)
+            klipp_core::clip_fade::gain(pos, dur, &fades, ramp)
         };
         let gain = if crossfading { own * crossfade_gain(pos + head, ext_dur, shape.crossfade_in_secs, shape.crossfade_out_secs) } else { own };
         if gain != 1.0 {
@@ -759,31 +762,9 @@ pub fn levels_at(shape: &AudioClipShape, clip_pos: f64, timeline_secs: f64, fps:
     (volume * gain, pan)
 }
 
-/// A curve over a `0..=1` ramp, shared with the playback feeder
-/// through [`klipp_core::FadeCurve`] rather than transcribed here.
-fn fade_curve(t: f64, curve: u8) -> f64 {
-    klipp_core::FadeCurve::from_index(curve as u32).gain(t)
-}
-
-/// The two-millisecond ramp playback puts at a clip's start so a cut
-/// into sound does not click. Its end is left alone, as playback leaves
-/// it: the next clip carries on.
-const ANTI_CLICK_SECS: f64 = 0.002;
-
-/// The fade envelope at `pos` seconds into a clip of `dur` seconds, as
-/// the playback feeder computes it.
-fn fade_envelope(pos: f64, dur: f64, fade_in: f64, fade_out: f64, in_curve: u8, out_curve: u8) -> f32 {
-    let mut g = 1.0;
-    let eff_in = fade_in.max(ANTI_CLICK_SECS);
-    if pos < eff_in {
-        let t = (pos / eff_in).clamp(0.0, 1.0);
-        g = fade_curve(t, if fade_in > 0.001 { in_curve } else { 0 });
-    }
-    if fade_out > 0.001 && pos > dur - fade_out {
-        let t = ((dur - pos) / fade_out).clamp(0.0, 1.0);
-        g *= fade_curve(t, out_curve);
-    }
-    g as f32
+/// A clip's fades, as [`AudioClipShape`] keeps them.
+fn fades_of(shape: &AudioClipShape) -> klipp_core::clip_fade::ClipFades {
+    klipp_core::clip_fade::ClipFades { fade_in: shape.fade_in_secs as f64, fade_out: shape.fade_out_secs as f64, in_curve: shape.fade_in_curve, out_curve: shape.fade_out_curve }
 }
 
 /// The crossfade gain `pos` seconds into a clip extended to `ext_dur`
@@ -800,15 +781,6 @@ pub(crate) fn crossfade_gain(pos: f64, ext_dur: f64, xfade_in: f64, xfade_out: f
         g *= cp((ext_dur - pos) / xfade_out);
     }
     g as f32
-}
-
-/// [`fade_envelope`] without the fade in or its anti-click ramp.
-fn fade_out_only(pos: f64, dur: f64, fade_out: f64, out_curve: u8) -> f32 {
-    if fade_out > 0.001 && pos > dur - fade_out {
-        fade_curve(((dur - pos) / fade_out).clamp(0.0, 1.0), out_curve) as f32
-    } else {
-        1.0
-    }
 }
 
 /// How long a multicam's sound takes to hand over from one angle to the

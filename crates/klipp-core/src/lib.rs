@@ -28,6 +28,7 @@
 //! * Serde-serialised types round-trip through the `.klipp` project format
 //!   via `klipp-project`; treat any breaking rename as a migration.
 
+pub mod clip_fade;
 /// The sRGB curves, klipp-effects' (the lowest crate every caller reaches).
 pub use klipp_effects::srgb;
 pub mod frame_glide;
