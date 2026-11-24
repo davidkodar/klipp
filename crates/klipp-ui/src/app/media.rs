@@ -1029,53 +1029,28 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetMediaRating { media_id, rating } => {
-                    if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
-                        let old_rating = item.rating;
+                    // The pool's own record: a project step, reachable from
+                    // any sequence (#1986).
+                    if let Some(old_rating) = self.state.document.media_pool.get(media_id).map(|i| i.rating) {
                         let new_rating = (*rating).min(5);
                         if old_rating != new_rating {
-                            item.rating = new_rating;
-                            // The pool's own record: a project step, reachable from any
-                            // sequence (#1986).
-                            self.state.push_history(crate::history::EditCommand::SetMediaRating {
-                                media_id: *media_id,
-                                old_rating,
-                                new_rating,
-                            });
-                            self.state.dirty = true;
+                            self.commit(crate::history::EditCommand::SetMediaRating { media_id: *media_id, old_rating, new_rating });
                         }
                     }
                     true
                 }
                 AppCommand::SetMediaTags { media_id, tags } => {
-                    if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
-                        let old_tags = item.tags.clone();
+                    if let Some(old_tags) = self.state.document.media_pool.get(media_id).map(|i| i.tags.clone()) {
                         if old_tags != *tags {
-                            item.tags = tags.clone();
-                            // The pool's own record: a project step, reachable from any
-                            // sequence (#1986).
-                            self.state.push_history(crate::history::EditCommand::SetMediaTags {
-                                media_id: *media_id,
-                                old_tags,
-                                new_tags: tags.clone(),
-                            });
-                            self.state.dirty = true;
+                            self.commit(crate::history::EditCommand::SetMediaTags { media_id: *media_id, old_tags, new_tags: tags.clone() });
                         }
                     }
                     true
                 }
                 AppCommand::SetMediaColorLabel { media_id, label } => {
-                    if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
-                        let old_label = item.color_label.to_u8();
+                    if let Some(old_label) = self.state.document.media_pool.get(media_id).map(|i| i.color_label.to_u8()) {
                         if old_label != *label {
-                            item.color_label = klipp_media::ColorLabel::from_u8(*label);
-                            // The pool's own record: a project step, reachable from any
-                            // sequence (#1986).
-                            self.state.push_history(crate::history::EditCommand::SetMediaColorLabel {
-                                media_id: *media_id,
-                                old_label,
-                                new_label: *label,
-                            });
-                            self.state.dirty = true;
+                            self.commit(crate::history::EditCommand::SetMediaColorLabel { media_id: *media_id, old_label, new_label: *label });
                         }
                     }
                     true
@@ -1317,57 +1292,27 @@ impl KlippApp {
                     true
                 }
                 AppCommand::BatchRenameMediaItems { changes } => {
-                    // Snapshot old names, apply new ones, push a single undo
-                    // entry. Items whose new name matches the old are skipped
-                    // entirely so undo only captures real changes.
-                    let mut undo_changes: Vec<(MediaId, String, String)> = Vec::new();
-                    for (media_id, new_filename) in changes {
-                        if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
-                            let old = item.filename.clone();
-                            if old != *new_filename {
-                                item.filename = new_filename.clone();
-                                undo_changes.push((*media_id, old, new_filename.clone()));
-                            }
-                        }
-                    }
+                    // One step for the renames that change a name; an item
+                    // already called so is left out, so undo holds only real
+                    // changes.
+                    let undo_changes: Vec<(MediaId, String, String)> = changes
+                        .iter()
+                        .filter_map(|(media_id, new_filename)| {
+                            let old = self.state.document.media_pool.get(media_id)?.filename.clone();
+                            (old != *new_filename).then(|| (*media_id, old, new_filename.clone()))
+                        })
+                        .collect();
                     if !undo_changes.is_empty() {
                         let count = undo_changes.len();
-                        self.state.push_history(crate::history::EditCommand::BatchRenameMediaItems {
-                                changes: undo_changes,
-                            });
-                        self.state.toast.show(format!(
-                            "Renamed {} item{}.",
-                            count,
-                            if count == 1 { "" } else { "s" }
-                        ));
-                        self.state.dirty = true;
+                        self.commit(crate::history::EditCommand::BatchRenameMediaItems { changes: undo_changes });
+                        self.state.toast.show(format!("Renamed {} item{}.", count, if count == 1 { "" } else { "s" }));
                     }
                     true
                 }
                 AppCommand::RenameBin { old_name, new_name } => {
-                    // Rename the Bin record itself
-                    for bin in &mut self.state.document.media_pool.bins {
-                        if bin.name == *old_name {
-                            bin.name = new_name.clone();
-                            break;
-                        }
-                    }
-                    // Update legacy item.bin field (will be removed when UI migrates to bin_id)
-                    let ids: Vec<MediaId> = self.state.document.media_pool.all()
-                        .filter(|m| m.bin.as_deref() == Some(old_name.as_str()))
-                        .map(|m| m.id)
-                        .collect();
-                    for id in ids {
-                        if let Some(item) = self.state.document.media_pool.get_mut(&id) {
-                            item.bin = Some(new_name.clone());
-                            // bin_id intentionally unchanged — rename doesn't change the bin's identity
-                        }
-                    }
-                    self.state.push_history(crate::history::EditCommand::RenameBin {
-                        old_name: old_name.clone(),
-                        new_name: new_name.clone(),
-                    });
-                    self.state.dirty = true;
+                    // The bin's record and its items' names for it; its id
+                    // stays, a rename doesn't change which bin it is.
+                    self.commit(crate::history::EditCommand::RenameBin { old_name: old_name.clone(), new_name: new_name.clone() });
                     tracing::info!("Bin renamed: {} -> {}", old_name, new_name);
                     true
                 }
