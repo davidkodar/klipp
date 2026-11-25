@@ -64,6 +64,9 @@ impl KlippApp {
         // The active sequence's step or the project's, whichever is the
         // latest (#1986); another sequence's stack is never reached.
         if let Some(entry) = self.state.take_undo() {
+            // A run of a generator's changes ends at an undo or redo:
+            // the next change is a step of its own.
+            self.state.generator_edit = None;
             self.apply_edit_inverse(&entry.command);
             self.state.note_recorded_tracks();
             // And redraw the frame: paused, a sync alone shows the
@@ -77,6 +80,9 @@ impl KlippApp {
 
     pub(super) fn apply_redo(&mut self) {
         if let Some(entry) = self.state.take_redo() {
+            // A run of a generator's changes ends at an undo or redo:
+            // the next change is a step of its own.
+            self.state.generator_edit = None;
             self.apply_edit_forward(&entry.command);
             self.state.note_recorded_tracks();
             // And redraw the frame: paused, a sync alone shows the

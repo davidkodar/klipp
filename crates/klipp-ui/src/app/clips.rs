@@ -41,9 +41,27 @@ impl KlippApp {
         // Generator parameter editing
         if let AppCommand::UpdateGeneratorData { clip_id, data } = cmd {
             // One step, applied and recorded as one (the engine synced
-            // and the frame shown again by the step's own effects).
+            // and the frame shown again by the step's own effects). A
+            // colour picker or a value dragged sends a change each frame:
+            // the run of them close together on the same generator is
+            // the one step, as a title's colour is.
             if let Some(old_data) = self.snapshot_generator(*clip_id).filter(|old| old != data) {
-                self.commit(crate::history::EditCommand::EditGenerator { clip_id: *clip_id, old_data, new_data: data.clone() });
+                let edit = crate::history::EditCommand::EditGenerator { clip_id: *clip_id, old_data, new_data: data.clone() };
+                let recent = self.state.generator_edit.is_some_and(|(c, at)| c == *clip_id && at.elapsed() < std::time::Duration::from_millis(1500));
+                self.state.generator_edit = Some((*clip_id, std::time::Instant::now()));
+                let merged = recent && self.state.active_history_mut().merge_into_last(|last| match last {
+                    crate::history::EditCommand::EditGenerator { clip_id: c, new_data, .. } if c == clip_id => {
+                        *new_data = data.clone();
+                        true
+                    }
+                    _ => false,
+                });
+                if merged {
+                    self.apply_edit_forward(&edit);
+                    self.state.dirty = true;
+                } else {
+                    self.commit(edit);
+                }
             }
             return true;
         }

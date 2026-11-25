@@ -2331,6 +2331,9 @@ pub struct AppState {
     /// The last title colour field edited, and when: picked colours close
     /// together are one step (#1139).
     pub title_colour_edit: Option<(klipp_core::ClipId, usize, std::time::Instant)>,
+    /// The generator last changed and when: a run of its changes close
+    /// together (a colour or a value dragged) is one step.
+    pub generator_edit: Option<(klipp_core::ClipId, std::time::Instant)>,
     /// Where color tools are docked: Right (inspector) or Bottom (below viewer).
     pub color_tools_position: ColorToolsPosition,
     /// Selected node in the node graph (shared between canvas and inspector).
@@ -5142,6 +5145,7 @@ impl Default for AppState {
             grade_track: None,
             title_field_before: None,
             title_colour_edit: None,
+            generator_edit: None,
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
             selected_node_ids: std::collections::HashSet::new(),
