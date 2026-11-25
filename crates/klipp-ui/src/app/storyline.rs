@@ -45,15 +45,7 @@ impl KlippApp {
         else {
             return false;
         };
-        let result = klipp_timeline::magnetic::MagneticEditor::connect_clip(
-            &mut self.state.document.sequences[self.state.active_sequence_idx],
-            clip_id,
-            anchor_id,
-            klipp_timeline::AnchorAlignment::StartAligned,
-        );
-        self.state.push_history(EditCommand::Magnetic(result.command));
-        self.sync_sequence_to_engine();
-        self.state.dirty = true;
+        self.magnetic_step(|seq| klipp_timeline::magnetic::MagneticEditor::connect_clip(seq, clip_id, anchor_id, klipp_timeline::AnchorAlignment::StartAligned));
         true
     }
 
@@ -66,10 +58,7 @@ impl KlippApp {
         if !connected {
             return false;
         }
-        let result = klipp_timeline::magnetic::MagneticEditor::disconnect_clip(&mut self.state.document.sequences[self.state.active_sequence_idx], clip_id);
-        self.state.push_history(EditCommand::Magnetic(result.command));
-        self.sync_sequence_to_engine();
-        self.state.dirty = true;
+        self.magnetic_step(|seq| klipp_timeline::magnetic::MagneticEditor::disconnect_clip(seq, clip_id));
         true
     }
 
@@ -78,7 +67,7 @@ impl KlippApp {
     pub(super) fn toggle_storyline(&mut self, clip_id: ClipId) -> bool {
         let seq = &self.state.document.sequences[self.state.active_sequence_idx];
         let Some(ti) = seq.tracks.iter().position(|t| t.clips.iter().any(|c| c.id == clip_id)) else { return false };
-        let result = match seq.tracks[ti].magnetic_role {
+        let anchor = match seq.tracks[ti].magnetic_role {
             klipp_timeline::TrackRole::Connected => {
                 let Some(primary_idx) = seq.primary_track_index() else { return false };
                 let Some(clip_in) = seq.tracks[ti].clips.first().map(|c| c.timeline_in) else { return false };
@@ -91,16 +80,22 @@ impl KlippApp {
                 else {
                     return false;
                 };
-                klipp_timeline::magnetic::MagneticEditor::promote_to_storyline(&mut self.state.document.sequences[self.state.active_sequence_idx], ti, anchor_id)
+                Some(anchor_id)
             }
-            klipp_timeline::TrackRole::ConnectedStoryline => {
-                klipp_timeline::magnetic::MagneticEditor::break_apart_storyline(&mut self.state.document.sequences[self.state.active_sequence_idx], ti)
-            }
+            klipp_timeline::TrackRole::ConnectedStoryline => None,
             _ => return false,
         };
-        self.state.push_history(EditCommand::Magnetic(result.command));
-        self.sync_sequence_to_engine();
-        self.state.dirty = true;
+        self.magnetic_step(|seq| match anchor {
+            Some(anchor_id) => klipp_timeline::magnetic::MagneticEditor::promote_to_storyline(seq, ti, anchor_id),
+            None => klipp_timeline::magnetic::MagneticEditor::break_apart_storyline(seq, ti),
+        });
         true
+    }
+
+    /// A magnetic edit of the active sequence made as one step: worked out
+    /// by `edit`, made through one commit, the engine told.
+    fn magnetic_step(&mut self, edit: impl FnOnce(&mut klipp_timeline::Sequence) -> klipp_timeline::magnetic::MagneticResult) {
+        self.commit_worked_out(|app| Some(EditCommand::Magnetic(edit(app.state.sequence_mut()).command)));
+        self.sync_sequence_to_engine();
     }
 }

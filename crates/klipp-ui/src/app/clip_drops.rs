@@ -106,24 +106,19 @@ pub(super) fn partner_over(state: &mut AppState, lid: ClipId, delta: Timecode) -
     Some(edits)
 }
 
-/// `edit` in the history, with `more` after it as one undo step when
-/// there is any.
-fn push_with(state: &mut AppState, edit: EditCommand, more: Vec<EditCommand>) {
-    if more.is_empty() {
-        state.push_history(edit);
-        return;
-    }
-    let batching = state.active_history_mut().is_batching();
-    if !batching {
-        state.active_history_mut().begin_batch();
-    }
-    state.push_history(edit);
-    for e in more {
-        state.push_history(e);
-    }
-    if !batching {
-        state.active_history_mut().end_batch_as("Move Clip");
-    }
+/// The move made as one step: `edit`, with `more` after it when there is
+/// any. The helpers worked it out on the sequence; it is put back to
+/// `before` and the step made through the state's commit, so what is
+/// applied is what the history holds.
+fn commit_move(state: &mut AppState, before: klipp_timeline::Sequence, edit: EditCommand, more: Vec<EditCommand>) {
+    let edit = if more.is_empty() {
+        edit
+    } else {
+        EditCommand::Named { label: "Move Clip".into(), edit: Box::new(EditCommand::Batch(std::iter::once(edit).chain(more).collect())) }
+    };
+    *state.sequence_mut() = before;
+    // The caller syncs the engine.
+    let _ = state.commit(edit);
 }
 
 /// `clip_id` moved along its track to start at `new_timeline_in`, laid
@@ -177,25 +172,25 @@ pub(super) fn move_clip(state: &mut AppState, clip_id: ClipId, new_timeline_in: 
     };
     let partner_edits = linked_id.filter(|lid| !partner_in_same_group && !track_is_locked(state, lid) && delta.value != 0).and_then(|lid| partner_over(state, lid, delta));
 
-    if let Some((old_in, old_out, new_in, new_out)) = primary_history {
-        let move_clip = EditCommand::LegacyMoveClip { clip_id, old_timeline_in: old_in, old_timeline_out: old_out, new_timeline_in: new_in, new_timeline_out: new_out, linked_partner: None };
-        push_with(state, move_clip, cover.into_iter().chain(partner_edits.into_iter().flatten()).collect());
-    }
+    // The clips grouped with it moved by the same amount, in the same
+    // step (the primary and its already-moved linked partner skipped).
+    // Moved after the step was recorded, undo left them where they went.
+    let group_moves: Vec<EditCommand> = match group_id.filter(|_| delta.value != 0) {
+        Some(gid) => state
+            .sequence()
+            .all_clips()
+            .filter(|c| c.group_id == Some(gid) && c.id != clip_id && Some(c.id) != linked_id)
+            .map(|c| EditCommand::LegacyMoveClip { clip_id: c.id, old_timeline_in: c.timeline_in, old_timeline_out: c.timeline_out, new_timeline_in: c.timeline_in + delta, new_timeline_out: c.timeline_out + delta, linked_partner: None })
+            .collect(),
+        None => Vec::new(),
+    };
 
-    // Propagate move to grouped clips (skip primary AND the
-    // already-moved linked partner to avoid double-moving).
-    if let Some(gid) = group_id {
-        if delta.value != 0 {
-            for track in &mut state.sequence_mut().tracks {
-                for clip in &mut track.clips {
-                    if clip.group_id == Some(gid) && clip.id != clip_id && Some(clip.id) != linked_id {
-                        clip.timeline_in += delta;
-                        clip.timeline_out += delta;
-                    }
-                }
-                track.sort_clips();
-            }
+    match primary_history {
+        Some((old_in, old_out, new_in, new_out)) => {
+            let move_clip = EditCommand::LegacyMoveClip { clip_id, old_timeline_in: old_in, old_timeline_out: old_out, new_timeline_in: new_in, new_timeline_out: new_out, linked_partner: None };
+            commit_move(state, before, move_clip, cover.into_iter().chain(partner_edits.into_iter().flatten()).chain(group_moves).collect());
         }
+        None => *state.sequence_mut() = before,
     }
 }
 
@@ -230,7 +225,7 @@ pub(super) fn move_to_track(state: &mut AppState, clip_id: ClipId, new_in: Timec
     let partner_edits = linked_id.filter(|lid| !track_is_locked(state, lid) && delta.value != 0).and_then(|lid| partner_over(state, lid, delta));
 
     let move_clip = EditCommand::LegacyMoveClipToTrack { clip: moved_clip, old_timeline_in: old_in, old_timeline_out: old_out, new_timeline_in: new_in, from_track: from, to_track: to, linked_partner: None };
-    push_with(state, move_clip, cover.into_iter().chain(partner_edits.into_iter().flatten()).collect());
+    commit_move(state, before, move_clip, cover.into_iter().chain(partner_edits.into_iter().flatten()).collect());
     true
 }
 
