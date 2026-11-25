@@ -308,3 +308,32 @@ fn a_generator_colour_dragged_is_one_step() {
     app.send_commands(vec![AppCommand::Undo]);
     assert_eq!(data(&app), Some(solid(10)), "one undo takes back the whole drag");
 }
+
+/// A clip duplicated lands right after itself, over the clip that follows,
+/// which it trims. Undo puts that clip back whole and redo trims it again:
+/// the step held only the copy, so undo left the next clip cut short and
+/// redo laid the copy over it.
+#[test]
+fn a_duplicate_over_the_next_clip_undoes_whole() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let media = klipp_core::MediaId::new();
+    let (a, b) = (klipp_timeline::Clip::media(media, at(0.0), at(2.0), at(0.0), at(2.0)), klipp_timeline::Clip::media(media, at(2.0), at(6.0), at(0.0), at(4.0)));
+    let (a_id, b_id) = (a.id, b.id);
+    let active = app.state.active_sequence_idx;
+    let track = app.state.document.sequences[active].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    app.state.document.sequences[active].tracks[track].clips.extend([a, b]);
+    let spans = |app: &KlippApp| app.state.sequence().tracks[track].clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect::<Vec<_>>();
+    let before = spans(&app);
+
+    app.send_commands(vec![AppCommand::DuplicateClip { clip_id: a_id }]);
+    let after = spans(&app);
+    let copy = app.state.selected_clip.expect("the copy is selected");
+    assert_eq!(after, vec![(a_id, at(0.0), at(2.0)), (copy, at(2.0), at(4.0)), (b_id, at(4.0), at(6.0))]);
+    assert_eq!(app.state.undo_depth(), 1);
+
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(spans(&app), before, "the next clip comes back whole");
+    app.send_commands(vec![AppCommand::Redo]);
+    assert_eq!(spans(&app), after, "redo trims it again");
+}
