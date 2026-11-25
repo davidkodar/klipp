@@ -6295,6 +6295,29 @@ impl AppState {
     /// bump the project-level autosave counter. Replaces the prior
     /// `state.active_history_mut().push(HistoryEntry { sequence_idx, command })`
     /// idiom — callers no longer pass a sequence index.
+    /// The document as a command runs against it: the sequences, the
+    /// active one, the media pool and the project rate, borrowed.
+    pub fn document_view(&mut self) -> klipp_document::apply::DocumentView<'_> {
+        klipp_document::apply::DocumentView {
+            sequences: &mut self.document.sequences,
+            active: self.active_sequence_idx,
+            media_pool: &mut self.document.media_pool,
+            fps: &mut self.fps,
+        }
+    }
+
+    /// Make `edit` as one step: applied to the document, recorded, and
+    /// the project marked unsaved (E1 step 3). What it asks of the engine
+    /// and the viewer comes back for the app to do ([`KlippApp::commit`]
+    /// does); state-only code whose caller syncs afterwards may drop it.
+    #[must_use = "the engine is told of the edit only by running its effects"]
+    pub fn commit(&mut self, edit: EditCommand) -> klipp_document::apply::Effects {
+        let effects = self.document_view().apply_forward(&edit);
+        self.push_history(edit);
+        self.dirty = true;
+        effects
+    }
+
     pub fn push_history(&mut self, command: EditCommand) {
         let command = self.with_made_tracks(command);
         let command = self.with_matched_follow(command);

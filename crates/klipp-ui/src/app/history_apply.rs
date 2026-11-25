@@ -45,9 +45,8 @@ impl KlippApp {
     /// project once it is on it (E1 step 3), in place of changing the
     /// sequence or pool itself and then recording what it did.
     pub(super) fn commit(&mut self, edit: EditCommand) {
-        self.apply_edit_forward(&edit);
-        self.state.push_history(edit);
-        self.state.dirty = true;
+        let effects = self.state.commit(edit);
+        self.run_document_effects(effects);
     }
 
     /// Clip `clip_id`'s keys, and those of `partner` with it, changed by
@@ -97,12 +96,7 @@ impl KlippApp {
     /// The document as a command runs against it: the UI's own state,
     /// borrowed field by field.
     fn document_view(&mut self) -> klipp_document::apply::DocumentView<'_> {
-        klipp_document::apply::DocumentView {
-            sequences: &mut self.state.document.sequences,
-            active: self.state.active_sequence_idx,
-            media_pool: &mut self.state.document.media_pool,
-            fps: &mut self.state.fps,
-        }
+        self.state.document_view()
     }
 
     /// What the document asked for once a command ran, done here where
