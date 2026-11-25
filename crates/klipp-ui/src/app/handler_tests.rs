@@ -81,3 +81,46 @@ fn a_matte_key_is_a_step_undo_takes_back() {
     app.send_commands(vec![AppCommand::Redo, AppCommand::Redo]);
     assert_eq!(keys(&app), (1, 1, 0));
 }
+
+/// A marker added, moved and taken off are a step each, undo walks them
+/// back, and each reaches the shared sequence the control socket reads.
+#[test]
+fn markers_are_steps_and_reach_the_shared_sequence() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let markers = |app: &KlippApp| app.state.sequence().markers.iter().map(|m| (m.label.clone(), m.position)).collect::<Vec<_>>();
+    let shared = |app: &KlippApp| app.sequence.snapshot().markers.len();
+
+    app.send_commands(vec![AppCommand::AddMarker { position: at(2.0), label: "B".into(), color: klipp_core::MarkerColor::Red }]);
+    app.send_commands(vec![AppCommand::AddMarker { position: at(1.0), label: "A".into(), color: klipp_core::MarkerColor::Red }]);
+    assert_eq!(markers(&app), [("A".to_string(), at(1.0)), ("B".to_string(), at(2.0))], "in time order");
+    assert_eq!(shared(&app), 2, "the shared sequence has them");
+    let b = app.state.sequence().markers[1].id;
+    app.send_commands(vec![AppCommand::MoveMarker { marker_id: b, position: at(3.0) }]);
+    app.send_commands(vec![AppCommand::RemoveMarker { marker_id: b }]);
+    assert_eq!((markers(&app).len(), app.state.undo_depth()), (1, 4), "four steps");
+    app.send_commands(vec![AppCommand::UpdateMarkerLabel { marker_id: klipp_core::MarkerId::new(), label: "none".into() }]);
+    assert_eq!(app.state.undo_depth(), 4, "a change to no marker is no step");
+
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(markers(&app)[1], ("B".to_string(), at(3.0)), "back, where it was moved to");
+    app.send_commands(vec![AppCommand::Undo, AppCommand::Undo]);
+    assert_eq!(markers(&app), [("B".to_string(), at(2.0))]);
+    assert_eq!(shared(&app), 1, "and the shared sequence with it");
+}
+
+/// Review comments imported are one step: one undo takes them all back.
+/// The import recorded its step and the dispatcher recorded the change
+/// again, so it took two.
+#[test]
+fn review_comments_imported_are_one_step() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let path = std::env::temp_dir().join(format!("klipp-review-{}.txt", std::process::id()));
+    std::fs::write(&path, "00:00:01 Too dark\n00:00:02 Cut sooner\n").unwrap();
+    app.send_commands(vec![AppCommand::ImportReviewComments { path: path.clone() }]);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!((app.state.sequence().markers.len(), app.state.undo_depth()), (2, 1));
+    app.send_commands(vec![AppCommand::Undo]);
+    assert!(app.state.sequence().markers.is_empty());
+    assert_eq!(app.state.undo_depth(), 0);
+}
