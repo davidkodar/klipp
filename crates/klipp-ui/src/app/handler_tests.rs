@@ -166,3 +166,26 @@ fn an_audio_key_is_one_step_for_the_pair() {
     app.send_commands(vec![AppCommand::Undo, AppCommand::Undo]);
     assert_eq!(keys(&app), (0, 0));
 }
+
+/// Audio keys scaled in time, a bump laid in and an interpolation set are
+/// a step each, on the clip and its partner, and undo takes each back.
+#[test]
+fn audio_key_shapes_are_one_step_each_for_the_pair() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let (picture, sound) = linked_pair(&mut app);
+    let param = klipp_core::AudioParam::Volume;
+    let keys = |app: &KlippApp, id| app.state.sequence().all_clips().find(|c| c.id == id).unwrap().volume_keyframes.clone();
+    app.send_commands(vec![AppCommand::AddAudioKeyframe { clip_id: picture, param, time_secs: 1.0, value: 0.5 }]);
+    app.send_commands(vec![AppCommand::ScaleAudioKeyframeTiming { clip_id: picture, param, factor: 2.0 }]);
+    assert_eq!((keys(&app, picture)[0].time_secs, keys(&app, sound)[0].time_secs), (2.0, 2.0), "both scaled");
+    app.send_commands(vec![AppCommand::InsertAudioKeyframeBump { clip_id: picture, param, center_time: 3.0, bump_value: 1.0, base_value: 0.5, duration_secs: 0.5, ramp_secs: 0.25 }]);
+    assert_eq!((keys(&app, picture).len(), keys(&app, sound).len()), (5, 5), "a bump of four on each");
+    app.send_commands(vec![AppCommand::SetAudioKeyframeInterpolation { clip_id: picture, param, keyframe_index: 0, interpolation: klipp_core::Interpolation::Bezier }]);
+    assert_eq!(keys(&app, sound)[0].interpolation, klipp_core::Interpolation::Bezier);
+    assert_eq!((app.state.undo_depth(), app.state.undo_label().as_deref()), (4, Some("Set Keyframe Interpolation")));
+
+    app.send_commands(vec![AppCommand::Undo, AppCommand::Undo]);
+    assert_eq!((keys(&app, picture).len(), keys(&app, sound)[0].interpolation), (1, klipp_core::Interpolation::Linear));
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!((keys(&app, picture)[0].time_secs, keys(&app, sound)[0].time_secs), (1.0, 1.0), "the scaling back");
+}
