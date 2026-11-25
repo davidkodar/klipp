@@ -472,3 +472,121 @@ fn a_subclip_is_one_step() {
     app.send_commands(vec![AppCommand::Redo]);
     assert_eq!(subclips(&app), made);
 }
+
+/// The timeline, every field, with the tracks' ids left out: a track an
+/// edit made is made again on redo as a new one, the same in all else.
+fn contents(app: &KlippApp) -> serde_json::Value {
+    let mut v = serde_json::to_value(app.state.sequence()).unwrap();
+    for track in v["tracks"].as_array_mut().into_iter().flatten() {
+        track["id"] = serde_json::Value::Null;
+    }
+    v
+}
+
+/// `send` makes one step; undo gives the timeline back and redo the one
+/// it made, field for field.
+fn redoes_as_made(app: &mut KlippApp, send: Vec<AppCommand>) {
+    app.suppress_fps_prompt = true;
+    let before = contents(app);
+    let depth = app.state.undo_depth();
+    app.send_commands(send);
+    let made = contents(app);
+    assert_ne!(made, before, "the edit changed the timeline");
+    assert_eq!(app.state.undo_depth(), depth + 1, "one step");
+    assert!(app.state.dirty);
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(contents(app), before, "undo gives the timeline back");
+    app.send_commands(vec![AppCommand::Redo]);
+    assert_eq!(contents(app), made, "redo makes it as the edit made it");
+}
+
+fn a_file(app: &mut KlippApp) -> klipp_core::MediaId {
+    app.state.document.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/media/shot.mov".into(), None))
+}
+
+/// A file appended to the primary storyline, its sound linked under it.
+#[test]
+fn an_append_to_the_storyline_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    linked_pair(&mut app);
+    let media_id = a_file(&mut app);
+    let track_index = app.state.sequence().primary_track_index().unwrap();
+    redoes_as_made(&mut app, vec![AppCommand::AppendClipToTrack { media_id, track_index }]);
+}
+
+/// A file appended to a free video track, its sound linked under it, and
+/// without its sound when the audio target is off.
+#[test]
+fn an_append_to_a_free_track_redoes_as_made() {
+    for brings_audio in [true, false] {
+        let (mut app, _engine) = KlippApp::for_test();
+        app.state.append_brings_audio = brings_audio;
+        linked_pair(&mut app);
+        app.state.sequence_mut().add_video_track("Video 2".into());
+        let track_index = app.state.sequence().tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video && t.magnetic_role != klipp_timeline::TrackRole::Primary).unwrap();
+        let media_id = a_file(&mut app);
+        redoes_as_made(&mut app, vec![AppCommand::AppendClipToTrack { media_id, track_index }]);
+    }
+}
+
+/// A file put at the playhead on tracks of its own, linked.
+#[test]
+fn a_file_at_the_playhead_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    linked_pair(&mut app);
+    app.state.playhead = klipp_core::RationalTime::from_secs_f64(1.0, 24);
+    let media_id = a_file(&mut app);
+    redoes_as_made(&mut app, vec![AppCommand::PlaceMedia { media_id, drop: klipp_core::events::ClipDrop::AtPlayhead }]);
+}
+
+/// The source laid on the primary storyline by Insert and by Overwrite,
+/// its sound linked under it.
+#[test]
+fn a_source_edit_on_the_storyline_redoes_as_made() {
+    for cmd in [AppCommand::InsertEdit, AppCommand::OverwriteEdit] {
+        let (mut app, _engine) = KlippApp::for_test();
+        linked_pair(&mut app);
+        let source = a_file(&mut app);
+        app.state.source_media_id = Some(source);
+        app.state.playhead = klipp_core::RationalTime::from_secs_f64(4.0, 24);
+        redoes_as_made(&mut app, vec![cmd]);
+    }
+}
+
+/// The first file put on an empty timeline at the playhead: the sequence
+/// takes its size and rate in the same step, and redo takes them again.
+#[test]
+fn a_first_file_at_the_playhead_redoes_its_format() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/media/shot.mov".into(), None);
+    (item.resolution, item.fps) = (klipp_core::Resolution { width: 3840, height: 2160 }, klipp_core::Fps::new(50, 1));
+    let media_id = app.state.document.media_pool.add(item);
+    redoes_as_made(&mut app, vec![AppCommand::PlaceMedia { media_id, drop: klipp_core::events::ClipDrop::AtPlayhead }]);
+    assert_eq!(app.state.sequence().fps, klipp_core::Fps::new(50, 1), "the sequence took the file's rate");
+    assert_eq!(app.state.fps, app.state.sequence().fps);
+}
+
+/// Appended and source-edited on the storyline with no audio track: the
+/// audio track made for the sound is in the step, undone and redone with it.
+#[test]
+fn a_storyline_edit_that_makes_its_audio_track_redoes_as_made() {
+    let sends = |media_id, track_index| vec![
+        vec![AppCommand::AppendClipToTrack { media_id, track_index }],
+        vec![AppCommand::InsertEdit],
+        vec![AppCommand::OverwriteEdit],
+    ];
+    for i in 0..3 {
+        let (mut app, _engine) = KlippApp::for_test();
+        app.state.sequence_mut().tracks.retain(|t| t.kind != klipp_timeline::TrackKind::Audio);
+        app.state.mark_saved();
+        let media_id = a_file(&mut app);
+        app.state.source_media_id = Some(media_id);
+        let track_index = app.state.sequence().primary_track_index().unwrap();
+        let tracks = app.state.sequence().tracks.len();
+        redoes_as_made(&mut app, sends(media_id, track_index).swap_remove(i));
+        assert_eq!(app.state.sequence().tracks.len(), tracks + 1, "an audio track made");
+        assert!(app.state.sequence().tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Audio && !t.clips.is_empty()), "the sound on it");
+        app.send_commands(vec![AppCommand::Undo]);
+        assert_eq!(app.state.sequence().tracks.len(), tracks, "undo takes the track away");
+    }
+}

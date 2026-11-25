@@ -36,73 +36,70 @@ impl KlippApp {
                                     clip.source_rotation = item.source_rotation;
                                     super::media::starting_role_on(&mut clip, item);
                                 }
-                                let result = klipp_timeline::magnetic::MagneticEditor::append_primary(
-                                    &mut self.state.document.sequences[self.state.active_sequence_idx], clip);
-                                // Get the clip id from the result
-                                let mut appended_id = None;
-                                if let klipp_timeline::magnetic_commands::MagneticEditCommand::AppendPrimary { ref appended_clip, .. } = result.command {
-                                    self.state.selected_clip = Some(appended_clip.id);
-                                    appended_id = Some(appended_clip.id);
-                                }
-                                // The file's audio, linked to it.
-                                // `SourceLinkedInsert` is the entry that
-                                // carries a magnetic video edit plus an
-                                // audio track's before and after, so the
-                                // pair is still one undo.
-                                let audio = appended_id.and_then(|id| self.append_linked_audio(*media_id, id));
-                                match audio {
-                                    Some(a) => {
-                                        // The clip as it now is, linked: the
-                                        // append recorded it before its sound
-                                        // was put under it, so a redo put it
-                                        // back unlinked (#2633).
-                                        let mut video_command = result.command;
-                                        if let klipp_timeline::magnetic_commands::MagneticEditCommand::AppendPrimary { ref mut appended_clip, .. } = video_command {
-                                            appended_clip.linked_clip_id = Some(a.clip.id);
-                                        }
-                                        self.state.push_history(EditCommand::SourceLinkedInsert {
+                                // Worked out in place, then made through one
+                                // commit: the step recorded is what is applied.
+                                self.commit_worked_out(|app| {
+                                    let active = app.state.active_sequence_idx;
+                                    let result = klipp_timeline::magnetic::MagneticEditor::append_primary(
+                                        &mut app.state.document.sequences[active], clip);
+                                    let mut video_command = result.command;
+                                    let klipp_timeline::magnetic_commands::MagneticEditCommand::AppendPrimary { appended_clip, .. } = &mut video_command else {
+                                        return Some(EditCommand::Magnetic(video_command));
+                                    };
+                                    let appended_id = appended_clip.id;
+                                    app.state.selected_clip = Some(appended_id);
+                                    // The file's audio, linked to it.
+                                    // `SourceLinkedInsert` carries a magnetic
+                                    // video edit plus an audio track's before
+                                    // and after, so the pair is one undo.
+                                    let Some(a) = app.append_linked_audio(*media_id, appended_id) else {
+                                        return Some(EditCommand::Magnetic(video_command));
+                                    };
+                                    // The clip as it now is, linked: the append
+                                    // recorded it before its sound was put under
+                                    // it, so a redo put it back unlinked (#2633).
+                                    if let klipp_timeline::magnetic_commands::MagneticEditCommand::AppendPrimary { appended_clip, .. } = &mut video_command {
+                                        appended_clip.linked_clip_id = Some(a.clip.id);
+                                    }
+                                    Some(EditCommand::SourceLinkedInsert {
                                         video_command,
                                         audio_track_index: a.track_index,
                                         audio_clips_before: a.clips_before,
                                         audio_clips_after: a.clips_after,
-                                    });
-                                    }
-                                    None => self.state.push_history(EditCommand::Magnetic(result.command)),
-                                }
+                                    })
+                                });
                                 self.sync_sequence_to_engine();
-                                self.state.dirty = true;
                             } else {
                                 // Legacy path for Free tracks
                                 let mid = *media_id;
-                                let track = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index).unwrap();
-                                let clip_id = track.append_clip(mid, duration);
-                                let rotation = self.state.document.media_pool.get(&mid).map_or(0, |i| i.source_rotation);
-                                if let Some(c) = self.state.document.sequences[self.state.active_sequence_idx]
-                                    .tracks[*track_index]
-                                    .find_clip_mut(clip_id)
-                                {
-                                    c.source_rotation = rotation;
-                                }
-                                self.apply_input_defaults(clip_id, mid);
-                                // The file's audio, linked to it.
-                                let audio = self.append_linked_audio(mid, clip_id);
-                                let clip = self.state.document.sequences[self.state.active_sequence_idx].tracks[*track_index].find_clip(clip_id).unwrap().clone();
-                                match audio {
-                                    Some(a) => self.state.push_history(EditCommand::LinkedImport {
-                                        video: Some((clip, *track_index)),
-                                        audio: Some((a.clip, a.track_index)),
-                                        created_video_track_at: None,
-                                        created_audio_track_at: a.created_track_at,
-                                        autoset: None,
-                                    }),
-                                    None => self.state.push_history(EditCommand::LegacyAppendClip {
-                                        clip,
-                                        track_index: *track_index,
-                                    }),
-                                }
+                                let ti = *track_index;
+                                let mut clip_id = None;
+                                self.commit_worked_out(|app| {
+                                    let active = app.state.active_sequence_idx;
+                                    let id = app.state.document.sequences[active].tracks[ti].append_clip(mid, duration);
+                                    clip_id = Some(id);
+                                    let rotation = app.state.document.media_pool.get(&mid).map_or(0, |i| i.source_rotation);
+                                    if let Some(c) = app.state.document.sequences[active].tracks[ti].find_clip_mut(id) {
+                                        c.source_rotation = rotation;
+                                    }
+                                    app.apply_input_defaults(id, mid);
+                                    // The file's audio, linked to it.
+                                    let audio = app.append_linked_audio(mid, id);
+                                    let clip = app.state.document.sequences[active].tracks[ti].find_clip(id)?.clone();
+                                    Some(match audio {
+                                        Some(a) => EditCommand::LinkedImport {
+                                            video: Some((clip, ti)),
+                                            audio: Some((a.clip, a.track_index)),
+                                            created_video_track_at: None,
+                                            created_audio_track_at: a.created_track_at,
+                                            autoset: None,
+                                        },
+                                        None => EditCommand::LegacyAppendClip { clip, track_index: ti },
+                                    })
+                                });
+                                let Some(clip_id) = clip_id else { return };
                                 self.sync_sequence_to_engine();
                                 self.state.selected_clip = Some(clip_id);
-                                self.state.dirty = true;
                                 // Sound under the picture ends with it (#2983).
                                 if item.video_codec.is_empty() {
                                     self.trim_sound_to_picture(clip_id);
@@ -208,8 +205,8 @@ impl KlippApp {
 
     /// Perform a Source-Viewer three-point edit (Insert or Overwrite) on the
     /// magnetic primary track, wiring up a linked audio partner on a
-    /// connected audio track when the source has audio. Pushes exactly one
-    /// history entry — `EditCommand::SourceLinkedInsert` when an audio
+    /// connected audio track when the source has audio. Makes exactly one
+    /// step — `EditCommand::SourceLinkedInsert` when an audio
     /// partner was created, else `EditCommand::Magnetic`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_source_magnetic_edit(
@@ -224,91 +221,94 @@ impl KlippApp {
         source_out: Timecode,
         mode: klipp_timeline::magnetic::EditMode,
     ) {
-        let has_linked_audio = item.has_audio;
-        let video_clip_id = new_clip.id;
+        debug_assert_eq!(seq_idx, self.state.active_sequence_idx, "the source edits the active sequence");
+        // Worked out in place, then made through one commit: the step
+        // recorded is what is applied.
+        self.commit_worked_out(|app| {
+            let has_linked_audio = item.has_audio;
+            let video_clip_id = new_clip.id;
 
-        // Pre-generate audio clip id so the video clip can carry
-        // linked_clip_id into the magnetic command for later undo.
-        let audio_clip_id = if has_linked_audio {
-            let aid = klipp_core::ClipId::new();
-            new_clip.linked_clip_id = Some(aid);
-            Some(aid)
-        } else {
-            None
-        };
+            // Pre-generate audio clip id so the video clip can carry
+            // linked_clip_id into the magnetic command for later undo.
+            let audio_clip_id = if has_linked_audio {
+                let aid = klipp_core::ClipId::new();
+                new_clip.linked_clip_id = Some(aid);
+                Some(aid)
+            } else {
+                None
+            };
 
-        // Locate or auto-create the audio track BEFORE the magnetic edit so
-        // we can snapshot its clip list — magnetic's connected-track cascade
-        // may move anchored A1 clips, and the snapshot captures the true
-        // pre-edit state.
-        let audio_track_info: Option<(usize, Vec<klipp_timeline::Clip>)> = if has_linked_audio {
-            let existing = self.state.document.sequences[seq_idx].tracks.iter()
-                .position(|t| t.kind == klipp_timeline::TrackKind::Audio);
-            let ai = existing.unwrap_or_else(|| {
-                let seq = &mut self.state.document.sequences[seq_idx];
-                let audio_count = seq.tracks.iter()
-                    .filter(|t| t.kind == klipp_timeline::TrackKind::Audio)
-                    .count();
-                seq.add_audio_track(format!("Audio {}", audio_count + 1));
-                seq.tracks.iter()
-                    .position(|t| t.kind == klipp_timeline::TrackKind::Audio)
-                    .expect("audio track just added")
-            });
-            let before = self.state.document.sequences[seq_idx].tracks[ai].clips.clone();
-            Some((ai, before))
-        } else {
-            None
-        };
+            // Locate or auto-create the audio track BEFORE the magnetic edit so
+            // we can snapshot its clip list — magnetic's connected-track cascade
+            // may move anchored A1 clips, and the snapshot captures the true
+            // pre-edit state.
+            let audio_track_info: Option<(usize, Vec<klipp_timeline::Clip>)> = if has_linked_audio {
+                let existing = app.state.document.sequences[seq_idx].tracks.iter()
+                    .position(|t| t.kind == klipp_timeline::TrackKind::Audio);
+                let ai = existing.unwrap_or_else(|| {
+                    let seq = &mut app.state.document.sequences[seq_idx];
+                    let audio_count = seq.tracks.iter()
+                        .filter(|t| t.kind == klipp_timeline::TrackKind::Audio)
+                        .count();
+                    seq.add_audio_track(format!("Audio {}", audio_count + 1));
+                    seq.tracks.iter()
+                        .position(|t| t.kind == klipp_timeline::TrackKind::Audio)
+                        .expect("audio track just added")
+                });
+                let before = app.state.document.sequences[seq_idx].tracks[ai].clips.clone();
+                Some((ai, before))
+            } else {
+                None
+            };
 
-        // At the time the edit names (the playhead or the In), where the
-        // person put it: the magnetic layer's own snap (8 frames at any
-        // zoom) would move it to a nearby cut (#3056).
-        let result = klipp_timeline::magnetic::MagneticEditor::three_point_edit(
-            &mut self.state.document.sequences[seq_idx],
-            new_clip,
-            timeline_in,
-            true,
-            mode,
-            None,
-            Some(&klipp_timeline::magnetic::PLACED),
-        );
+            // At the time the edit names (the playhead or the In), where the
+            // person put it: the magnetic layer's own snap (8 frames at any
+            // zoom) would move it to a nearby cut (#3056).
+            let result = klipp_timeline::magnetic::MagneticEditor::three_point_edit(
+                &mut app.state.document.sequences[seq_idx],
+                new_clip,
+                timeline_in,
+                true,
+                mode,
+                None,
+                Some(&klipp_timeline::magnetic::PLACED),
+            );
 
-        match (audio_clip_id, audio_track_info) {
-            (Some(aid), Some((ai, audio_clips_before))) => {
-                // Under the picture, where the edit put it (#3456): the
-                // primary closes up, so a picture asked for past its end
-                // lands at its end, not at the time asked.
-                let (sound_in, sound_out) = under_picture(&self.state.document.sequences[seq_idx], video_clip_id).unwrap_or((timeline_in, timeline_in + dur));
-                let mut audio_clip = klipp_timeline::Clip::media(
-                    mid,
-                    sound_in,
-                    sound_out,
-                    source_in,
-                    source_out,
-                );
-                audio_clip.id = aid;
-                audio_clip.linked_clip_id = Some(video_clip_id);
-                // overwrite_insert_clip_on_track is safe for both modes:
-                // for Insert, any anchored A1 clips have already been
-                // cascaded by the magnetic primary edit, leaving a clean
-                // slot; for non-anchored overlap, overwrite semantics
-                // prevent pile-up. A per-mode audio ripple is a future
-                // polish tracked separately.
-                if let Some(track) = self.state.document.sequences[seq_idx].tracks.get_mut(ai) {
-                    Self::overwrite_insert_clip_on_track(track, audio_clip);
-                }
-                let audio_clips_after = self.state.document.sequences[seq_idx].tracks[ai].clips.clone();
-                self.state.push_history(EditCommand::SourceLinkedInsert {
+            match (audio_clip_id, audio_track_info) {
+                (Some(aid), Some((ai, audio_clips_before))) => {
+                    // Under the picture, where the edit put it (#3456): the
+                    // primary closes up, so a picture asked for past its end
+                    // lands at its end, not at the time asked.
+                    let (sound_in, sound_out) = under_picture(&app.state.document.sequences[seq_idx], video_clip_id).unwrap_or((timeline_in, timeline_in + dur));
+                    let mut audio_clip = klipp_timeline::Clip::media(
+                        mid,
+                        sound_in,
+                        sound_out,
+                        source_in,
+                        source_out,
+                    );
+                    audio_clip.id = aid;
+                    audio_clip.linked_clip_id = Some(video_clip_id);
+                    // overwrite_insert_clip_on_track is safe for both modes:
+                    // for Insert, any anchored A1 clips have already been
+                    // cascaded by the magnetic primary edit, leaving a clean
+                    // slot; for non-anchored overlap, overwrite semantics
+                    // prevent pile-up. A per-mode audio ripple is a future
+                    // polish tracked separately.
+                    if let Some(track) = app.state.document.sequences[seq_idx].tracks.get_mut(ai) {
+                        Self::overwrite_insert_clip_on_track(track, audio_clip);
+                    }
+                    let audio_clips_after = app.state.document.sequences[seq_idx].tracks[ai].clips.clone();
+                    Some(EditCommand::SourceLinkedInsert {
                         video_command: result.command,
                         audio_track_index: ai,
                         audio_clips_before,
                         audio_clips_after,
-                    });
+                    })
+                }
+                _ => Some(EditCommand::Magnetic(result.command)),
             }
-            _ => {
-                self.state.push_history(EditCommand::Magnetic(result.command));
-            }
-        }
+        });
     }
 
     /// Drop an already-imported pool item on the timeline at the
@@ -319,15 +319,17 @@ impl KlippApp {
     /// right-click equivalent.
     pub(super) fn place_media_at_playhead(&mut self, media_id: klipp_core::MediaId) {
         let start = self.state.playhead;
-        if let Some((video, mut entry)) = self.place_media_on_new_tracks(media_id, start) {
-            self.refresh_placement_snapshot(self.state.active_sequence_idx, &mut entry);
-            self.state.active_history_mut().push(crate::history::HistoryEntry { command: entry });
-            // A sound-only file under the picture ends with it (#2983).
-            if let (None, Some(sound)) = (video, self.state.selected_clip) {
-                self.trim_sound_to_picture(sound);
-            }
+        let mut placed = None;
+        self.commit_worked_out(|app| {
+            let (video, mut entry) = app.place_media_on_new_tracks(media_id, start)?;
+            app.refresh_placement_snapshot(app.state.active_sequence_idx, &mut entry);
+            placed = Some(video);
+            Some(entry)
+        });
+        // A sound-only file under the picture ends with it (#2983).
+        if let (Some(None), Some(sound)) = (placed, self.state.selected_clip) {
+            self.trim_sound_to_picture(sound);
         }
-        self.state.dirty = true;
         self.sync_sequence_to_engine();
     }
 

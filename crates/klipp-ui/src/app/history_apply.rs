@@ -49,6 +49,27 @@ impl KlippApp {
         self.run_document_effects(effects);
     }
 
+    /// An edit worked out by helpers that change the active sequence in
+    /// place: `work` makes it there and returns the step it recorded,
+    /// then the sequence is put back as it was and the step made through
+    /// [`Self::commit`]. What the step records is then what is applied,
+    /// now and on redo; a step that recorded less than its helpers did
+    /// shows at once, not first on a redo. `None` is no step, and the
+    /// sequence is put back all the same.
+    pub(super) fn commit_worked_out(&mut self, work: impl FnOnce(&mut Self) -> Option<EditCommand>) {
+        let active = self.state.active_sequence_idx;
+        let before = self.state.document.sequences[active].clone();
+        // A track the helpers made for it goes into the step while it is
+        // still there to see; put back first, it would be gone, and what
+        // the step put on it with it.
+        let edit = work(self).map(|edit| self.state.with_made_tracks(edit));
+        debug_assert_eq!(self.state.active_sequence_idx, active, "the edit stays on its sequence");
+        self.state.document.sequences[active] = before;
+        if let Some(edit) = edit {
+            self.commit(edit);
+        }
+    }
+
     /// Clip `clip_id`'s keys, and those of `partner` with it, changed by
     /// `f` on copies of the two and committed as one keyframe step named
     /// `description`; nothing when the clip is gone or `f` changes no key.
