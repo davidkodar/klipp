@@ -37,111 +37,26 @@ impl KlippApp {
         match cmd {
                 AppCommand::AddAudioEffectKeyframe { clip_id, effect_index, param_name, time_secs, value } => {
                     let key = format!("{}:{}", effect_index, param_name);
-                    // Same drag key the BeginAudioChainDrag /
-                    // EndAudioChainDrag pair uses — when a slider drag
-                    // is active, the auto-update path
-                    // (`dispatch_audio_kf_response`) fires
-                    // AddAudioEffectKeyframe per drag tick. Without
-                    // this is_dragging gate every tick was pushing a
-                    // separate EditKeyframes entry, replicating the
-                    // 60 Hz "Auto saved" spam on the kf'd-slider path
-                    // (the static-slider path is already gated via
-                    // UpdateAudioEffectParam). The Begin/End pair
-                    // already snapshots the full clip state including
-                    // audio_effect_keyframes, so undo rolls back the
-                    // entire drag in one step.
-                    let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
-                    let is_dragging = self.state.active_history().is_dragging(&drag_key);
-                    let old_state = if !is_dragging {
-                        self.state.document.sequences[self.state.active_sequence_idx].all_clips()
-                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip)
-                    } else {
-                        None
-                    };
                     // `__bypass` defaults to Step interpolation (it's an
                     // on/off toggle); other params default to Linear.
-                    let default_interp = if param_name == "__bypass" {
-                        klipp_core::Interpolation::Step
-                    } else {
-                        klipp_core::Interpolation::Linear
+                    let default_interp = if param_name == "__bypass" { klipp_core::Interpolation::Step } else { klipp_core::Interpolation::Linear };
+                    let add = |clip: &mut klipp_timeline::Clip| {
+                        klipp_core::keyframe::upsert_keyframe_with_interpolation(clip.audio_effect_keyframes.entry(key.clone()).or_default(), *time_secs, *value, default_interp);
                     };
-                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let keyframes = clip.audio_effect_keyframes.entry(key.clone()).or_default();
-                            klipp_core::keyframe::upsert_keyframe_with_interpolation(keyframes, *time_secs, *value, default_interp);
-                            break;
-                        }
-                    }
-                    if !is_dragging {
-                        if let Some(old_snap) = old_state {
-                            let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
-                                .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                            if let Some(new_snap) = new_snap {
-                                self.state.push_history(EditCommand::EditKeyframes {
-                                        clip_id: *clip_id,
-                                        linked_clip_id: None,
-                                        description: "Add Audio Effect Keyframe",
-                                        old_state: old_snap,
-                                        new_state: new_snap,
-                                        old_linked_state: None,
-                                        new_linked_state: None,
-                                    });
-                            }
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                    self.state.dirty = true;
+                    self.audio_effect_key_edit(*clip_id, *effect_index, param_name, "Add Audio Effect Keyframe", add);
                     true
                 }
                 AppCommand::RemoveAudioEffectKeyframe { clip_id, effect_index, param_name, time_secs } => {
                     let key = format!("{}:{}", effect_index, param_name);
-                    // See AddAudioEffectKeyframe above for the
-                    // is_dragging contract — diamond toggles fire this
-                    // path during a drag too (when scrubby_param's
-                    // auto-update detects the user re-crossed an
-                    // existing kf at the playhead and the value is
-                    // being removed in place). Skip the per-tick push
-                    // and let the Begin/End wrap own the history.
-                    let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
-                    let is_dragging = self.state.active_history().is_dragging(&drag_key);
-                    let old_state = if !is_dragging {
-                        self.state.document.sequences[self.state.active_sequence_idx].all_clips()
-                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip)
-                    } else {
-                        None
+                    let remove = |clip: &mut klipp_timeline::Clip| {
+                        if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                            klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
+                            if keyframes.is_empty() {
+                                clip.audio_effect_keyframes.remove(&key);
+                            }
+                        }
                     };
-                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
-                                klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
-                                if keyframes.is_empty() {
-                                    clip.audio_effect_keyframes.remove(&key);
-                                }
-                            }
-                            break;
-                        }
-                    }
-                    if !is_dragging {
-                        if let Some(old_snap) = old_state {
-                            let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
-                                .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                            if let Some(new_snap) = new_snap {
-                                self.state.push_history(EditCommand::EditKeyframes {
-                                        clip_id: *clip_id,
-                                        linked_clip_id: None,
-                                        description: "Remove Audio Effect Keyframe",
-                                        old_state: old_snap,
-                                        new_state: new_snap,
-                                        old_linked_state: None,
-                                        new_linked_state: None,
-                                    });
-                            }
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                    self.state.dirty = true;
+                    self.audio_effect_key_edit(*clip_id, *effect_index, param_name, "Remove Audio Effect Keyframe", remove);
                     true
                 }
                 AppCommand::MoveAudioEffectKeyframe { .. } => {
@@ -153,34 +68,11 @@ impl KlippApp {
                 }
                 AppCommand::SetAudioEffectKeyframeInterpolation { clip_id, effect_index, param_name, keyframe_index, interpolation } => {
                     let key = format!("{}:{}", effect_index, param_name);
-                    let old_state = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
-                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
-                                klipp_core::keyframe::set_interpolation_at(keyframes, *keyframe_index, *interpolation);
-                            }
-                            break;
+                    self.edit_clip_keys(*clip_id, None, "Set Audio Keyframe Interpolation", |clip, _| {
+                        if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                            klipp_core::keyframe::set_interpolation_at(keyframes, *keyframe_index, *interpolation);
                         }
-                    }
-                    if let Some(old_snap) = old_state {
-                        let new_snap = self.state.document.sequences[self.state.active_sequence_idx].all_clips()
-                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                        if let Some(new_snap) = new_snap {
-                            self.state.push_history(EditCommand::EditKeyframes {
-                                    clip_id: *clip_id,
-                                    linked_clip_id: None,
-                                    description: "Set Audio Keyframe Interpolation",
-                                    old_state: old_snap,
-                                    new_state: new_snap,
-                                    old_linked_state: None,
-                                    new_linked_state: None,
-                                });
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                    self.state.dirty = true;
+                    });
                     true
                 }
                 AppCommand::SetAudioEffectKeyframeTangent { .. } => {
@@ -508,4 +400,25 @@ pub(super) fn audio_effect_key_write(state: &mut crate::state::AppState, cmd: &A
         }
     }
     true
+}
+
+impl KlippApp {
+    /// An audio effect's key on `clip_id` changed by `f`: one step through
+    /// [`Self::edit_clip_keys`], or, while that parameter's slider is
+    /// dragged, the change alone, which the drag's begin and end record as
+    /// one step (else every tick was a step of its own).
+    fn audio_effect_key_edit(&mut self, clip_id: klipp_core::ClipId, effect_index: usize, param_name: &str, description: &'static str, f: impl FnOnce(&mut klipp_timeline::Clip)) {
+        let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
+        if !self.state.active_history().is_dragging(&drag_key) {
+            self.edit_clip_keys(clip_id, None, description, |clip, _| f(clip));
+            return;
+        }
+        let active = self.state.active_sequence_idx;
+        if let Some(clip) = self.state.document.sequences[active].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) {
+            f(clip);
+        }
+        self.sync_sequence_to_engine();
+        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+        self.state.dirty = true;
+    }
 }
