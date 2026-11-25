@@ -466,11 +466,9 @@ impl KlippApp {
                     let (selected, playhead) = (self.state.selected_clip, self.state.playhead);
                     match crate::selection::range_to_clip(self.state.sequence(), selected, playhead) {
                         Some((new_in, new_out)) => {
-                            let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
+                            let seq = self.state.sequence();
                             let (old_in, old_out) = (seq.in_point, seq.out_point);
-                            seq.in_point = Some(new_in);
-                            seq.out_point = Some(new_out);
-                            self.state.push_history(crate::history::EditCommand::SetRange { old_in, old_out, new_in: Some(new_in), new_out: Some(new_out) });
+                            self.commit(crate::history::EditCommand::SetRange { old_in, old_out, new_in: Some(new_in), new_out: Some(new_out) });
                             self.state.toast.show("Range: clip marked");
                             self.sync_sequence_to_engine();
                         }
@@ -819,7 +817,10 @@ impl KlippApp {
                                 // rippled by the clip's length, so they stay
                                 // in sync; a straddling clip is split. See
                                 // klipp_timeline::insert_edit.
-                                let Some(mut edit) = self.state.document.sequences[seq_idx].insert_edit(target, new_clip, timeline_in) else {
+                                // Worked out on a copy, then made as one
+                                // commit: the insert and its redo are one code.
+                                let mut trial = self.state.document.sequences[seq_idx].clone();
+                                let Some(mut edit) = trial.insert_edit(target, new_clip, timeline_in) else {
                                     self.state.toast.show("Target track is locked");
                                     return true;
                                 };
@@ -830,12 +831,12 @@ impl KlippApp {
                                 // none. The record's clip takes the link so a
                                 // redo brings it back linked.
                                 let (audio, created_audio_track_at) = if item.has_audio && !is_audio_only {
-                                    let external = self.state.document.sequences[seq_idx]
+                                    let external = trial
                             .all_clips()
                             .find(|c| c.id == new_id)
                             .and_then(|c| c.media_id())
                             .and_then(|m| self.external_audio_of(m));
-                        match attach_linked_audio_to_clip(&mut self.state.document.sequences[seq_idx], new_id, external) {
+                        match attach_linked_audio_to_clip(&mut trial, new_id, external) {
                                         Some(a) => {
                                             edit.clip.linked_clip_id = Some(a.clip.id);
                                             (Some((a.clip, a.track_index)), a.created_track_at)
@@ -845,7 +846,7 @@ impl KlippApp {
                                 } else {
                                     (None, None)
                                 };
-                                self.state.push_history(EditCommand::LegacyInsertEdit { edit, audio, created_audio_track_at });
+                                self.commit(EditCommand::LegacyInsertEdit { edit, audio, created_audio_track_at });
                             }
                             self.state.selected_clip = Some(new_id);
                             self.state.dirty = true;
@@ -1004,11 +1005,11 @@ impl KlippApp {
                     // At the playhead, where the person put it: the
                     // magnetic layer's own snap (8 frames at any zoom)
                     // would move it to a nearby cut (#3056).
+                    // Worked out on a copy, then made as one commit.
+                    let mut trial = self.state.sequence().clone();
                     let result = klipp_timeline::magnetic::MagneticEditor::insert_gap(
-                        &mut self.state.document.sequences[self.state.active_sequence_idx],
-                        one_sec, playhead, None, Some(&klipp_timeline::magnetic::PLACED));
-                    self.state.push_history(EditCommand::Magnetic(result.command));
-                    self.state.dirty = true;
+                        &mut trial, one_sec, playhead, None, Some(&klipp_timeline::magnetic::PLACED));
+                    self.commit(EditCommand::Magnetic(result.command));
                     self.sync_sequence_to_engine();
                     true
                 }
@@ -1357,12 +1358,7 @@ impl KlippApp {
         subclip.waveform_data = None;
         subclip.audio_cache = None;
 
-        self.state.document.media_pool.add(subclip.clone());
-        self.state.push_history(crate::history::EditCommand::CreateSubclip {
-                subclip,
-                parent_id: source_media_id,
-            });
-        self.state.dirty = true;
+        self.commit(crate::history::EditCommand::CreateSubclip { subclip, parent_id: source_media_id });
         self.state.toast.show(format!("Subclip created: {display_name}"));
     }
 

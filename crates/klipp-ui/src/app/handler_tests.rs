@@ -371,3 +371,104 @@ fn a_swap_moves_the_pairs_and_redoes_as_made() {
     app.send_commands(vec![AppCommand::Redo]);
     assert_eq!(spans(&app), after, "redo makes it as it was made");
 }
+
+/// Every clip on every track, as the timeline shows it: where it sits and
+/// what it is linked to, track by track.
+fn layout(app: &KlippApp) -> Vec<Vec<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime, Option<klipp_core::ClipId>)>> {
+    app.state.sequence().tracks.iter().map(|t| t.clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out, c.linked_clip_id)).collect()).collect()
+}
+
+/// A source inserted on free tracks at the playhead, its sound under it:
+/// the shot it lands in is split on both tracks and the rest moves right.
+/// One step; undo puts the timeline back and redo makes it as the insert
+/// made it, the split halves and the sound's link included.
+#[test]
+fn an_insert_edit_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    app.state.magnetic_timeline_enabled = false;
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let (shot, _) = linked_pair(&mut app);
+    let source = app.state.document.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/media/source.mov".into(), None));
+    app.state.source_media_id = Some(source);
+    app.state.playhead = at(2.0);
+    app.suppress_fps_prompt = true;
+    let before = layout(&app);
+
+    app.send_commands(vec![AppCommand::InsertEdit]);
+    let after = layout(&app);
+    assert_ne!(after, before, "the source went in");
+    assert!(app.state.sequence().all_clips().any(|c| c.media_id() == Some(source) && c.linked_clip_id.is_some()), "with its sound linked");
+    assert!(app.state.sequence().all_clips().all(|c| c.id != shot || c.timeline_out == at(2.0)), "the shot it landed in is split there");
+    assert_eq!(app.state.undo_depth(), 1);
+
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(layout(&app), before);
+    app.send_commands(vec![AppCommand::Redo]);
+    assert_eq!(layout(&app), after, "redo makes it as the insert made it");
+}
+
+/// The range marked to a clip is one step, undo clears it again.
+#[test]
+fn a_range_to_a_clip_is_one_step() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let (shot, _) = linked_pair(&mut app);
+    app.state.selected_clip = Some(shot);
+    let range = |app: &KlippApp| (app.state.sequence().in_point, app.state.sequence().out_point);
+    let before = range(&app);
+
+    app.send_commands(vec![AppCommand::SetRangeToClip]);
+    assert_eq!(range(&app), (Some(at(0.0)), Some(at(4.0))));
+    assert_eq!(app.state.undo_depth(), 1);
+    assert!(app.state.dirty);
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(range(&app), before);
+}
+
+/// A second of gap put in at the playhead on the primary storyline: one
+/// step, undone whole, redone as made.
+#[test]
+fn a_gap_at_the_playhead_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let primary = app.state.sequence().primary_track_index().expect("a primary storyline");
+    let active = app.state.active_sequence_idx;
+    let media = klipp_core::MediaId::new();
+    app.state.document.sequences[active].tracks[primary].clips.extend([
+        klipp_timeline::Clip::media(media, at(0.0), at(2.0), at(0.0), at(2.0)),
+        klipp_timeline::Clip::media(media, at(2.0), at(5.0), at(0.0), at(3.0)),
+    ]);
+    app.state.playhead = at(2.0);
+    let before = layout(&app);
+
+    app.send_commands(vec![AppCommand::InsertGapAtPlayhead]);
+    let after = layout(&app);
+    assert_eq!(after[primary].last().map(|c| c.2), Some(at(6.0)), "what follows moves a second on");
+    assert_eq!(app.state.undo_depth(), 1);
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(layout(&app), before);
+    app.send_commands(vec![AppCommand::Redo]);
+    assert_eq!(layout(&app), after);
+}
+
+/// A subclip made from a file's marked zone is one step: the pool holds
+/// it, undo takes it out, redo puts it back.
+#[test]
+fn a_subclip_is_one_step() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/media/a.mov".into(), None);
+    (item.default_source_in, item.default_source_out) = (Some(at(1.0)), Some(at(3.0)));
+    let parent = app.state.document.media_pool.add(item);
+    let subclips = |app: &KlippApp| app.state.document.media_pool.all().filter(|i| i.parent_media_id == Some(parent)).map(|i| (i.id, i.duration)).collect::<Vec<_>>();
+
+    app.send_commands(vec![AppCommand::CreateSubclipFromZone { source_media_id: parent, name: None }]);
+    let made = subclips(&app);
+    assert_eq!(made.iter().map(|s| s.1).collect::<Vec<_>>(), [at(2.0)]);
+    assert_eq!(app.state.undo_depth(), 1);
+    assert!(app.state.dirty);
+    app.send_commands(vec![AppCommand::Undo]);
+    assert!(subclips(&app).is_empty());
+    app.send_commands(vec![AppCommand::Redo]);
+    assert_eq!(subclips(&app), made);
+}
