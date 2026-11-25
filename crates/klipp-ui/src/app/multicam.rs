@@ -23,18 +23,16 @@ impl KlippApp {
             self.state.toast.show(format!("This multicam group has no angle {angle}"));
             return;
         }
-        let Some(clip) = self.state.document.sequences[seq_idx].tracks[track_idx].find_clip_mut(primary_id) else { return };
-        let old = clip.clone();
-        let clip_time = (at - clip.timeline_in).to_secs_f64();
-        clip.multicam_cuts.retain(|(t, _)| (*t - clip_time).abs() > 0.001);
-        clip.multicam_cuts.push((clip_time, wanted));
-        clip.multicam_cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        let new = clip.clone();
+        let Some(old) = self.state.document.sequences[seq_idx].tracks[track_idx].find_clip(primary_id).cloned() else { return };
+        let mut new = old.clone();
+        let clip_time = (at - new.timeline_in).to_secs_f64();
+        new.multicam_cuts.retain(|(t, _)| (*t - clip_time).abs() > 0.001);
+        new.multicam_cuts.push((clip_time, wanted));
+        new.multicam_cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         // One undo step per cut: cutting live means mis-hits,
         // and a mis-hit could not be taken back.
-        self.state.push_history(EditCommand::ReplaceClip { description: "Switch Angle", old: Box::new(old), new: Box::new(new) });
+        self.commit(EditCommand::ReplaceClip { description: "Switch Angle", old: Box::new(old), new: Box::new(new) });
         self.state.toast.show(format!("Cut to angle {angle}"));
-        self.state.dirty = true;
         // The viewer shows the cut only once the engine has
         // the sequence and redraws the frame; without this
         // the toast and the angle bar said one camera and the
@@ -58,11 +56,10 @@ impl KlippApp {
             }
         }
         let mut steps = Vec::new();
-        for clip in self.state.document.sequences[seq_idx].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        for clip in self.state.document.sequences[seq_idx].tracks.iter().flat_map(|t| t.clips.iter()) {
             if clip.multicam_group == Some(group) && clip.multicam_angle == 0 && clip.multicam_sound != sound {
-                let old = clip.clone();
-                clip.multicam_sound = sound;
-                steps.push(EditCommand::ReplaceClip { description: "Multicam Sound", old: Box::new(old), new: Box::new(clip.clone()) });
+                let new = klipp_timeline::Clip { multicam_sound: sound, ..clip.clone() };
+                steps.push(EditCommand::ReplaceClip { description: "Multicam Sound", old: Box::new(clip.clone()), new: Box::new(new) });
             }
         }
         let command = match steps.len() {
@@ -71,9 +68,8 @@ impl KlippApp {
             // Named: an unnamed batch reads "Add Clips".
             _ => EditCommand::Named { label: "Multicam Sound".into(), edit: Box::new(EditCommand::Batch(steps)) },
         };
-        self.state.push_history(command);
+        self.commit(command);
         self.state.toast.show(format!("Multicam sound: {}", sound.label()));
-        self.state.dirty = true;
         self.sync_sequence_to_engine();
     }
 
@@ -202,42 +198,42 @@ impl KlippApp {
                 _ => seq.fps,
             }
         };
-        let mut entries = Vec::new();
         let mut video_clips = Vec::new();
-        for p in &plan.placements {
-            let frames = ((at_secs + p.start_secs) * fps.as_f64()).round() as i64;
-            let start = klipp_core::RationalTime { value: frames * i64::from(fps.den), rate: fps.num };
-            if let Some((video, entry)) = self.place_media_on_new_tracks(p.media_id, start) {
-                entries.push(entry);
-                if let Some(v) = video {
-                    video_clips.push((v, p.is_reference));
+        // Placed and grouped on the sequence, then made through one
+        // commit: redo makes what the snapshots hold.
+        self.commit_worked_out(|app| {
+            let mut entries = Vec::new();
+            for p in &plan.placements {
+                let frames = ((at_secs + p.start_secs) * fps.as_f64()).round() as i64;
+                let start = klipp_core::RationalTime { value: frames * i64::from(fps.den), rate: fps.num };
+                if let Some((video, entry)) = app.place_media_on_new_tracks(p.media_id, start) {
+                    entries.push(entry);
+                    if let Some(v) = video {
+                        video_clips.push((v, p.is_reference));
+                    }
                 }
             }
-        }
-        // The reference angle first: angle 0 carries the cut list, and
-        // it is the sound the others were matched to.
-        video_clips.sort_by_key(|(_, is_ref)| !is_ref);
-        let group_id = klipp_core::GroupId::new();
-        let seq = &mut self.state.document.sequences[seq_idx];
-        for (angle, (clip_id, _)) in video_clips.iter().enumerate() {
-            for track in &mut seq.tracks {
-                if let Some(clip) = track.find_clip_mut(*clip_id) {
-                    clip.multicam_group = Some(group_id);
-                    clip.multicam_angle = angle as u8;
-                    break;
+            // The reference angle first: angle 0 carries the cut list, and
+            // it is the sound the others were matched to.
+            video_clips.sort_by_key(|(_, is_ref)| !is_ref);
+            let group_id = klipp_core::GroupId::new();
+            let seq = &mut app.state.document.sequences[seq_idx];
+            for (angle, (clip_id, _)) in video_clips.iter().enumerate() {
+                for track in &mut seq.tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.multicam_group = Some(group_id);
+                        clip.multicam_angle = angle as u8;
+                        break;
+                    }
                 }
             }
-        }
-        // Snapshots taken now, grouped: redo puts back what they hold.
-        for entry in &mut entries {
-            self.refresh_placement_snapshot(seq_idx, entry);
-        }
-        if !entries.is_empty() {
+            // Snapshots taken now, grouped: redo puts back what they hold.
+            for entry in &mut entries {
+                app.refresh_placement_snapshot(seq_idx, entry);
+            }
             // Named: an unnamed batch reads "Add Clips".
-            self.state.active_history_mut().push(crate::history::HistoryEntry {
-                command: crate::history::EditCommand::Named { label: "Create Multicam".into(), edit: Box::new(crate::history::EditCommand::Batch(entries)) },
-            });
-        }
+            (!entries.is_empty()).then(|| crate::history::EditCommand::Named { label: "Create Multicam".into(), edit: Box::new(crate::history::EditCommand::Batch(entries)) })
+        });
         let by = |m| plan.placements.iter().filter(|p| p.method == Some(m)).count();
         let (tc, snd) = (by(klipp_core::SyncMethod::Timecode), by(klipp_core::SyncMethod::Waveform));
         let mut summary = format!("Multicam of {} angles", video_clips.len());
@@ -253,7 +249,6 @@ impl KlippApp {
         }
         tracing::info!("{summary}");
         self.state.toast.show(summary);
-        self.state.dirty = true;
         self.sync_sequence_to_engine();
     }
 }

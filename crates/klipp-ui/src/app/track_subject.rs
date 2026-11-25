@@ -19,13 +19,17 @@ pub(super) fn restore_clip_background(state: &mut AppState, clip_id: klipp_core:
     let clip = state.sequence().all_clips().find(|c| c.id == clip_id).ok_or("clip not found")?;
     let old_graph = clip.grade().clone();
     let matte = old_graph.cut_out_matte().ok_or("This clip is not cut out by a subject or image matte")?;
-    if !matches!(super::colour::edit_clip_graph(state, clip_id, &[], false, |graph| { graph.restore_background(); }), Some(Ok(()))) {
-        return Err("The clip's grade could not be edited".into());
-    }
-    let new_graph = state.sequence().all_clips().find(|c| c.id==clip_id).unwrap().grade().clone();
-    if state.selected_node_id == Some(matte) && !new_graph.nodes.iter().any(|n|n.id==matte) { state.selected_node_id=None; }
-    state.push_history(crate::history::EditCommand::Named { label:"Restore Background".into(), edit:Box::new(crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph }) });
-    state.dirty=true;
+    let mut kept_matte = None;
+    let _ = state.commit_worked_out(|state| {
+        if !matches!(super::colour::edit_clip_graph(state, clip_id, &[], false, |graph| { graph.restore_background(); }), Some(Ok(()))) {
+            return None;
+        }
+        let new_graph = state.sequence().all_clips().find(|c| c.id == clip_id)?.grade().clone();
+        kept_matte = Some(new_graph.nodes.iter().any(|n| n.id == matte));
+        Some(crate::history::EditCommand::Named { label: "Restore Background".into(), edit: Box::new(crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph }) })
+    });
+    let kept_matte = kept_matte.ok_or("The clip's grade could not be edited")?;
+    if state.selected_node_id == Some(matte) && !kept_matte { state.selected_node_id = None; }
     Ok(())
 }
 
@@ -41,14 +45,17 @@ pub(super) fn set_clip_opacity_gradient(state: &mut AppState, clip_id: klipp_cor
         E::AlphaTaken(name) => format!("The clip's opacity is already set by {name}"),
         E::NoneToClear => "The clip has no opacity gradient".to_string(),
     })?;
-    let graph = new_graph.clone();
-    if !matches!(super::colour::edit_clip_graph(state, clip_id, &[], false, move |g| { *g = graph; }), Some(Ok(()))) {
+    let (graph, handles) = (new_graph.clone(), new_graph.opacity_gradient());
+    let mut edited = false;
+    let _ = state.commit_worked_out(|state| {
+        edited = matches!(super::colour::edit_clip_graph(state, clip_id, &[], false, move |g| { *g = graph; }), Some(Ok(())));
+        edited.then(|| crate::history::EditCommand::Named { label: label.into(), edit: Box::new(crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph }) })
+    });
+    if !edited {
         return Err("The clip's grade could not be edited".into());
     }
     // Its handles in the viewer, ready to drag.
-    state.selected_node_id = new_graph.opacity_gradient();
-    state.push_history(crate::history::EditCommand::Named { label: label.into(), edit: Box::new(crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph }) });
-    state.dirty = true;
+    state.selected_node_id = handles;
     Ok(())
 }
 

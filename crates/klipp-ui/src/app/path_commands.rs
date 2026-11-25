@@ -962,13 +962,11 @@ impl crate::state::AppState {
             self.close_open_drag();
         }
         let graph_ops::GraphOpsOutcome { edit, ungated, .. } = graph_ops::graph_ops_edit(&self.document.sequences[self.active_sequence_idx], ops).map_err(refused)?;
-        if let EditCommand::PictureEdit { clip_id, edit, .. } = &edit {
-            self.set_picture(*clip_id, &edit.after);
-        }
         // One step named `label`, or one edit of a batch already open (a
         // look's chain, an agent's action), which then names the step:
         // opening a batch of its own here would drop what that one held.
-        self.push_history(EditCommand::Named { label: label.to_string(), edit: Box::new(edit) });
+        // The caller syncs the engine.
+        let _ = self.commit(EditCommand::Named { label: label.to_string(), edit: Box::new(edit) });
         self.show_ungated(&ungated);
         Ok(())
     }
@@ -999,18 +997,25 @@ impl crate::state::AppState {
             _ => None,
         };
         let live = dragged.is_some_and(|(path, key)| self.active_history().pending_drag_key().is_some_and(|open| open == drag_key(path, key) || open == node_drag(path)));
-        if !live && self.active_history().is_any_drag_in_progress() {
-            self.close_open_drag();
-        }
-        let (old, new) = self.document.sequences[self.active_sequence_idx].apply_root_grade_ops(ops, start.as_ref())?;
-        self.dirty = true;
         if live {
+            self.document.sequences[self.active_sequence_idx].apply_root_grade_ops(ops, start.as_ref())?;
+            self.dirty = true;
             return Ok(());
         }
+        if self.active_history().is_any_drag_in_progress() {
+            self.close_open_drag();
+        }
+        let mut done = Ok(());
         // Named as `apply_path_ops` names its step, inside any open batch.
-        let edit = EditCommand::SetRootGrade { description: "Edit Grade", root, old: old.map(Box::new), new: Some(Box::new(new)) };
-        self.push_history(EditCommand::Named { label: label.to_string(), edit: Box::new(edit) });
-        Ok(())
+        // The caller syncs the engine.
+        let _ = self.commit_worked_out(|s| match s.document.sequences[s.active_sequence_idx].apply_root_grade_ops(ops, start.as_ref()) {
+            Ok((old, new)) => Some(EditCommand::Named { label: label.to_string(), edit: Box::new(EditCommand::SetRootGrade { description: "Edit Grade", root, old: old.map(Box::new), new: Some(Box::new(new)) }) }),
+            Err(why) => {
+                done = Err(why);
+                None
+            }
+        });
+        done
     }
 
     /// Write `picture` to the clip, with no history entry of its own.
@@ -2762,6 +2767,37 @@ mod tests {
         assert_eq!(picture(&s, c.id), before);
     }
 
+
+    /// A path step undone and redone through the document, as the app
+    /// does: back to the sequence before it, then to the one it made.
+    fn redoes_as_made(s: &mut AppState, cmd: AppCommand) {
+        let before = serde_json::to_value(s.sequence()).unwrap();
+        run(s, cmd);
+        let made = serde_json::to_value(s.sequence()).unwrap();
+        assert_ne!(made, before, "the edit changed the sequence");
+        for back in [true, false] {
+            let entry = if back { s.take_undo() } else { s.take_redo() }.expect("a step");
+            let active = s.active_sequence_idx;
+            let mut view = klipp_document::apply::DocumentView { sequences: &mut s.document.sequences, active, media_pool: &mut s.document.media_pool, fps: &mut s.fps };
+            if back { view.apply_inverse(&entry.command); } else { view.apply_forward(&entry.command); }
+            let now = serde_json::to_value(s.sequence()).unwrap();
+            assert!(now == if back { before.clone() } else { made.clone() }, "{}", if back { "undone" } else { "redone as made" });
+        }
+    }
+
+    /// A clip's grade parameter and the sequence's own grade set by path:
+    /// each one step, redone as made.
+    #[test]
+    fn path_steps_redo_as_made() {
+        let (c, addr) = graded();
+        let mut s = with(std::slice::from_ref(&c));
+        redoes_as_made(&mut s, AppCommand::SetParamAt { addr, key: "exposure".into(), value: ParamValue::Float(0.7) });
+        let mut grade = klipp_nodes::NodeGraph::default();
+        let corrector = grade.ensure_corrector();
+        s.document.sequences[0].timeline_grade_slot().set(Some(grade));
+        let root = Root::TimelineGrade { sequence: s.document.sequences[0].id.0 };
+        redoes_as_made(&mut s, AppCommand::SetParamAt { addr: NodePath::new(root, [corrector]), key: "exposure".into(), value: ParamValue::Float(0.4) });
+    }
 
     /// A grade node's struct parameter set whole by its bare id
     /// (`SetNodeQualifier`) and by path (`SetPayloadAt`, the node's stored

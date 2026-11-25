@@ -327,6 +327,8 @@ impl KlippApp {
                 // left-to-right order for the compound history entry.
                 let mut new_clips: Vec<klipp_timeline::Clip> = Vec::new();
                 let mut current_id = cid;
+                // Bladed in place, then put back for the step to make.
+                let before = self.state.document.sequences[active].clone();
                 {
                     let seq_fps = self.state.document.sequences[active].fps;
                     let track = &mut self.state.document.sequences[active].tracks[track_idx];
@@ -362,24 +364,21 @@ impl KlippApp {
                 }
 
                 if new_clips.len() < 2 {
-                    // Nothing meaningfully changed — rollback by restoring original.
-                    let track = &mut self.state.document.sequences[active].tracks[track_idx];
-                    track.clips.retain(|c| c.id != current_id);
-                    track.clips.insert(position.min(track.clips.len()), original.clone());
-                    track.sort_clips();
+                    // Nothing meaningfully changed: the sequence put back.
+                    self.state.document.sequences[active] = before;
                     self.state.toast.show("Split failed — markers did not produce valid pieces".to_string());
                     return true;
                 }
 
                 let n_pieces = new_clips.len();
-                self.state.push_history(EditCommand::LegacySplitAtSceneMarkers {
+                self.state.document.sequences[active] = before;
+                self.commit(EditCommand::LegacySplitAtSceneMarkers {
                         track_index: track_idx,
                         original_clip: original,
                         position,
                         new_clips,
                     });
                 self.sync_sequence_to_engine();
-                self.state.dirty = true;
                 self.state.toast.show(format!(
                     "Split clip into {} pieces at {} scene marker{}",
                     n_pieces, cuts.len(),
