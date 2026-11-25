@@ -882,6 +882,9 @@ impl DocumentView<'_> {
                         }
                     }
                 }
+                // The engine plays the keys; the control socket reads them.
+                effects.sync_sequence = true;
+                effects.notify_engine = true;
             }
             EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
@@ -1665,6 +1668,9 @@ impl DocumentView<'_> {
                         }
                     }
                 }
+                // The engine plays the keys; the control socket reads them.
+                effects.sync_sequence = true;
+                effects.notify_engine = true;
             }
             EditCommand::EditBuiltinEffect { clip_id, effect_index, new_effect, .. } => {
                 for track in &mut self.sequences[self.active].tracks {

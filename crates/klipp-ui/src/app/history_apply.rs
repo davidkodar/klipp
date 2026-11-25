@@ -50,6 +50,25 @@ impl KlippApp {
         self.state.dirty = true;
     }
 
+    /// Clip `clip_id`'s keys, and those of `partner` with it, changed by
+    /// `f` on copies of the two and committed as one keyframe step named
+    /// `description`; nothing when the clip is gone or `f` changes no key.
+    /// `f` changes keys only: the step puts back a clip's keyed tracks.
+    pub(super) fn edit_clip_keys(&mut self, clip_id: klipp_core::ClipId, partner: Option<klipp_core::ClipId>, description: &'static str, f: impl FnOnce(&mut klipp_timeline::Clip, Option<&mut klipp_timeline::Clip>)) {
+        use crate::history::KeyframeSnapshot as Snap;
+        let seq = self.state.sequence();
+        let Some(mut clip) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
+        let mut other = partner.and_then(|p| seq.all_clips().find(|c| c.id == p).cloned());
+        let (old_state, old_linked_state) = (Snap::from_clip(&clip), other.as_ref().map(Snap::from_clip));
+        f(&mut clip, other.as_mut());
+        let (new_state, new_linked_state) = (Snap::from_clip(&clip), other.as_ref().map(Snap::from_clip));
+        if old_state == new_state && old_linked_state == new_linked_state {
+            return;
+        }
+        let linked_clip_id = other.as_ref().map(|c| c.id);
+        self.commit(EditCommand::EditKeyframes { clip_id, linked_clip_id, description, old_state, new_state, old_linked_state, new_linked_state });
+    }
+
     pub(super) fn apply_undo(&mut self) {
         // The active sequence's step or the project's, whichever is the
         // latest (#1986); another sequence's stack is never reached.

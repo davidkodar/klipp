@@ -107,134 +107,27 @@ impl KlippApp {
         let tolerance = if frame_time.is_some() { crate::inspector::keyframe_selection::frame_tolerance(self.state.sequence()) } else { 0.0 };
         match cmd {
                 AppCommand::AddAudioKeyframe { clip_id, param, time_secs, value } => {
-                    let mut linked_partner_id = None;
-                    let mut old_state = None;
-                    let mut old_linked_state = None;
-                    // Capture old state for linked partner before main clip mutation
-                    {
-                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
-                        if let Some(c) = seq.all_clips().find(|c| c.id == *clip_id) {
-                            linked_partner_id = c.linked_clip_id;
-                            old_state = Some(KeyframeSnapshot::from_clip(c));
+                    // The linked partner's key too, on its own clock (a J
+                    // cut's picture starts after its sound).
+                    let partner = self.state.sequence().all_clips().find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id);
+                    let shift = partner.map_or(0.0, |pid| super::linked_audio::linked_key_shift(self.state.sequence(), *clip_id, pid));
+                    self.edit_clip_keys(*clip_id, partner, "Add Audio Keyframe", |clip, partner| {
+                        klipp_core::keyframe::upsert_keyframe(audio_param_keys(clip, *param), *time_secs, *value);
+                        if let Some(partner) = partner {
+                            edit_linked_audio_key(audio_param_keys(partner, *param), frame_time.unwrap_or(*time_secs) + shift, tolerance, *time_secs + shift, Some(*value));
                         }
-                        if let Some(pid) = linked_partner_id {
-                            if let Some(p) = seq.all_clips().find(|c| c.id == pid) {
-                                old_linked_state = Some(KeyframeSnapshot::from_clip(p));
-                            }
-                        }
-                    }
-                    // The partner's keys on its own clock (a J cut's
-                    // picture starts after its sound).
-                    let shift = linked_partner_id.map_or(0.0, |pid| super::linked_audio::linked_key_shift(self.state.sequence(), *clip_id, pid));
-                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let keyframes = match param {
-                                klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
-                                klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
-                                klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
-                            };
-                            klipp_core::keyframe::upsert_keyframe(keyframes, *time_secs, *value);
-                            break;
-                        }
-                    }
-                    // Also add to linked partner clip
-                    if let Some(partner_id) = linked_partner_id {
-                        for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                            if let Some(partner) = track.find_clip_mut(partner_id) {
-                                let keyframes = match param {
-                                    klipp_core::AudioParam::Volume => &mut partner.volume_keyframes,
-                                    klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
-                                    klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
-                                };
-                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs) + shift, tolerance, *time_secs + shift, Some(*value));
-                                break;
-                            }
-                        }
-                    }
-                    // Capture new state and push history
-                    if let Some(old_snap) = old_state {
-                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
-                        let new_state = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                        let new_linked_state = linked_partner_id.and_then(|pid| seq.all_clips().find(|c| c.id == pid).map(KeyframeSnapshot::from_clip));
-                        if let Some(new_snap) = new_state {
-                            self.state.push_history(EditCommand::EditKeyframes {
-                                    clip_id: *clip_id,
-                                    linked_clip_id: linked_partner_id,
-                                    description: "Add Audio Keyframe",
-                                    old_state: old_snap,
-                                    new_state: new_snap,
-                                    old_linked_state,
-                                    new_linked_state,
-                                });
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                    self.state.dirty = true;
+                    });
                     true
                 }
                 AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs } => {
-                    let mut linked_partner_id = None;
-                    let mut old_state = None;
-                    let mut old_linked_state = None;
-                    {
-                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
-                        if let Some(c) = seq.all_clips().find(|c| c.id == *clip_id) {
-                            linked_partner_id = c.linked_clip_id;
-                            old_state = Some(KeyframeSnapshot::from_clip(c));
+                    let partner = self.state.sequence().all_clips().find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id);
+                    let shift = partner.map_or(0.0, |pid| super::linked_audio::linked_key_shift(self.state.sequence(), *clip_id, pid));
+                    self.edit_clip_keys(*clip_id, partner, "Remove Audio Keyframe", |clip, partner| {
+                        klipp_core::keyframe::remove_keyframe_at(audio_param_keys(clip, *param), *time_secs);
+                        if let Some(partner) = partner {
+                            edit_linked_audio_key(audio_param_keys(partner, *param), frame_time.unwrap_or(*time_secs) + shift, tolerance, *time_secs + shift, None);
                         }
-                        if let Some(pid) = linked_partner_id {
-                            if let Some(p) = seq.all_clips().find(|c| c.id == pid) {
-                                old_linked_state = Some(KeyframeSnapshot::from_clip(p));
-                            }
-                        }
-                    }
-                    // The partner's keys on its own clock (a J cut's
-                    // picture starts after its sound).
-                    let shift = linked_partner_id.map_or(0.0, |pid| super::linked_audio::linked_key_shift(self.state.sequence(), *clip_id, pid));
-                    for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let keyframes = match param {
-                                klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
-                                klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
-                                klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
-                            };
-                            klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
-                            break;
-                        }
-                    }
-                    if let Some(partner_id) = linked_partner_id {
-                        for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                            if let Some(partner) = track.find_clip_mut(partner_id) {
-                                let keyframes = match param {
-                                    klipp_core::AudioParam::Volume => &mut partner.volume_keyframes,
-                                    klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
-                                    klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
-                                };
-                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs) + shift, tolerance, *time_secs + shift, None);
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(old_snap) = old_state {
-                        let seq = &self.state.document.sequences[self.state.active_sequence_idx];
-                        let new_state = seq.all_clips().find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                        let new_linked_state = linked_partner_id.and_then(|pid| seq.all_clips().find(|c| c.id == pid).map(KeyframeSnapshot::from_clip));
-                        if let Some(new_snap) = new_state {
-                            self.state.push_history(EditCommand::EditKeyframes {
-                                    clip_id: *clip_id,
-                                    linked_clip_id: linked_partner_id,
-                                    description: "Remove Audio Keyframe",
-                                    old_state: old_snap,
-                                    new_state: new_snap,
-                                    old_linked_state,
-                                    new_linked_state,
-                                });
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                    self.state.dirty = true;
+                    });
                     true
                 }
                 AppCommand::ScaleAudioKeyframeTiming { clip_id, param, factor } => {
@@ -1183,3 +1076,11 @@ mod normalize_summary_tests {
     }
 }
 
+/// The keys of audio parameter `param` on `clip`.
+fn audio_param_keys(clip: &mut klipp_timeline::Clip, param: klipp_core::AudioParam) -> &mut Vec<klipp_core::Keyframe> {
+    match param {
+        klipp_core::AudioParam::Volume => &mut clip.volume_keyframes,
+        klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
+        klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
+    }
+}
