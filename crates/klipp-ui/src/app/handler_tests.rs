@@ -337,3 +337,37 @@ fn a_duplicate_over_the_next_clip_undoes_whole() {
     app.send_commands(vec![AppCommand::Redo]);
     assert_eq!(spans(&app), after, "redo trims it again");
 }
+
+/// Two shots side by side swapped, their sounds with them: each keeps its
+/// length, one step undo puts back and redo makes again as it was made.
+#[test]
+fn a_swap_moves_the_pairs_and_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let media = klipp_core::MediaId::new();
+    let pair = |from: f64, to: f64| {
+        let (mut p, mut s) = (klipp_timeline::Clip::media(media, at(from), at(to), at(0.0), at(to - from)), klipp_timeline::Clip::media(media, at(from), at(to), at(0.0), at(to - from)));
+        (p.linked_clip_id, s.linked_clip_id) = (Some(s.id), Some(p.id));
+        (p, s)
+    };
+    let ((a, a_sound), (b, b_sound)) = (pair(0.0, 2.0), pair(2.0, 5.0));
+    let (a_id, b_id) = (a.id, b.id);
+    let active = app.state.active_sequence_idx;
+    let tracks = &mut app.state.document.sequences[active].tracks;
+    tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.extend([a, b]);
+    tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap().clips.extend([a_sound, b_sound]);
+    let spans = |app: &KlippApp| app.state.sequence().all_clips().map(|c| (c.id, (c.timeline_in, c.timeline_out))).collect::<std::collections::HashMap<_, _>>();
+    let before = spans(&app);
+
+    app.send_commands(vec![AppCommand::SwapAdjacentClips { clip_a: a_id, clip_b: b_id }]);
+    let after = spans(&app);
+    assert_eq!((after[&b_id], after[&a_id]), ((at(0.0), at(3.0)), (at(3.0), at(5.0))), "each keeps its length");
+    let sound = |id| app.state.sequence().all_clips().find(|c| c.id == id).unwrap().linked_clip_id.unwrap();
+    assert_eq!(after[&sound(a_id)], after[&a_id], "the sound goes with its picture");
+    assert_eq!(app.state.undo_depth(), 1);
+
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(spans(&app), before);
+    app.send_commands(vec![AppCommand::Redo]);
+    assert_eq!(spans(&app), after, "redo makes it as it was made");
+}
