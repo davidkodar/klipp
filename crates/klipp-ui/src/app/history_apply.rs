@@ -55,18 +55,9 @@ impl KlippApp {
     /// `description`; nothing when the clip is gone or `f` changes no key.
     /// `f` changes keys only: the step puts back a clip's keyed tracks.
     pub(super) fn edit_clip_keys(&mut self, clip_id: klipp_core::ClipId, partner: Option<klipp_core::ClipId>, description: &'static str, f: impl FnOnce(&mut klipp_timeline::Clip, Option<&mut klipp_timeline::Clip>)) {
-        use crate::history::KeyframeSnapshot as Snap;
-        let seq = self.state.sequence();
-        let Some(mut clip) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
-        let mut other = partner.and_then(|p| seq.all_clips().find(|c| c.id == p).cloned());
-        let (old_state, old_linked_state) = (Snap::from_clip(&clip), other.as_ref().map(Snap::from_clip));
-        f(&mut clip, other.as_mut());
-        let (new_state, new_linked_state) = (Snap::from_clip(&clip), other.as_ref().map(Snap::from_clip));
-        if old_state == new_state && old_linked_state == new_linked_state {
-            return;
+        if let Some(edit) = keys_edit(self.state.sequence(), clip_id, partner, description, f) {
+            self.commit(edit);
         }
-        let linked_clip_id = other.as_ref().map(|c| c.id);
-        self.commit(EditCommand::EditKeyframes { clip_id, linked_clip_id, description, old_state, new_state, old_linked_state, new_linked_state });
     }
 
     pub(super) fn apply_undo(&mut self) {
@@ -170,6 +161,24 @@ impl KlippApp {
         let effects = self.document_view().apply_forward(cmd);
         self.run_document_effects(effects);
     }
+}
+
+/// The keyframe step `f` makes on copies of clip `clip_id` and of
+/// `partner`, named `description`: `None` when the clip is gone or `f`
+/// changes no key. Shared by the app's commit and the windowless
+/// inspector host's.
+pub(super) fn keys_edit(seq: &klipp_timeline::Sequence, clip_id: klipp_core::ClipId, partner: Option<klipp_core::ClipId>, description: &'static str, f: impl FnOnce(&mut klipp_timeline::Clip, Option<&mut klipp_timeline::Clip>)) -> Option<EditCommand> {
+    use crate::history::KeyframeSnapshot as Snap;
+    let mut clip = seq.all_clips().find(|c| c.id == clip_id).cloned()?;
+    let mut other = partner.and_then(|p| seq.all_clips().find(|c| c.id == p).cloned());
+    let (old_state, old_linked_state) = (Snap::from_clip(&clip), other.as_ref().map(Snap::from_clip));
+    f(&mut clip, other.as_mut());
+    let (new_state, new_linked_state) = (Snap::from_clip(&clip), other.as_ref().map(Snap::from_clip));
+    if old_state == new_state && old_linked_state == new_linked_state {
+        return None;
+    }
+    let linked_clip_id = other.as_ref().map(|c| c.id);
+    Some(EditCommand::EditKeyframes { clip_id, linked_clip_id, description, old_state, new_state, old_linked_state, new_linked_state })
 }
 
 /// The titles `e` places, in its batches and named steps too.
