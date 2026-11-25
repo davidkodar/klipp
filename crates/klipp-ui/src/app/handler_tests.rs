@@ -277,3 +277,34 @@ fn a_clip_media_replaced_is_one_step() {
     app.send_commands(vec![AppCommand::Redo]);
     assert_eq!(clip(&app), (Some(short), at(2.0), at(2.0)));
 }
+
+/// A generator's colour dragged sends a change each frame; the run is one
+/// step, which undo takes back whole. A change after a pause, or after an
+/// undo, is a step of its own.
+#[test]
+fn a_generator_colour_dragged_is_one_step() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let (id, _) = linked_pair(&mut app);
+    let solid = |c: u8| klipp_core::GeneratorData::SolidColor { color: [c, 0, 0, 255] };
+    app.state.document.sequences[app.state.active_sequence_idx].all_clips_mut().find(|c| c.id == id).unwrap().kind = klipp_timeline::ClipKind::Generator(solid(10));
+    let data = |app: &KlippApp| app.state.sequence().all_clips().find(|c| c.id == id).unwrap().generator_data().cloned();
+
+    app.send_commands((20..30).map(|c| AppCommand::UpdateGeneratorData { clip_id: id, data: solid(c) }).collect());
+    assert_eq!(data(&app), Some(solid(29)));
+    assert_eq!(app.state.undo_depth(), 1, "one step for the drag");
+
+    // A pause: the next change is its own step.
+    app.state.generator_edit = app.state.generator_edit.map(|(c, at)| (c, at.checked_sub(std::time::Duration::from_secs(2)).unwrap_or(at)));
+    app.send_commands(vec![AppCommand::UpdateGeneratorData { clip_id: id, data: solid(40) }]);
+    assert_eq!(app.state.undo_depth(), 2);
+
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(data(&app), Some(solid(29)));
+    // After an undo, a change is a new step, not folded into the drag's.
+    app.send_commands(vec![AppCommand::UpdateGeneratorData { clip_id: id, data: solid(50) }]);
+    assert_eq!(app.state.undo_depth(), 2);
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(data(&app), Some(solid(29)));
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(data(&app), Some(solid(10)), "one undo takes back the whole drag");
+}
