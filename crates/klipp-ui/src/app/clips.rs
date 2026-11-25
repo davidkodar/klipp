@@ -693,10 +693,10 @@ impl KlippApp {
                         t.find_clip(cid).map(|c| (ti, c.clone()))
                     });
                     if let Some((track_index, clip)) = found {
-                        let new_id = self.state.duplicate_after_on(track_index, &clip);
+                        let (new_id, edits) = duplicate_edits(seq, track_index, &clip);
+                        self.apply_edits_as_one(&edits, "Duplicate");
                         self.state.selected_clip = Some(new_id);
                         self.state.selected_clips.clear();
-                        self.state.dirty = true;
                     }
                     self.sync_sequence_to_engine();
                     true
@@ -1620,36 +1620,30 @@ pub(super) fn clips_clipboard_text(count: usize) -> String {
     }
 }
 
-/// A duplicate of `clip` placed right after it: a new id, its own copy of
-/// every field, and a picture-truth clip's picture with it.
-impl crate::state::AppState {
-    /// A copy of `clip` put right after it on track `track_index`, one
-    /// undo step with its node labels on the copy's nodes (#1753): the
-    /// copy's id.
-    pub(super) fn duplicate_after_on(&mut self, track_index: usize, clip: &klipp_timeline::Clip) -> klipp_core::ClipId {
-        let new_clip = duplicate_after(clip);
-        let new_id = new_clip.id;
-        let seq = &self.document.sequences[self.active_sequence_idx];
-        let carried = klipp_timeline::carry_node_labels(&seq.node_labels, clip, &new_clip);
-        let batch = !carried.is_empty() && !self.active_history_mut().is_batching();
-        if batch {
-            self.active_history_mut().begin_batch();
-        }
-        let track = &mut self.document.sequences[self.active_sequence_idx].tracks[track_index];
-        KlippApp::overwrite_insert_clip_on_track(track, new_clip.clone());
-        self.push_history(EditCommand::LegacyPasteClip { clip: new_clip, track_index });
-        if !carried.is_empty() {
-            let seq = &mut self.document.sequences[self.active_sequence_idx];
-            let old = seq.node_labels.clone();
-            seq.node_labels.extend(carried);
-            let new = seq.node_labels.clone();
-            self.push_history(EditCommand::SetNodeLabels { old, new });
-        }
-        if batch {
-            self.active_history_mut().end_batch_as("Duplicate");
-        }
-        new_id
+/// The step that puts a copy of `clip` right after it on track
+/// `track_index`, over what is there (trimmed or taken off as a paste
+/// over it is), with its node labels on the copy's nodes (#1753): the
+/// copy's id and the step's edits. The whole track's clips go in the
+/// step, so undo puts back what the copy covered.
+pub(super) fn duplicate_edits(seq: &klipp_timeline::Sequence, track_index: usize, clip: &klipp_timeline::Clip) -> (klipp_core::ClipId, Vec<EditCommand>) {
+    let new_clip = duplicate_after(clip);
+    let new_id = new_clip.id;
+    let old = &seq.tracks[track_index];
+    let mut new = old.clone();
+    KlippApp::overwrite_insert_clip_on_track(&mut new, new_clip.clone());
+    let mut edits = vec![EditCommand::SetTrackContents {
+        description: "Duplicate",
+        track_index,
+        old: Box::new(crate::history::TrackContents::of(old)),
+        new: Box::new(crate::history::TrackContents::of(&new)),
+    }];
+    let carried = klipp_timeline::carry_node_labels(&seq.node_labels, clip, &new_clip);
+    if !carried.is_empty() {
+        let old = seq.node_labels.clone();
+        let new = old.iter().cloned().chain(carried).collect();
+        edits.push(EditCommand::SetNodeLabels { old, new });
     }
+    (new_id, edits)
 }
 
 pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Clip {
@@ -1762,7 +1756,10 @@ mod duplicate_label_tests {
         let mut state = crate::state::AppState::default();
         state.document.sequences[0].tracks[0].clips.push(clip.clone());
         state.document.sequences[0].node_labels = vec![NodeLabel { node: on(clip.id), colour: 1 }];
-        let copy = state.duplicate_after_on(0, &clip);
+        let (copy, edits) = super::duplicate_edits(&state.document.sequences[0], 0, &clip);
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
+        edits.iter().for_each(|e| { view.apply_forward(e); });
+        state.push_edits_as_one(&edits, "Duplicate");
         assert_eq!(state.document.sequences[0].node_label(&on(copy)), 1, "the copy's node has the label");
         assert!(state.document.sequences[0].holds_node(&on(copy)));
         assert_eq!(state.document.sequences[0].node_label(&on(clip.id)), 1, "the original keeps its own");
