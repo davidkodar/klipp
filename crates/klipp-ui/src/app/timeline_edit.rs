@@ -29,15 +29,14 @@ impl crate::state::AppState {
     /// when it changed. Mark → Set In Point and the timeline's range items
     /// used to set it with no step, while the I and O keys made one.
     pub fn mark_range(&mut self, in_point: Option<Option<Timecode>>, out_point: Option<Option<Timecode>>) {
-        let seq = &mut self.document.sequences[self.active_sequence_idx];
+        let seq = self.sequence();
         let (old_in, old_out) = (seq.in_point, seq.out_point);
         let (new_in, new_out) = (in_point.unwrap_or(old_in), out_point.unwrap_or(old_out));
         if (new_in, new_out) == (old_in, old_out) {
             return;
         }
-        seq.in_point = new_in;
-        seq.out_point = new_out;
-        self.push_history(EditCommand::SetRange { old_in, old_out, new_in, new_out });
+        // A range asks nothing of the engine.
+        let _ = self.commit(EditCommand::SetRange { old_in, old_out, new_in, new_out });
     }
 }
 

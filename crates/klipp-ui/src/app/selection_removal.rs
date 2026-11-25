@@ -24,10 +24,9 @@ pub(crate) fn selected(state: &AppState) -> Vec<ClipId> {
     ids
 }
 
+/// `edit` committed; the caller syncs the engine once the removal is done.
 fn apply(state: &mut AppState, edit: EditCommand) {
-    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps };
-    let _ = view.apply_forward(&edit);
-    state.push_history(edit);
+    let _ = state.commit(edit);
 }
 
 /// `ids` taken out, as one undo step named `label`: lifted (`lift`, the

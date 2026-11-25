@@ -69,9 +69,9 @@ pub(crate) fn move_block(state: &mut AppState, block: &[(ClipId, Timecode)], oth
             state.push_history(EditCommand::LegacyMoveClip { clip_id: f.clip_id, old_timeline_in: f.old_in, old_timeline_out: f.old_out, new_timeline_in: f.new_in, new_timeline_out: f.new_out, linked_partner: None });
         }
     }
+    // The caller syncs the engine once the move is done.
     for e in other_edits {
-        let _ = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: state.active_sequence_idx, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(&e);
-        state.push_history(e);
+        let _ = state.commit(e);
     }
     if own_batch {
         state.active_history_mut().end_batch_as("Move Clips");
