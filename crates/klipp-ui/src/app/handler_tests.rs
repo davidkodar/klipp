@@ -189,3 +189,24 @@ fn audio_key_shapes_are_one_step_each_for_the_pair() {
     app.send_commands(vec![AppCommand::Undo]);
     assert_eq!((keys(&app, picture)[0].time_secs, keys(&app, sound)[0].time_secs), (1.0, 1.0), "the scaling back");
 }
+
+/// An audio effect's key added and taken off are a step each; while its
+/// slider is dragged, the keys the drag lays are one step, the drag's.
+#[test]
+fn an_audio_effect_key_is_a_step_and_a_drag_is_one() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let (picture, _sound) = linked_pair(&mut app);
+    let keys = |app: &KlippApp| app.state.sequence().all_clips().find(|c| c.id == picture).unwrap().audio_effect_keyframes.get("0:gain").map_or(0, Vec::len);
+    let add = |t: f64| AppCommand::AddAudioEffectKeyframe { clip_id: picture, effect_index: 0, param_name: "gain".into(), time_secs: t, value: 0.5 };
+    app.send_commands(vec![add(1.0)]);
+    app.send_commands(vec![AppCommand::RemoveAudioEffectKeyframe { clip_id: picture, effect_index: 0, param_name: "gain".into(), time_secs: 1.0 }]);
+    assert_eq!((keys(&app), app.state.undo_depth()), (0, 2));
+
+    let drag_key = format!("audio_chain:{}:0:gain", picture.0);
+    app.send_commands(vec![AppCommand::BeginAudioChainDrag { drag_key: drag_key.clone(), clip_id: picture }]);
+    app.send_commands(vec![add(1.0), add(2.0), add(3.0)]);
+    app.send_commands(vec![AppCommand::EndAudioChainDrag { drag_key, clip_id: picture }]);
+    assert_eq!((keys(&app), app.state.undo_depth()), (3, 3), "the drag's three keys one step");
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(keys(&app), 0, "the whole drag back");
+}
