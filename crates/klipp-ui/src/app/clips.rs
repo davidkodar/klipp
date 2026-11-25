@@ -1578,12 +1578,14 @@ impl KlippApp {
         clip_a: ClipId,
         clip_b: ClipId,
     ) -> bool {
-        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-        match seq.try_swap_adjacent_clips(clip_a, clip_b) {
+        // Worked out on a copy (the checks and the clips' old places),
+        // then made as one commit: the swap and its redo are one code.
+        let mut trial = self.state.sequence().clone();
+        match trial.try_swap_adjacent_clips(clip_a, clip_b) {
             Ok(result) => {
                 let linked_a_partner = result.partners.as_ref().map(|p| p.a_partner);
                 let linked_b_partner = result.partners.as_ref().map(|p| p.b_partner);
-                self.state.push_history(EditCommand::LegacySwapClips {
+                self.commit(EditCommand::LegacySwapClips {
                     clip_a_id: clip_a,
                     a_old_in: result.a_old_in,
                     a_old_out: result.a_old_out,
