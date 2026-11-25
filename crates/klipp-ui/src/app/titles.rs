@@ -3552,18 +3552,6 @@ impl KlippApp {
             .cloned()
     }
 
-    pub(super) fn push_generator_undo(&mut self, clip_id: klipp_core::ClipId, old: klipp_core::GeneratorData) {
-        if let Some(new) = self.snapshot_generator(clip_id) {
-            if old != new {
-                self.state.active_history_mut().push(crate::history::HistoryEntry {
-                    command: crate::history::EditCommand::EditGenerator {
-                        clip_id, old_data: old, new_data: new,
-                    },
-                });
-            }
-        }
-    }
-
     /// Mark a title clip for overlay texture refresh on the next frame.
     pub(super) fn render_title_to_viewer(&mut self, clip_id: klipp_core::ClipId) {
         // Clear old overlay immediately to prevent ghosting during position/alignment changes.

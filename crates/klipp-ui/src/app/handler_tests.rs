@@ -210,3 +210,70 @@ fn an_audio_effect_key_is_a_step_and_a_drag_is_one() {
     app.send_commands(vec![AppCommand::Undo]);
     assert_eq!(keys(&app), 0, "the whole drag back");
 }
+
+/// A generator's setting changed is one step that counts toward autosave,
+/// as every other edit does: it went to the history past the app's
+/// recording, so an autosave never knew of it. Undo takes it back, and
+/// the frame is shown again each way.
+#[test]
+fn a_generator_edit_is_a_step_autosave_counts() {
+    let (mut app, engine) = KlippApp::for_test();
+    let (id, _) = linked_pair(&mut app);
+    let solid = |c: u8| klipp_core::GeneratorData::SolidColor { color: [c, 0, 0, 255] };
+    app.state.document.sequences[app.state.active_sequence_idx].all_clips_mut().find(|c| c.id == id).unwrap().kind = klipp_timeline::ClipKind::Generator(solid(10));
+    let data = |app: &KlippApp| app.state.sequence().all_clips().find(|c| c.id == id).unwrap().generator_data().cloned();
+    let ops = app.state.history_ops_since_save;
+
+    app.send_commands(vec![AppCommand::UpdateGeneratorData { clip_id: id, data: solid(200) }]);
+    assert_eq!(data(&app), Some(solid(200)));
+    assert_eq!((app.state.undo_depth(), app.state.history_ops_since_save), (1, ops + 1));
+    assert!(app.state.dirty);
+    assert!(engine.commands.try_iter().any(|c| matches!(c, AppCommand::SetPlayhead(_))), "the frame is shown again");
+    app.send_commands(vec![AppCommand::UpdateGeneratorData { clip_id: id, data: solid(200) }]);
+    assert_eq!(app.state.undo_depth(), 1, "the same setting again is no step");
+
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(data(&app), Some(solid(10)));
+}
+
+/// A clip renamed names its linked partner with it, one step undo takes
+/// back from both.
+#[test]
+fn a_rename_is_one_step_for_the_pair() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let (picture, sound) = linked_pair(&mut app);
+    let names = |app: &KlippApp| [picture, sound].map(|id| app.state.sequence().all_clips().find(|c| c.id == id).unwrap().own_label().name);
+
+    app.send_commands(vec![AppCommand::RenameClips { clip_ids: vec![picture], name: Some(" Interview ".into()) }]);
+    assert_eq!(names(&app), [Some("Interview".into()), Some("Interview".into())]);
+    assert_eq!(app.state.undo_depth(), 1);
+    app.send_commands(vec![AppCommand::RenameClips { clip_ids: vec![picture], name: Some("Interview".into()) }]);
+    assert_eq!(app.state.undo_depth(), 1, "the same name again is no step");
+
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(names(&app), [None, None]);
+}
+
+/// A clip's file replaced by a shorter one is one step: the clip shortens
+/// to fit, and undo puts back the file and the length.
+#[test]
+fn a_clip_media_replaced_is_one_step() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let mut short = klipp_media::MediaItem::synthetic_for_test("/media/short.mov".into(), None);
+    short.duration = at(2.0);
+    let short = app.state.document.media_pool.add(short);
+    let (id, _) = linked_pair(&mut app);
+    let clip = |app: &KlippApp| app.state.sequence().all_clips().find(|c| c.id == id).map(|c| (c.media_id(), c.source_out, c.timeline_out)).unwrap();
+    let before = clip(&app);
+
+    app.send_commands(vec![AppCommand::ReplaceClipMedia { clip_id: id, new_media_id: short }]);
+    assert_eq!(clip(&app), (Some(short), at(2.0), at(2.0)));
+    assert_eq!(app.state.undo_depth(), 1);
+    assert!(app.state.dirty);
+
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(clip(&app), before);
+    app.send_commands(vec![AppCommand::Redo]);
+    assert_eq!(clip(&app), (Some(short), at(2.0), at(2.0)));
+}

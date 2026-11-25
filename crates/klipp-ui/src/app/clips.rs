@@ -40,20 +40,11 @@ impl KlippApp {
 
         // Generator parameter editing
         if let AppCommand::UpdateGeneratorData { clip_id, data } = cmd {
-            let old = self.snapshot_generator(*clip_id);
-            for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                    if let klipp_timeline::ClipKind::Generator(ref mut gd) = clip.kind {
-                        *gd = data.clone();
-                    }
-                }
+            // One step, applied and recorded as one (the engine synced
+            // and the frame shown again by the step's own effects).
+            if let Some(old_data) = self.snapshot_generator(*clip_id).filter(|old| old != data) {
+                self.commit(crate::history::EditCommand::EditGenerator { clip_id: *clip_id, old_data, new_data: data.clone() });
             }
-            if let Some(old_data) = old {
-                self.push_generator_undo(*clip_id, old_data);
-            }
-            self.sync_sequence_to_engine();
-            let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
-            self.state.dirty = true;
             return true;
         }
 
@@ -66,24 +57,18 @@ impl KlippApp {
     /// keep reading as one shot. Clips it leaves as they were are not in
     /// the step, and nothing is pushed when none changes.
     pub(super) fn set_clip_labels(&mut self, clip_ids: &[klipp_core::ClipId], description: &'static str, change: impl Fn(&klipp_timeline::ClipLabel) -> klipp_timeline::ClipLabel) {
-        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
+        let seq = self.state.sequence();
         let targets = with_linked_partners(seq, clip_ids);
-        let mut changes = Vec::new();
-        for clip in seq.all_clips_mut().filter(|c| targets.contains(&c.id)) {
+        let changes: Vec<_> = seq.all_clips().filter(|c| targets.contains(&c.id)).filter_map(|clip| {
             let old = clip.own_label();
             let new = change(&old);
-            if new != old {
-                clip.set_own_label(&new);
-                changes.push((clip.id, old, new));
-            }
-        }
+            (new != old).then_some((clip.id, old, new))
+        }).collect();
         if changes.is_empty() {
             return;
         }
-        // Through push_history, so a rename counts toward autosave.
-        self.state.push_history(crate::history::EditCommand::SetClipLabels { description, changes });
+        self.commit(crate::history::EditCommand::SetClipLabels { description, changes });
         self.sync_sequence_to_engine();
-        self.state.dirty = true;
     }
 
     fn handle_clip_basic_ops(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
@@ -1554,11 +1539,7 @@ impl KlippApp {
             old_timeline_out
         };
 
-        clip.kind = klipp_timeline::ClipKind::Media { media_id: new_media_id };
-        clip.source_out = new_source_out;
-        clip.timeline_out = new_timeline_out;
-
-        self.state.push_history(EditCommand::LegacyReplaceClipMedia {
+        self.commit(EditCommand::LegacyReplaceClipMedia {
             clip_id,
             old_media_id,
             new_media_id,
