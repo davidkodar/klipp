@@ -722,6 +722,12 @@ impl DocumentView<'_> {
             EditCommand::CreateBin { bin } => {
                 self.media_pool.bins.retain(|b| b.id != bin.id);
             }
+            EditCommand::DeleteBin { bin, at } => {
+                if !self.media_pool.bins.iter().any(|b| b.id == bin.id) {
+                    let at = (*at).min(self.media_pool.bins.len());
+                    self.media_pool.bins.insert(at, bin.clone());
+                }
+            }
             EditCommand::SetRoles { old, .. } => {
                 self.media_pool.roles = (**old).clone();
                 effects.sync_media_pool = true;
@@ -1503,6 +1509,9 @@ impl DocumentView<'_> {
                 if !self.media_pool.bins.iter().any(|b| b.id == bin.id) {
                     self.media_pool.bins.push(bin.clone());
                 }
+            }
+            EditCommand::DeleteBin { bin, .. } => {
+                self.media_pool.bins.retain(|b| b.id != bin.id);
             }
             EditCommand::MoveMediaToBin { media_id, to_bin, to_bin_id, .. } => {
                 // Redo: apply both legacy string and bin_id

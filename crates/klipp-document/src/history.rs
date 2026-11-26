@@ -555,6 +555,13 @@ pub enum EditCommand {
     CreateBin {
         bin: klipp_media::Bin,
     },
+    /// A bin taken out of the media pool, from place `at` in its list:
+    /// undo puts it back there, redo takes it out again. Its items are
+    /// moved out of it by steps of their own.
+    DeleteBin {
+        bin: klipp_media::Bin,
+        at: usize,
+    },
     MoveMediaToBin {
         media_id: MediaId,
         from_bin: Option<String>,
@@ -973,6 +980,7 @@ impl EditCommand {
             EditCommand::SetProjectColour { .. }
             | EditCommand::SetMediaLogFormat { .. }
             | EditCommand::CreateBin { .. }
+            | EditCommand::DeleteBin { .. }
             | EditCommand::SetRoles { .. }
             | EditCommand::MoveMediaToBin { .. }
             | EditCommand::SetMediaTags { .. }
@@ -1057,6 +1065,7 @@ impl EditCommand {
             EditCommand::AddMediaToPool { .. } => "Import Media",
             EditCommand::RemoveMediaFromPool { .. } => "Remove Media",
             EditCommand::CreateBin { .. } => "New Bin",
+            EditCommand::DeleteBin { .. } => "Delete Bin",
             EditCommand::SetRoles { .. } => "Edit Roles",
             EditCommand::MoveMediaToBin { .. } => "Move to Bin",
             EditCommand::SetMediaTags { .. } => "Set Tags",
