@@ -613,6 +613,7 @@ fn escape_cancels_a_trim_and_a_move() {
         tl.frame(vec![egui::Event::PointerMoved(to)], m);
         if trim {
             assert!(serde_json::to_value(&tl.state.sequence().tracks).unwrap() != before, "{case}: the trim is under way");
+            assert!(tl.state.is_live(), "{case}: shown as the project's live edit");
         }
         tl.sent.clear();
         tl.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: m }], m);
@@ -621,6 +622,7 @@ fn escape_cancels_a_trim_and_a_move() {
         tl.frame(Vec::new(), m);
         let _ = ids;
         assert!(serde_json::to_value(&tl.state.sequence().tracks).unwrap() == before, "{case}: the tracks exactly as they were");
+        assert!(!tl.state.is_live(), "{case}: no live edit left");
         assert!(!tl.sent.iter().any(|c| matches!(c, AppCommand::MoveClip { .. } | AppCommand::MoveClips { .. } | AppCommand::MoveClipToTrack { .. } | AppCommand::TrimClip { .. } | AppCommand::MovePrimaryBlock { .. })), "{case}: nothing sent: {:?}", tl.sent);
         assert!(tl.state.active_history_mut().undo().is_none(), "{case}: no history entry");
     }

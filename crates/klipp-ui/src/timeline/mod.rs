@@ -9,6 +9,7 @@ pub mod range_visuals;
 pub mod grid_snap;
 pub mod snap;
 pub mod stretch_drag;
+pub(crate) mod trim_gesture;
 pub mod moves;
 pub mod camera_lane;
 pub mod stacked;
