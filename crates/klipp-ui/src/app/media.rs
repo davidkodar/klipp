@@ -228,32 +228,34 @@ impl KlippApp {
                         let track_index = self.state.document.sequences[self.state.active_sequence_idx]
                             .source_track(target_kind)
                             .unwrap_or(0);
-                        let appended_id = append_whole_file(&mut self.state.document.sequences[self.state.active_sequence_idx], &item, track_index);
-                        if let Some(clip_id) = appended_id {
-                            self.apply_input_defaults(clip_id, *media_id);
+                        let mut appended_id = None;
+                        let mid = *media_id;
+                        self.commit_worked_out(|app| {
+                            let active = app.state.active_sequence_idx;
+                            let clip_id = append_whole_file(&mut app.state.document.sequences[active], &item, track_index)?;
+                            appended_id = Some(clip_id);
+                            app.apply_input_defaults(clip_id, mid);
                             // The file's audio, linked to this clip. Without
                             // it the timeline is silent and so is every
                             // render made from it.
-                            let audio = self.append_linked_audio(*media_id, clip_id);
-                            let clip = self.state.document.sequences[self.state.active_sequence_idx].tracks[track_index].find_clip(clip_id).unwrap().clone();
-                            match audio {
-                                // One history entry for the pair, so a
-                                // single undo takes both back.
-                                Some(a) => self.state.push_history(EditCommand::LinkedImport {
+                            let audio = app.append_linked_audio(mid, clip_id);
+                            let clip = app.state.document.sequences[active].tracks[track_index].find_clip(clip_id)?.clone();
+                            Some(match audio {
+                                // One step for the pair, so a single undo
+                                // takes both back.
+                                Some(a) => EditCommand::LinkedImport {
                                     video: Some((clip, track_index)),
                                     audio: Some((a.clip, a.track_index)),
                                     created_video_track_at: None,
                                     created_audio_track_at: a.created_track_at,
                                     autoset: None,
-                                }),
-                                None => self.state.push_history(EditCommand::LegacyAppendClip {
-                                    clip,
-                                    track_index,
-                                }),
-                            }
+                                },
+                                None => EditCommand::LegacyAppendClip { clip, track_index },
+                            })
+                        });
+                        if let Some(clip_id) = appended_id {
                             self.sync_sequence_to_engine();
                             self.state.selected_clip = Some(clip_id);
-                            self.state.dirty = true;
                             // Sound under the picture ends with it (#2983).
                             if is_audio_only {
                                 self.trim_sound_to_picture(clip_id);
@@ -285,22 +287,35 @@ impl KlippApp {
                         .find(|c| c.id == *clip_id)
                         .and_then(|c| c.media_id())
                         .and_then(|m| self.external_audio_of(m));
-                    match attach_linked_audio_to_clip(&mut self.state.document.sequences[seq_idx], *clip_id, external) {
-                        Some(a) => {
-                            self.state.push_history(EditCommand::LinkedImport {
-                                video: None,
-                                audio: Some((a.clip, a.track_index)),
-                                created_video_track_at: None,
-                                created_audio_track_at: a.created_track_at,
-                                autoset: None,
-                            });
-                            self.sync_sequence_to_engine();
-                            self.state.dirty = true;
-                            self.state.toast.show("Audio attached");
-                        }
-                        None => {
-                            self.state.toast.show("That clip already has its audio");
-                        }
+                    // The picture's link to its sound is in the step with
+                    // the sound: recorded alone, undo took the sound away
+                    // and left the picture linked to a clip not there.
+                    let clip_id = *clip_id;
+                    let mut attached = false;
+                    self.commit_worked_out(|app| {
+                        let old = app.state.sequence().all_clips().find(|c| c.id == clip_id)?.clone();
+                        let a = attach_linked_audio_to_clip(app.state.sequence_mut(), clip_id, external)?;
+                        let new = app.state.sequence().all_clips().find(|c| c.id == clip_id)?.clone();
+                        attached = true;
+                        Some(EditCommand::Named {
+                            label: "Attach Audio".into(),
+                            edit: Box::new(EditCommand::Batch(vec![
+                                EditCommand::ReplaceClip { description: "Attach Audio", old: Box::new(old), new: Box::new(new) },
+                                EditCommand::LinkedImport {
+                                    video: None,
+                                    audio: Some((a.clip, a.track_index)),
+                                    created_video_track_at: None,
+                                    created_audio_track_at: a.created_track_at,
+                                    autoset: None,
+                                },
+                            ])),
+                        })
+                    });
+                    if attached {
+                        self.sync_sequence_to_engine();
+                        self.state.toast.show("Audio attached");
+                    } else {
+                        self.state.toast.show("That clip already has its audio");
                     }
                     true
                 }
@@ -366,22 +381,21 @@ impl KlippApp {
                     // sweetener layers like the hyperzoom whoosh to
                     // dispatch synchronously inside another
                     // handler).
-                    let active_idx = self.state.active_sequence_idx;
-                    let result = insert_audio_media_clip_into_seq(
-                        &mut self.state.document.sequences[active_idx],
-                        &self.state.document.media_pool,
-                        *media_id,
-                        *track_index,
-                        *timeline_in,
-                    );
-                    match result {
-                        Ok(inserted) => {
-                            self.state.push_history(EditCommand::LegacyAppendClip {
-                                clip: inserted.clip,
-                                track_index: inserted.track_index,
-                            });
-                            self.state.dirty = true;
+                    let (media_id, track_index, timeline_in) = (*media_id, *track_index, *timeline_in);
+                    let mut result = Ok(());
+                    self.commit_worked_out(|app| {
+                        let active = app.state.active_sequence_idx;
+                        let state = &mut app.state;
+                        match insert_audio_media_clip_into_seq(&mut state.document.sequences[active], &state.document.media_pool, media_id, track_index, timeline_in) {
+                            Ok(inserted) => Some(EditCommand::LegacyAppendClip { clip: inserted.clip, track_index: inserted.track_index }),
+                            Err(e) => {
+                                result = Err(e);
+                                None
+                            }
                         }
+                    });
+                    match result {
+                        Ok(()) => {}
                         Err(e) => {
                             tracing::warn!(
                                 "InsertAudioMediaClip rejected for media={:?} track={:?}: {e}",
@@ -400,21 +414,25 @@ impl KlippApp {
                         self.state.toast.show("That clip is no longer in the media pool");
                         return true;
                     };
-                    {
+                    // Worked out in place, then made through one commit:
+                    // the step recorded is what is applied.
+                    let media_id = *media_id;
+                    let on_new_tracks = *on_new_tracks;
+                    self.commit_worked_out(|app| {
                         // Accumulate everything this gesture mutates so a
                         // single ctrl+z can revert it as one atomic unit.
                         let mut hist_video: Option<(klipp_timeline::Clip, usize)> = None;
                         let mut hist_audio: Option<(klipp_timeline::Clip, usize)> = None;
                         let mut hist_created_video_track_at: Option<usize> = None;
                         let mut hist_created_audio_track_at: Option<usize> = None;
-                        let hist_autoset = self.adopt_first_clip_format(&item);
+                        let hist_autoset = app.adopt_first_clip_format(&item);
                         // Check for browser range selection (trimmed source in/out)
-                        let range = self.state.browser_range_selection.take()
-                            .filter(|r| r.media_id == *media_id);
+                        let range = app.state.browser_range_selection.take()
+                            .filter(|r| r.media_id == media_id);
                         // Said, since a range swiped by accident looks like
                         // a clip cut short.
                         if let Some(sel) = &range {
-                            self.state.toast.show(format!(
+                            app.state.toast.show(format!(
                                 "Added the range marked on its thumbnail: {} of {}",
                                 klipp_media::describe_secs(sel.range_out_secs - sel.range_in_secs),
                                 klipp_media::describe_secs(item.duration.to_secs_f64()),
@@ -431,11 +449,11 @@ impl KlippApp {
                                 value: (sel.range_out_secs * rate as f64).round() as i64,
                                 rate,
                             };
-                            let fps = self.state.document.sequences[self.state.active_sequence_idx].fps;
+                            let fps = app.state.document.sequences[app.state.active_sequence_idx].fps;
                             // Never past the picture's last whole frame.
                             placed_range(src_in, src_out.min(item.placed_length(fps)).max(src_in), fps)
                         } else {
-                            source_marks_range(&item, self.state.document.sequences[self.state.active_sequence_idx].fps)
+                            source_marks_range(&item, app.state.document.sequences[app.state.active_sequence_idx].fps)
                         };
 
                         let has_video = !item.video_codec.is_empty();
@@ -457,8 +475,8 @@ impl KlippApp {
                             // bottom of the audio group. Default mode:
                             // V1 / first existing A track (auto-create A
                             // only if missing).
-                            let video_track_idx = if *on_new_tracks {
-                                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
+                            let video_track_idx = if on_new_tracks {
+                                let seq = &mut app.state.document.sequences[app.state.active_sequence_idx];
                                 let video_count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
                                 seq.add_video_track(format!("Video {}", video_count + 1));
                                 // add_video_track inserts at index 0.
@@ -467,21 +485,21 @@ impl KlippApp {
                             } else {
                                 // The main track, V1, unless the source is
                                 // patched elsewhere: not the top one.
-                                self.state.document.sequences[self.state.active_sequence_idx].source_track(klipp_timeline::TrackKind::Video)
+                                app.state.document.sequences[app.state.active_sequence_idx].source_track(klipp_timeline::TrackKind::Video)
                             };
-                            let audio_track_idx = if *on_new_tracks {
-                                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
+                            let audio_track_idx = if on_new_tracks {
+                                let seq = &mut app.state.document.sequences[app.state.active_sequence_idx];
                                 let audio_count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
                                 seq.add_audio_track(format!("Audio {}", audio_count + 1));
                                 let new_idx = seq.tracks.len() - 1;
                                 hist_created_audio_track_at = Some(new_idx);
                                 Some(new_idx)
                             } else {
-                                match self.state.document.sequences[self.state.active_sequence_idx].source_track(klipp_timeline::TrackKind::Audio) {
+                                match app.state.document.sequences[app.state.active_sequence_idx].source_track(klipp_timeline::TrackKind::Audio) {
                                     Some(i) => Some(i),
                                     None => {
                                         // Auto-create audio track to host the imported audio.
-                                        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
+                                        let seq = &mut app.state.document.sequences[app.state.active_sequence_idx];
                                         let audio_count = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
                                         seq.add_audio_track(format!("Audio {}", audio_count + 1));
                                         let new_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio);
@@ -496,17 +514,17 @@ impl KlippApp {
                                 // side by side (#3448): each at its own
                                 // track's end put the sound under some
                                 // other picture.
-                                let end = self.state.document.sequences[self.state.active_sequence_idx].total_duration();
-                                let video_clip_id = self.state.document.sequences[self.state.active_sequence_idx].tracks[vi].append_clip_from(*media_id, use_duration, end);
-                                apply_range(&mut self.state.document.sequences[self.state.active_sequence_idx].tracks[vi], video_clip_id);
-                                let audio_clip_id = self.state.document.sequences[self.state.active_sequence_idx].tracks[ai].append_clip_from(*media_id, use_duration, end);
-                                apply_range(&mut self.state.document.sequences[self.state.active_sequence_idx].tracks[ai], audio_clip_id);
+                                let end = app.state.document.sequences[app.state.active_sequence_idx].total_duration();
+                                let video_clip_id = app.state.document.sequences[app.state.active_sequence_idx].tracks[vi].append_clip_from(media_id, use_duration, end);
+                                apply_range(&mut app.state.document.sequences[app.state.active_sequence_idx].tracks[vi], video_clip_id);
+                                let audio_clip_id = app.state.document.sequences[app.state.active_sequence_idx].tracks[ai].append_clip_from(media_id, use_duration, end);
+                                apply_range(&mut app.state.document.sequences[app.state.active_sequence_idx].tracks[ai], audio_clip_id);
 
-                                if let Some(vc) = self.state.document.sequences[self.state.active_sequence_idx].tracks[vi].find_clip_mut(video_clip_id) {
+                                if let Some(vc) = app.state.document.sequences[app.state.active_sequence_idx].tracks[vi].find_clip_mut(video_clip_id) {
                                     vc.linked_clip_id = Some(audio_clip_id);
                                     vc.source_rotation = item.source_rotation;
                                 }
-                                if let Some(ac) = self.state.document.sequences[self.state.active_sequence_idx].tracks[ai].find_clip_mut(audio_clip_id) {
+                                if let Some(ac) = app.state.document.sequences[app.state.active_sequence_idx].tracks[ai].find_clip_mut(audio_clip_id) {
                                     ac.linked_clip_id = Some(video_clip_id);
                                 }
 
@@ -518,18 +536,16 @@ impl KlippApp {
                                 // sees a flat raw-log image and has to
                                 // pick the format manually for every
                                 // imported clip.
-                                self.apply_input_defaults(video_clip_id, *media_id);
+                                app.apply_input_defaults(video_clip_id, media_id);
 
-                                if let Some(vc) = self.state.document.sequences[self.state.active_sequence_idx].tracks[vi].find_clip(video_clip_id) {
+                                if let Some(vc) = app.state.document.sequences[app.state.active_sequence_idx].tracks[vi].find_clip(video_clip_id) {
                                     hist_video = Some((vc.clone(), vi));
                                 }
-                                if let Some(ac) = self.state.document.sequences[self.state.active_sequence_idx].tracks[ai].find_clip(audio_clip_id) {
+                                if let Some(ac) = app.state.document.sequences[app.state.active_sequence_idx].tracks[ai].find_clip(audio_clip_id) {
                                     hist_audio = Some((ac.clone(), ai));
                                 }
 
-                                self.state.selected_clip = Some(video_clip_id);
-                                self.sync_sequence_to_engine();
-                                self.state.dirty = true;
+                                app.state.selected_clip = Some(video_clip_id);
                             }
                         } else {
                             let target_kind = if has_video {
@@ -537,8 +553,8 @@ impl KlippApp {
                             } else {
                                 klipp_timeline::TrackKind::Audio
                             };
-                            let track_idx = if *on_new_tracks {
-                                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
+                            let track_idx = if on_new_tracks {
+                                let seq = &mut app.state.document.sequences[app.state.active_sequence_idx];
                                 let count = seq.tracks.iter().filter(|t| t.kind == target_kind).count();
                                 if has_video {
                                     seq.add_video_track(format!("Video {}", count + 1));
@@ -551,11 +567,11 @@ impl KlippApp {
                                     idx
                                 }
                             } else {
-                                self.state.document.sequences[self.state.active_sequence_idx].source_track(target_kind).unwrap_or(0)
+                                app.state.document.sequences[app.state.active_sequence_idx].source_track(target_kind).unwrap_or(0)
                             };
-                            let end = self.state.document.sequences[self.state.active_sequence_idx].total_duration();
-                            if let Some(track) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(track_idx) {
-                                let clip_id = track.append_clip_from(*media_id, use_duration, end);
+                            let end = app.state.document.sequences[app.state.active_sequence_idx].total_duration();
+                            if let Some(track) = app.state.document.sequences[app.state.active_sequence_idx].tracks.get_mut(track_idx) {
+                                let clip_id = track.append_clip_from(media_id, use_duration, end);
                                 apply_range(track, clip_id);
                                 if has_video {
                                     if let Some(c) = track.find_clip_mut(clip_id) {
@@ -566,15 +582,13 @@ impl KlippApp {
                                 // format (video-only path; audio has no
                                 // InputTransform).
                                 if has_video {
-                                    self.apply_input_defaults(clip_id, *media_id);
+                                    app.apply_input_defaults(clip_id, media_id);
                                 }
-                                if let Some(c) = self.state.document.sequences[self.state.active_sequence_idx].tracks[track_idx].find_clip(clip_id) {
+                                if let Some(c) = app.state.document.sequences[app.state.active_sequence_idx].tracks[track_idx].find_clip(clip_id) {
                                     let snap = (c.clone(), track_idx);
                                     if has_video { hist_video = Some(snap); } else { hist_audio = Some(snap); }
                                 }
-                                self.state.selected_clip = Some(clip_id);
-                                self.sync_sequence_to_engine();
-                                self.state.dirty = true;
+                                app.state.selected_clip = Some(clip_id);
                             }
                         }
 
@@ -583,19 +597,19 @@ impl KlippApp {
                             // put nothing down says so.
                             let kind = if has_video { "video" } else { "audio" };
                             tracing::info!("placement: {} not placed, no {kind} track", item.filename);
-                            self.state.toast.show(format!("Couldn't place '{}': the timeline has no {kind} track to put it on", item.filename));
+                            app.state.toast.show(format!("Couldn't place '{}': the timeline has no {kind} track to put it on", item.filename));
+                            None
                         } else {
-                            self.state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::LinkedImport {
-                                    video: hist_video,
-                                    audio: hist_audio,
-                                    created_video_track_at: hist_created_video_track_at,
-                                    created_audio_track_at: hist_created_audio_track_at,
-                                    autoset: hist_autoset,
-                                },
-                            });
+                            Some(crate::history::EditCommand::LinkedImport {
+                                video: hist_video,
+                                audio: hist_audio,
+                                created_video_track_at: hist_created_video_track_at,
+                                created_audio_track_at: hist_created_audio_track_at,
+                                autoset: hist_autoset,
+                            })
                         }
-                    }
+                    });
+                    self.sync_sequence_to_engine();
                     true
                 }
             _ => false,

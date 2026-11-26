@@ -671,3 +671,86 @@ fn a_grouped_clip_moved_takes_its_group_in_one_step() {
     app.send_commands(vec![AppCommand::Undo]);
     assert_eq!((start(&app, first), start(&app, second)), (at(0.0), at(6.0)), "undo puts the group back");
 }
+
+fn a_sound_file(app: &mut KlippApp) -> klipp_core::MediaId {
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/media/song.wav".into(), None);
+    item.video_codec = String::new();
+    app.state.document.media_pool.add(item)
+}
+
+/// A file appended to the end of the timeline, its sound linked, and a
+/// sound file appended alone: each one step, redone as made.
+#[test]
+fn an_appended_file_redoes_as_made() {
+    for sound_only in [false, true] {
+        let (mut app, _engine) = KlippApp::for_test();
+        linked_pair(&mut app);
+        let media_id = if sound_only { a_sound_file(&mut app) } else { a_file(&mut app) };
+        let depth = app.state.undo_depth();
+        app.suppress_fps_prompt = true;
+        let before = contents(&app);
+        app.send_commands(vec![AppCommand::AppendClip { media_id }]);
+        assert_ne!(contents(&app), before);
+        // A sound alone is trimmed to the picture as a step of its own,
+        // which its toast offers to undo.
+        let steps = app.state.undo_depth() - depth;
+        let made = contents(&app);
+        for _ in 0..steps {
+            app.send_commands(vec![AppCommand::Undo]);
+        }
+        assert!(contents(&app) == before, "undo gives the timeline back");
+        for _ in 0..steps {
+            app.send_commands(vec![AppCommand::Redo]);
+        }
+        assert!(contents(&app) == made, "redo makes it as the append made it");
+    }
+}
+
+/// A picture without its sound given it back: one step, redone as made.
+#[test]
+fn sound_attached_to_a_picture_redoes_as_made() {
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let (mut app, _engine) = KlippApp::for_test();
+    let media_id = a_file(&mut app);
+    let picture = klipp_timeline::Clip::media(media_id, at(0.0), at(3.0), at(0.0), at(3.0));
+    let clip_id = picture.id;
+    let video = app.state.sequence().tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    app.state.sequence_mut().tracks[video].clips.push(picture);
+    redoes_as_made(&mut app, vec![AppCommand::AttachLinkedAudio { clip_id }]);
+}
+
+/// A sound put on an audio track at a time: one step, redone as made.
+#[test]
+fn a_sound_inserted_at_a_time_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    linked_pair(&mut app);
+    let media_id = a_sound_file(&mut app);
+    let track_index = app.state.sequence().tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
+    redoes_as_made(&mut app, vec![AppCommand::InsertAudioMediaClip { media_id, track_index: Some(track_index), timeline_in: klipp_core::RationalTime::from_secs_f64(6.0, 24) }]);
+}
+
+/// A file imported onto the timeline, its sound linked, on the tracks
+/// there are and on new ones; and a sound file on a new track.
+#[test]
+fn a_linked_import_redoes_as_made() {
+    for (sound_only, on_new_tracks) in [(false, false), (false, true), (true, true), (true, false)] {
+        let (mut app, _engine) = KlippApp::for_test();
+        linked_pair(&mut app);
+        let media_id = if sound_only { a_sound_file(&mut app) } else { a_file(&mut app) };
+        redoes_as_made(&mut app, vec![AppCommand::ImportMediaLinked { media_id, on_new_tracks }]);
+    }
+}
+
+/// A pair's volume keys reversed, then pasted from the clipboard: each one
+/// step on both clips, redone as made.
+#[test]
+fn audio_keys_reversed_and_pasted_redo_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let (picture, _sound) = linked_pair(&mut app);
+    for (t, v) in [(0.5, 0.2), (2.0, 0.9)] {
+        app.send_commands(vec![AppCommand::AddAudioKeyframe { clip_id: picture, param: klipp_core::AudioParam::Volume, time_secs: t, value: v }]);
+    }
+    redoes_as_made(&mut app, vec![AppCommand::ReverseAudioKeyframes { clip_id: picture, param: klipp_core::AudioParam::Volume }]);
+    app.send_commands(vec![AppCommand::CopyAudioKeyframes { clip_id: picture, param: klipp_core::AudioParam::Volume }]);
+    redoes_as_made(&mut app, vec![AppCommand::PasteAudioKeyframes { clip_id: picture, param: klipp_core::AudioParam::Pan }]);
+}

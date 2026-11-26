@@ -65,6 +65,9 @@ impl KlippApp {
         let edit = work(self).map(|edit| self.state.with_made_tracks(edit));
         debug_assert_eq!(self.state.active_sequence_idx, active, "the edit stays on its sequence");
         self.state.document.sequences[active] = before;
+        // The app's rate follows the sequence's: a first clip's format the
+        // helpers took is the step's to take again.
+        self.state.fps = self.state.document.sequences[active].fps;
         if let Some(edit) = edit {
             self.commit(edit);
         }

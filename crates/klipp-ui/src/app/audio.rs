@@ -65,33 +65,24 @@ impl KlippApp {
         // 3. Generate volume keyframes on the target clip
         let keyframes = crate::auto_duck::duck_keys(&active_regions, target_timeline_start, target_clip_dur_secs, *attack_secs as f64, *release_secs as f64, *duck_level);
 
-        // 4. Apply keyframes to the target clip
-        for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-            if let Some(clip) = track.find_clip_mut(*target_clip_id) {
-                clip.volume_keyframes = keyframes;
-                break;
-            }
-        }
-
-        // 5. Push undo history
-        if let Some(old_snap) = old_state {
-            let seq = &self.state.document.sequences[self.state.active_sequence_idx];
-            let new_state = seq.all_clips().find(|c| c.id == *target_clip_id).map(KeyframeSnapshot::from_clip);
-            if let Some(new_snap) = new_state {
-                self.state.push_history(EditCommand::EditKeyframes {
-                        clip_id: *target_clip_id,
-                        linked_clip_id: None,
-                        description: "Auto Duck Audio",
-                        old_state: old_snap,
-                        new_state: new_snap,
-                        old_linked_state: None,
-                        new_linked_state: None,
-                    });
-            }
-        }
+        // 4. The keys on the target clip, as one step.
+        let target = *target_clip_id;
+        self.commit_worked_out(|app| {
+            let clip = app.state.sequence_mut().tracks.iter_mut().find_map(|t| t.find_clip_mut(target))?;
+            clip.volume_keyframes = keyframes;
+            let new_state = KeyframeSnapshot::from_clip(clip);
+            Some(EditCommand::EditKeyframes {
+                clip_id: target,
+                linked_clip_id: None,
+                description: "Auto Duck Audio",
+                old_state: old_state?,
+                new_state,
+                old_linked_state: None,
+                new_linked_state: None,
+            })
+        });
         self.sync_sequence_to_engine();
         let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-        self.state.dirty = true;
     }
 
     fn handle_audio_keyframe_curves(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
@@ -212,13 +203,9 @@ impl KlippApp {
                             new_kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
                             // On its linked partner too, where a pair's
                             // level is read.
-                            let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                            if let Some(edit) = super::linked_audio::set_audio_keys_with_partner(seq, *clip_id, *param, new_kfs, "Paste Audio Keyframes") {
-                                self.state.push_history(edit);
-                            }
+                            self.commit_worked_out(|app| super::linked_audio::set_audio_keys_with_partner(app.state.sequence_mut(), *clip_id, *param, new_kfs, "Paste Audio Keyframes"));
                             self.sync_sequence_to_engine();
                             let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                            self.state.dirty = true;
                         }
                     }
                     true
@@ -233,14 +220,10 @@ impl KlippApp {
                     });
                     // On its linked partner too, where a pair's level is read.
                     if let Some(reversed) = reversed {
-                        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                        if let Some(edit) = super::linked_audio::set_audio_keys_with_partner(seq, *clip_id, *param, reversed, "Reverse Audio Keyframes") {
-                            self.state.push_history(edit);
-                        }
+                        self.commit_worked_out(|app| super::linked_audio::set_audio_keys_with_partner(app.state.sequence_mut(), *clip_id, *param, reversed, "Reverse Audio Keyframes"));
                     }
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                    self.state.dirty = true;
                     true
                 }
                 AppCommand::MoveAudioKeyframe { clip_id, param, index, new_time_secs, new_value } => {
