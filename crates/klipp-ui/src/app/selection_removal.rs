@@ -81,8 +81,7 @@ pub(crate) fn remove_clips(state: &mut AppState, ids: &[ClipId], lift: bool, lab
             apply(state, e);
         }
         if lift {
-            let result = klipp_timeline::magnetic::MagneticEditor::lift(state.sequence_mut(), id);
-            state.push_history(EditCommand::Magnetic(result.command));
+            let _ = state.commit_magnetic(|seq| klipp_timeline::magnetic::MagneticEditor::lift(seq, id).command);
             continue;
         }
         // A transition joining the clip (or its linked partner, which the
@@ -91,8 +90,7 @@ pub(crate) fn remove_clips(state: &mut AppState, ids: &[ClipId], lift: bool, lab
         for e in klipp_document::ops::transitions_removed_with(state.sequence(), &gone) {
             apply(state, e);
         }
-        let result = klipp_timeline::magnetic::MagneticEditor::ripple_delete(state.sequence_mut(), id);
-        state.push_history(EditCommand::Magnetic(result.command));
+        let _ = state.commit_magnetic(|seq| klipp_timeline::magnetic::MagneticEditor::ripple_delete(seq, id).command);
     }
     if own_batch {
         state.active_history_mut().end_batch_as(label);

@@ -6347,6 +6347,12 @@ impl AppState {
     /// applied, now and on redo. `None` is no step, and the sequence is
     /// put back all the same. The app's own twin also runs the effects.
     #[must_use = "the engine is told of the edit only by running its effects"]
+    /// A storyline edit `edit` works out on the active sequence, committed
+    /// as its step through [`Self::commit_worked_out`].
+    pub(crate) fn commit_magnetic(&mut self, edit: impl FnOnce(&mut klipp_timeline::Sequence) -> klipp_timeline::magnetic_commands::MagneticEditCommand) -> Option<klipp_document::apply::Effects> {
+        self.commit_worked_out(|s| Some(EditCommand::Magnetic(edit(s.sequence_mut()))))
+    }
+
     pub(crate) fn commit_worked_out(&mut self, work: impl FnOnce(&mut Self) -> Option<EditCommand>) -> Option<klipp_document::apply::Effects> {
         let active = self.active_sequence_idx;
         let before = self.document.sequences[active].clone();

@@ -269,21 +269,13 @@ impl InspectorEditHost<'_> {
     /// keyed tracks.
     fn edit_keys(&mut self, clip_id: klipp_core::ClipId, description: &'static str, f: impl FnOnce(&mut klipp_timeline::Clip)) {
         let Some(edit) = super::history_apply::keys_edit(self.state.sequence(), clip_id, None, description, |clip, _| f(clip)) else { return };
-        let effects = klipp_document::apply::DocumentView {
-            sequences: &mut self.state.document.sequences,
-            active: self.state.active_sequence_idx,
-            media_pool: &mut self.state.document.media_pool,
-            fps: &mut self.state.fps,
-        }
-        .apply_forward(&edit);
+        let effects = self.state.commit(edit);
         if effects.sync_sequence {
             self.side.sync_sequence(self.state);
         }
         if effects.notify_engine {
             self.side.send(AppCommand::SequenceUpdated);
         }
-        self.state.push_history(edit);
-        self.state.dirty = true;
     }
 
     /// A drag's tick: clip `clip_id` changed in place by `f` and the engine
@@ -355,7 +347,8 @@ impl InspectorEditHost<'_> {
         }
         self.state.dirty = true;
         if let (Some(label), Some(old_state), Some(new_state)) = (label, old_state, snapshot(self.state)) {
-            self.state.push_history(EditCommand::EditKeyframes { clip_id, linked_clip_id: None, description: label, old_state, new_state, old_linked_state: None, new_linked_state: None });
+            // The keys are already the new ones; the step sets them again.
+            let _ = self.state.commit(EditCommand::EditKeyframes { clip_id, linked_clip_id: None, description: label, old_state, new_state, old_linked_state: None, new_linked_state: None });
         }
         true
     }
@@ -446,11 +439,15 @@ impl InspectorEditHost<'_> {
         };
         self.state.dirty = true;
         if record {
+            // Worked out on the clip; it is put back and the step makes it.
+            if let Some(clip) = self.state.sequence_mut().all_clips_mut().find(|c| c.id == clip_id) {
+                *clip = before.clone();
+            }
             let command = match ramped {
                 true => EditCommand::ReplaceClip { description, old: Box::new(before), new: Box::new(after) },
                 false => EditCommand::PictureEdit { description, clip_id, edit: Box::new(done) },
             };
-            self.state.push_history(command);
+            let _ = self.state.commit(command);
         }
         Some(ramped)
     }
@@ -504,8 +501,8 @@ impl InspectorEditHost<'_> {
                 let before = clip.clone();
                 clip.effects_switched_off = nodes.clone();
                 let after = clip.clone();
-                self.state.dirty = true;
-                self.state.push_history(EditCommand::ReplaceClip { description: "All Effects", old: Box::new(before), new: Box::new(after) });
+                // The clip already holds the list; the step sets it again.
+                let _ = self.state.commit(EditCommand::ReplaceClip { description: "All Effects", old: Box::new(before), new: Box::new(after) });
                 true
             }
             // Built-in effects

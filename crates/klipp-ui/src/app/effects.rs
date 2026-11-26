@@ -431,11 +431,16 @@ impl KlippApp {
     fn ofx_edits(&mut self, clip_id: klipp_core::ClipId, edits: &[klipp_timeline::OfxEdit], description: &'static str, record: bool) -> bool {
         let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
         let Some(clip) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return false };
+        let before = record.then(|| clip.clone());
         match clip.apply_ofx_edits(edits) {
             Ok(done) => {
                 self.state.dirty = true;
-                if record {
-                    self.state.push_history(EditCommand::PictureEdit { description, clip_id, edit: Box::new(done) });
+                if let Some(before) = before {
+                    // Worked out on the clip; it is put back and the step makes it.
+                    if let Some(clip) = self.state.sequence_mut().all_clips_mut().find(|c| c.id == clip_id) {
+                        *clip = before;
+                    }
+                    let _ = self.state.commit(EditCommand::PictureEdit { description, clip_id, edit: Box::new(done) });
                 }
                 true
             }
