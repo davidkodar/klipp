@@ -141,7 +141,7 @@ fn the_top_corner_stretches_and_snaps_to_another_tracks_edge() {
 /// The edge below the grip trims, as it always has.
 #[test]
 fn the_edge_below_the_grip_still_trims() {
-    let (state, _, _) = fixture();
+    let (state, clip, _) = fixture();
     let mut tl = Timeline::new(state);
     let v1 = tl.track("Video 1");
     let r = tl.rect(v1);
@@ -149,6 +149,8 @@ fn the_edge_below_the_grip_still_trims() {
     tl.drag(edge, &[edge + egui::vec2(-40.0, 0.0)], egui::Modifiers::NONE);
     assert!(tl.stretches().is_empty(), "no stretch: {:?}", tl.sent);
     assert!(tl.sent.iter().any(|c| matches!(c, AppCommand::TrimClip { .. })), "a trim: {:?}", tl.sent);
+    assert!(!tl.state.is_live(), "the live trim taken back for the one sent");
+    assert_eq!(tl.state.sequence().all_clips().find(|c| c.id == clip).unwrap().timeline_out, t(4.0), "the clip as the drag found it, for the handler to trim");
 }
 
 /// Two selected clips whose ends are at the same time stretch together

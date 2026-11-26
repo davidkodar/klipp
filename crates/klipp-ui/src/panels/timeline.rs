@@ -1098,83 +1098,20 @@ fn shifted_track(seq: &klipp_timeline::Sequence, from: usize, to: usize, ti: usi
     seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == kind).nth(usize::try_from(want).ok()?).map(|(i, _)| i)
 }
 
+/// An edge drag under way: what it means as an edit is the gesture's
+/// (U2); where the pointer began is the panel's.
 struct TrimState {
-    clip_id: ClipId,
-    track_idx: usize,
-    edge: TrimEdge,
+    gesture: crate::timeline::trim_gesture::TrimGesture,
     start_x: f32,
-    original_source_in: Timecode,
-    original_source_out: Timecode,
-    original_timeline_in: Timecode,
-    original_timeline_out: Timecode,
-    ripple: bool,
-    /// Whether the linked partner follows (#916): Alt held when the trim
-    /// began, or the Linked switch off, trims this clip alone.
-    linked: bool,
-    /// The sequence as the trim found it: each frame's preview is the
-    /// document's trim of it, so what is drawn is what lands, through
-    /// the clip's speed and direction; put back on release.
-    original: klipp_timeline::Sequence,
-    /// Where the dragged edge last landed with a plan.
-    target: Option<Timecode>,
-    /// The trim reached the end of the clip's media (or its start) and
-    /// the pointer went on (#3055: where a stretch is offered).
-    at_media_end: bool,
-    /// Where the pointer would have the edge, past the media's end too:
-    /// where a stretch instead goes.
-    wanted: Option<Timecode>,
-    /// The snap the trim holds from frame to frame (#3056).
-    hold: Option<crate::timeline::snap::SnapHold>,
 }
 
 impl TrimState {
-    /// The sequence put back as the trim found it, and the trim to
-    /// commit: its target edge in the times `clip_edits::trim` reads (a
-    /// timeline move of the edge, one to one with its source).
-    fn finish(&self, seq: &mut klipp_timeline::Sequence) -> Option<AppCommand> {
-        seq.tracks = self.original.tracks.clone();
-        let target = self.target?;
-        let (mut new_si, mut new_so, mut new_ti, mut new_to) = (self.original_source_in, self.original_source_out, self.original_timeline_in, self.original_timeline_out);
-        match self.edge {
-            TrimEdge::Left => {
-                let d = target - self.original_timeline_in;
-                new_si = self.original_source_in + d;
-                if !self.ripple {
-                    new_ti = target;
-                }
-            }
-            TrimEdge::Right => {
-                new_to = target;
-                new_so = self.original_source_out + (target - self.original_timeline_out);
-            }
+    fn edge(&self) -> TrimEdge {
+        match self.gesture.edge {
+            klipp_document::ops::Edge::In => TrimEdge::Left,
+            klipp_document::ops::Edge::Out => TrimEdge::Right,
         }
-        Some(AppCommand::TrimClip {
-            clip_id: self.clip_id,
-            old_source_in: self.original_source_in,
-            old_source_out: self.original_source_out,
-            old_timeline_in: self.original_timeline_in,
-            old_timeline_out: self.original_timeline_out,
-            new_source_in: new_si,
-            new_source_out: new_so,
-            new_timeline_in: new_ti,
-            new_timeline_out: new_to,
-            ripple: self.ripple,
-            linked: self.linked,
-        })
     }
-}
-
-/// How far a clip's edges can be trimmed on the timeline: its start back
-/// to where its file begins and its end on to where the file ends, read
-/// through its speed and, reversed, from the file's other end. A title,
-/// still or generator has no file to run out of.
-fn trim_limits(clip: &klipp_timeline::Clip, pool: &klipp_media::MediaPool) -> (f64, f64) {
-    let media = clip.media_id().and_then(|m| pool.get(&m)).filter(|m| !m.is_still).map(|m| m.duration.to_secs_f64());
-    let Some(file) = media else { return (0.0, f64::INFINITY) };
-    let speed = if clip.speed.is_finite() && clip.speed != 0.0 { clip.speed.abs() } else { 1.0 };
-    let (before, after) = (clip.source_in.to_secs_f64(), file - clip.source_out.to_secs_f64());
-    let (head, tail) = if clip.is_reversed() { (after, before) } else { (before, after) };
-    (clip.timeline_in.to_secs_f64() - head / speed, clip.timeline_out.to_secs_f64() + tail / speed)
 }
 
 /// Roll trim: adjusts the boundary between two adjacent clips simultaneously.
@@ -8133,6 +8070,11 @@ impl TimelinePanel {
 
     /// The drag under way dropped, the timeline as it was when it began.
     fn cancel_drag(&mut self, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
+        // The edit a drag shows taken back first; the engine is told below.
+        if state.is_live() {
+            let _ = state.cancel_live();
+            cmds.push(AppCommand::SequenceUpdated);
+        }
         if let Some((at, tracks)) = self.cancel_tracks.take().filter(|(at, _)| *at == state.active_sequence_idx) {
             state.document.sequences[at].tracks = tracks;
             cmds.push(AppCommand::SequenceUpdated);
@@ -8310,35 +8252,20 @@ impl TimelinePanel {
                 }
                 // First: check if pointer is near any clip edge (trim)
                 if !started_fade_drag && !started_roll_trim {
-                // Edge hit: copy out the small Copy fields the trim state needs
-                // so we can drop the clips borrow before the ripple-collect step
-                // which itself re-borrows clips (and again before any state &mut).
-                let edge_hit: Option<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime, klipp_core::RationalTime, klipp_core::RationalTime, TrimEdge)> = {
+                // Edge hit: the clip's id and the edge, so the clips borrow
+                // ends before the state is read again.
+                let edge_hit: Option<(klipp_core::ClipId, TrimEdge)> = {
                     let clips = &state.sequence().tracks[track_idx].clips;
                     self.hit_test_edge(clips, content_rect, track_rect, zoom, scroll, track_height, pos)
-                        .map(|(_, hc, edge)| (hc.id, hc.source_in, hc.source_out, hc.timeline_in, hc.timeline_out, edge))
+                        .map(|(_, hc, edge)| (hc.id, edge))
                 };
-                if let Some((hit_clip_id, hit_src_in, hit_src_out, hit_tl_in, hit_tl_out, edge)) = edge_hit {
+                if let Some((hit_clip_id, edge)) = edge_hit {
                     tracing::debug!("drag_started TRIM: clip={:?}, edge={:?}", hit_clip_id, match edge { TrimEdge::Left => "left", TrimEdge::Right => "right" });
-                    self.trimming_clip = Some(TrimState {
-                        clip_id: hit_clip_id,
-                        track_idx,
-                        edge,
-                        start_x: pos.x,
-                        original_source_in: hit_src_in,
-                        original_source_out: hit_src_out,
-                        original_timeline_in: hit_tl_in,
-                        original_timeline_out: hit_tl_out,
-                        ripple: state.ripple_enabled,
-                        // Alt, or the Linked switch off: this clip alone,
-                        // a J or L cut (#916).
-                        linked: state.linked_selection && !ui.input(|i| i.modifiers.alt),
-                        original: state.sequence().clone(),
-                        target: None,
-                        at_media_end: false,
-                        wanted: None,
-                        hold: None,
-                    });
+                    let edge = match edge { TrimEdge::Left => klipp_document::ops::Edge::In, TrimEdge::Right => klipp_document::ops::Edge::Out };
+                    // Alt, or the Linked switch off: this clip alone, a J
+                    // or L cut (#916).
+                    let linked = state.linked_selection && !ui.input(|i| i.modifiers.alt);
+                    self.trimming_clip = crate::timeline::trim_gesture::TrimGesture::begin(state.sequence(), track_idx, hit_clip_id, edge, state.ripple_enabled, linked).map(|gesture| TrimState { gesture, start_x: pos.x });
                 }
                 // Range tool: drag anywhere in track area sets range. No clip
                 // borrow live here, so the state.range_drag mutation is fine.
@@ -11312,145 +11239,74 @@ impl TimelinePanel {
         pointer_down: bool,
         pointer_released: bool,
     ) {
-        // One snap for every drag, held from frame to frame (#3056).
-        let snapper = crate::timeline::snap::Snapper::of(state, zoom, !snap_enabled);
-        let held = std::cell::Cell::new(self.trimming_clip.as_ref().and_then(|t| t.hold));
-        let find_snap = |edge_time: RationalTime, exclude_clip: ClipId| -> Option<(RationalTime, f64, klipp_core::SnapTargetKind)> {
-            let mut hold = held.get();
-            let snap = snapper.snap(&[edge_time], &[exclude_clip], &mut hold);
-            held.set(hold);
-            snap.map(|s| (s.at, s.at.to_secs_f64(), s.kind))
-        };
-
-        // Handle ongoing trim (only process on the trim's own track to avoid duplicate tooltips)
-        if self.trimming_clip.as_ref().is_some_and(|t| t.track_idx == track_idx) {
-            if let (Some(pos), true) = (pointer_pos, pointer_down) {
-                let Some(trim) = self.trimming_clip.as_mut() else { return };
-                let dt = RationalTime::from_secs_f64(f64::from(pos.x - trim.start_x) / f64::from(zoom), fps.rate());
-                let Some(was) = trim.original.tracks.get(trim.track_idx).and_then(|t| t.find_clip(trim.clip_id)).cloned() else { return };
-                let (head_min, tail_max) = trim_limits(&was, &state.document.media_pool);
-                let frame = klipp_timeline::one_frame(fps).to_secs_f64();
-                // The edge as the pointer has it, snapped where it is
-                // drawn (a ripple head trim draws its end moving), then
-                // held inside the file and a frame of length.
-                let (edge, label) = match trim.edge {
-                    TrimEdge::Left => (klipp_document::ops::Edge::In, "In"),
-                    TrimEdge::Right => (klipp_document::ops::Edge::Out, "Out"),
-                };
-                let mut target = match trim.edge {
-                    TrimEdge::Left if trim.ripple => {
-                        let drawn = trim.original_timeline_out - dt;
-                        match find_snap(drawn, trim.clip_id) {
-                            Some((at, secs, kind)) => {
-                                self.frame_cache.snap_line_x = Some((content_rect.left() + secs as f32 * zoom - state.timeline_scroll_x, kind));
-                                trim.original_timeline_in + (trim.original_timeline_out - at)
-                            }
-                            None => trim.original_timeline_in + dt,
-                        }
-                    }
-                    TrimEdge::Left => trim.original_timeline_in + dt,
-                    TrimEdge::Right => trim.original_timeline_out + dt,
-                };
-                if !(matches!(trim.edge, TrimEdge::Left) && trim.ripple) {
-                    if let Some((at, secs, kind)) = find_snap(target, trim.clip_id) {
-                        target = at;
-                        self.frame_cache.snap_line_x = Some((content_rect.left() + secs as f32 * zoom - state.timeline_scroll_x, kind));
-                    }
-                }
-                // The stretch offered at the media's end goes where the
-                // start was dragged, snapped as a start edge snaps: a
-                // ripple head trim snaps its drawn end instead, and the
-                // stretch handed that start ran a frame into the clip
-                // before and was refused (#3124).
-                let offered = match trim.edge {
-                    TrimEdge::Left if trim.ripple => {
-                        let start = trim.original_timeline_in + dt;
-                        find_snap(start, trim.clip_id).map(|(at, _, _)| at).unwrap_or(start)
-                    }
-                    _ => target,
-                };
-                // Held at the next shot on the track, where a stretch
-                // without ripple stops: offered past it, unsnapped, the
-                // stretch was refused, its refusal gone before it was
-                // read (#3125). A gap clip is room, not a shot.
-                let shots = trim.original.tracks.get(trim.track_idx).map(|t| t.clips.iter().filter(|c| c.id != trim.clip_id && !c.kind.is_gap()).map(|c| (c.timeline_in, c.timeline_out)).collect::<Vec<_>>()).unwrap_or_default();
-                trim.wanted = Some(match trim.edge {
-                    TrimEdge::Left => shots.iter().map(|s| s.1).filter(|end| *end <= trim.original_timeline_in).max().map_or(offered, |end| offered.max(end)),
-                    TrimEdge::Right => shots.iter().map(|s| s.0).filter(|start| *start >= trim.original_timeline_out).min().map_or(offered, |start| offered.min(start)),
-                });
-                let t = target.to_secs_f64();
-                let (lo, hi) = match trim.edge {
-                    TrimEdge::Left => (head_min.max(if trim.ripple { f64::NEG_INFINITY } else { 0.0 }), was.timeline_out.to_secs_f64() - frame),
-                    TrimEdge::Right => (was.timeline_in.to_secs_f64() + frame, tail_max),
-                };
-                // Only a clip playing a file runs out of it; a title's
-                // start stops at the timeline's.
-                let plays = klipp_document::ops::plays_at_speed(&was, &state.document.media_pool);
-                trim.at_media_end = plays && match trim.edge {
-                    TrimEdge::Left => t < head_min,
-                    TrimEdge::Right => t > tail_max,
-                };
-                if t < lo || t > hi {
-                    target = RationalTime::from_secs_f64(t.clamp(lo, hi), target.rate);
-                }
-                // Refused (a ramp, a locked partner): the last place that
-                // planned stays drawn, and release says why.
-                if let Ok(edit) = klipp_document::ops::trim_at_linked(&trim.original, &state.document.media_pool, trim.clip_id, edge, target, trim.ripple, trim.linked) {
-                    let mut seqs = vec![trim.original.clone()];
-                    let (mut pool, mut seq_fps) = (state.document.media_pool.clone(), trim.original.fps);
-                    klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut seq_fps }.apply_forward(&edit);
-                    let at = state.active_sequence_idx;
-                    state.document.sequences[at].tracks = seqs.remove(0).tracks;
-                    trim.target = Some(target);
-                }
-                if let Some(now) = state.sequence().tracks.get(trim.track_idx).and_then(|t| t.find_clip(trim.clip_id)) {
-                    let (at, delta) = match trim.edge {
-                        TrimEdge::Left if trim.ripple => (now.timeline_in, now.source_in - was.source_in),
-                        TrimEdge::Left => (now.timeline_in, now.timeline_in - was.timeline_in),
-                        TrimEdge::Right => (now.timeline_out, now.timeline_out - was.timeline_out),
-                    };
-                    Self::paint_trim_overlay(painter, content_rect, track_rect, zoom, scroll, at, delta, now.timeline_out - now.timeline_in, label, state.timecode_display());
-                }
-                // At the media's end with the pointer going on: a stretch
-                // offered, S taking the same drag on as one (#3055).
-                state.stretch_offered = trim.at_media_end;
-                if trim.at_media_end {
-                    Self::paint_hint(painter, pos + egui::vec2(14.0, -18.0), egui::Align2::LEFT_CENTER, "Stretch instead (S)");
-                }
-                if trim.at_media_end && std::mem::take(&mut state.stretch_requested) {
-                    let at_end = matches!(trim.edge, TrimEdge::Right);
-                    let stretch = crate::timeline::stretch_drag::StretchState::begin(&trim.original, &was, trim.track_idx, at_end, trim.start_x, &state.selected_clips);
-                    let at = state.active_sequence_idx;
-                    state.document.sequences[at].tracks = trim.original.tracks.clone();
-                    state.stretch_offered = false;
-                    self.trimming_clip = None;
-                    self.stretching = Some(stretch);
-                    return;
-                }
+        // Only on the trim's own track, so its readout is drawn once.
+        if self.trimming_clip.as_ref().is_none_or(|t| t.gesture.track_idx != track_idx) {
+            return;
+        }
+        if let (Some(pos), true) = (pointer_pos, pointer_down) {
+            // One snap for every drag, held from frame to frame (#3056).
+            let snapper = crate::timeline::snap::Snapper::of(state, zoom, !snap_enabled);
+            let Some(trim) = self.trimming_clip.as_mut() else { return };
+            let dt = RationalTime::from_secs_f64(f64::from(pos.x - trim.start_x) / f64::from(zoom), fps.rate());
+            let frame = trim.gesture.drag_to(dt, fps, &state.document.media_pool, |at, clip, hold| snapper.snap(&[at], &[clip], hold));
+            if let Some(snap) = frame.snapped {
+                self.frame_cache.snap_line_x = Some(snapper.line(&snap, content_rect.left()));
             }
+            // Shown on the timeline in place of the last frame's trim; the
+            // engine is told when the trim is sent, as before.
+            if let Some(edit) = frame.live {
+                let _ = state.show_live(edit);
+            }
+            let label = match trim.edge() {
+                TrimEdge::Left => "In",
+                TrimEdge::Right => "Out",
+            };
+            let was = trim.gesture.was();
+            if let Some(now) = state.sequence().tracks.get(trim.gesture.track_idx).and_then(|t| t.find_clip(trim.gesture.clip_id)) {
+                let (at, delta) = match trim.edge() {
+                    TrimEdge::Left if trim.gesture.ripple => (now.timeline_in, now.source_in - was.source_in),
+                    TrimEdge::Left => (now.timeline_in, now.timeline_in - was.timeline_in),
+                    TrimEdge::Right => (now.timeline_out, now.timeline_out - was.timeline_out),
+                };
+                Self::paint_trim_overlay(painter, content_rect, track_rect, zoom, scroll, at, delta, now.timeline_out - now.timeline_in, label, state.timecode_display());
+            }
+            // At the media's end with the pointer going on: a stretch
+            // offered, S taking the same drag on as one (#3055).
+            let at_media_end = trim.gesture.at_media_end;
+            state.stretch_offered = at_media_end;
+            if at_media_end {
+                Self::paint_hint(painter, pos + egui::vec2(14.0, -18.0), egui::Align2::LEFT_CENTER, "Stretch instead (S)");
+            }
+            if at_media_end && std::mem::take(&mut state.stretch_requested) {
+                let at_end = matches!(trim.edge(), TrimEdge::Right);
+                let stretch = crate::timeline::stretch_drag::StretchState::begin(trim.gesture.original(), trim.gesture.was(), trim.gesture.track_idx, at_end, trim.start_x, &state.selected_clips);
+                let _ = state.cancel_live();
+                state.stretch_offered = false;
+                self.trimming_clip = None;
+                self.stretching = Some(stretch);
+                return;
+            }
+        }
 
-            if pointer_released {
-                // Restore the preview before the handler plans both
-                // linked halves, or refuses without changing either.
-                if let Some(command) = self.trimming_clip.as_ref().and_then(|t| t.finish(state.sequence_mut())) {
+        if pointer_released {
+            if let Some(trim) = self.trimming_clip.take() {
+                // The trim shown taken back, and sent: the handler plans
+                // both linked halves on the timeline as the drag found it,
+                // or refuses without changing either.
+                let _ = state.cancel_live();
+                if let Some(command) = trim.gesture.release() {
                     cmds.push(command);
                 }
                 // Let go at the media's end: the stretch still offered,
                 // after the trim, as a step of its own (#3055).
-                if let Some(t) = self.trimming_clip.as_ref().filter(|t| t.at_media_end) {
-                    if let Some(to) = t.wanted {
-                        let action = crate::widgets::toast::ToastAction::Stretch { clip_id: t.clip_id, at_end: matches!(t.edge, TrimEdge::Right), to };
-                        state.toast.show_with_action("Reached the end of the media", "Stretch instead", action);
-                    }
+                if let (true, Some(to)) = (trim.gesture.at_media_end, trim.gesture.wanted) {
+                    let action = crate::widgets::toast::ToastAction::Stretch { clip_id: trim.gesture.clip_id, at_end: matches!(trim.edge(), TrimEdge::Right), to };
+                    state.toast.show_with_action("Reached the end of the media", "Stretch instead", action);
                 }
-                state.stretch_offered = false;
-                state.stretch_requested = false;
-                self.trimming_clip = None;
-                self.press_origin = None;
             }
-        }
-        if let Some(t) = self.trimming_clip.as_mut() {
-            t.hold = held.get();
+            state.stretch_offered = false;
+            state.stretch_requested = false;
+            self.press_origin = None;
         }
     }
 
@@ -11749,15 +11605,15 @@ impl TimelinePanel {
 
         // Active trim highlight — show bright bar + colored tint during active trim
         if let Some(ref trim) = self.trimming_clip {
-            if trim.track_idx == track_idx {
-                if let Some(clip) = clips.iter().find(|c| c.id == trim.clip_id) {
+            if trim.gesture.track_idx == track_idx {
+                if let Some(clip) = clips.iter().find(|c| c.id == trim.gesture.clip_id) {
                     let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
 
                     // Brighter, wider bar (3-4px) at the active trim edge
                     let active_bar_w = 4.0;
                     let acc = tt.accent;
                     let active_color = egui::Color32::from_rgba_premultiplied(acc.r(), acc.g(), acc.b().saturating_add(48), 240);
-                    let edge_x = match trim.edge {
+                    let edge_x = match trim.edge() {
                         TrimEdge::Left => cr.left(),
                         TrimEdge::Right => cr.right() - active_bar_w,
                     };
@@ -20134,135 +19990,6 @@ mod scrub_preview_tests {
             klipp_engine::skim_audio::determine_skim_mode(state.skim_speed_px_per_sec),
             klipp_engine::skim_audio::SkimMode::Silent,
         );
-    }
-}
-
-#[cfg(test)]
-mod trim_preview_tests {
-    use super::{TrimEdge, TrimState};
-    use klipp_core::{AppCommand, Fps, RationalTime};
-    use klipp_document::apply::DocumentView;
-    use klipp_media::{MediaItem, MediaPool};
-    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
-
-    fn tc(s: f64) -> RationalTime { RationalTime::from_secs_f64(s, 25) }
-
-    #[test]
-    fn a_released_preview_is_restored_before_the_linked_trim_is_planned() {
-        for locked in [false, true] {
-            let mut pool = MediaPool::new();
-            let mut media = MediaItem::synthetic_for_test("/tmp/trim-preview.mov".into(), None);
-            media.duration = tc(20.0);
-            let media_id = pool.add(media);
-            let mut seq = Sequence::new_default();
-            seq.fps = Fps::new(25, 1);
-            let mut v = Track::new("V1", TrackKind::Video);
-            let mut a = Track::new("A1", TrackKind::Audio);
-            for i in 0..2 {
-                let start = i as f64 * 4.0;
-                let mut video = Clip::media(media_id, tc(start), tc(start + 4.0), tc(start), tc(start + 4.0));
-                let mut audio = video.clone();
-                audio.id = klipp_core::ClipId::new();
-                video.linked_clip_id = Some(audio.id);
-                audio.linked_clip_id = Some(video.id);
-                v.clips.push(video);
-                a.clips.push(audio);
-            }
-            a.locked = locked;
-            seq.tracks = vec![v, a];
-            let before = serde_json::to_value(&seq).unwrap();
-            let clip = &seq.tracks[0].clips[0];
-            let drag = TrimState {
-                clip_id: clip.id, track_idx: 0, edge: TrimEdge::Right, start_x: 0.0,
-                original_source_in: clip.source_in, original_source_out: clip.source_out,
-                original_timeline_in: clip.timeline_in, original_timeline_out: clip.timeline_out,
-                ripple: true,
-                linked: true,
-                original: seq.clone(), target: Some(tc(3.0)), at_media_end: false, wanted: None, hold: None,
-            };
-            // Exactly the speculative mutation made while the pointer
-            // is down: only the drawn track has been changed so far.
-            seq.tracks[0].clips[0].source_out = tc(3.0);
-            seq.tracks[0].clips[0].timeline_out = tc(3.0);
-            seq.tracks[0].clips[1].timeline_in = tc(3.0);
-            seq.tracks[0].clips[1].timeline_out = tc(7.0);
-            let command = drag.finish(&mut seq).unwrap();
-            assert_eq!(serde_json::to_value(&seq).unwrap(), before);
-            let edit = crate::clip_edits::trim(&seq, &pool, &command);
-            if locked {
-                assert!(edit.unwrap_err().contains("locked"));
-                assert_eq!(serde_json::to_value(&seq).unwrap(), before);
-            } else {
-                let edit = edit.unwrap().unwrap();
-                let mut fps = seq.fps;
-                let mut seqs = vec![seq];
-                DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_forward(&edit);
-                for track in &seqs[0].tracks {
-                    assert_eq!(track.clips[0].timeline_out, tc(3.0));
-                    assert_eq!(track.clips[1].timeline_in, tc(3.0), "shifted once, never twice");
-                }
-                DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&edit);
-                assert_eq!(serde_json::to_value(&seqs[0]).unwrap(), before);
-            }
-        }
-    }
-
-    #[test]
-    fn the_last_clip_keeps_the_drag_ripple_mode_without_following_clips() {
-        let mut seq = Sequence::new_default();
-        let mut track = Track::new("V1", TrackKind::Video);
-        let c = Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
-        track.clips.push(c.clone());
-        seq.tracks = vec![track];
-        let drag = TrimState {
-            clip_id: c.id, track_idx: 0, edge: TrimEdge::Left, start_x: 0.0,
-            original_source_in: c.source_in, original_source_out: c.source_out,
-            original_timeline_in: c.timeline_in, original_timeline_out: c.timeline_out,
-            ripple: true, linked: true, original: seq.clone(), target: Some(tc(1.0)), at_media_end: false, wanted: None, hold: None,
-        };
-        seq.tracks[0].clips[0].source_in = tc(1.0);
-        seq.tracks[0].clips[0].timeline_out = tc(3.0);
-        let command = drag.finish(&mut seq).unwrap();
-        assert!(matches!(command, AppCommand::TrimClip { ripple: true, .. }));
-        assert_eq!(seq.tracks[0].clips[0].source_in, tc(0.0));
-        assert_eq!(seq.tracks[0].clips[0].timeline_out, tc(4.0));
-    }
-
-    /// #3055: a trim reads the file through the clip's speed and
-    /// direction. A clip at 2x of a 20 s file from 2 s to 10 s can have
-    /// its end trimmed on by 5 s of timeline (the file's last 10 s) and
-    /// its start back by 1 s; reversed, the other way round. The trim a
-    /// drag commits moves the end's source by twice the timeline move.
-    #[test]
-    fn a_trim_reads_the_file_through_the_clips_speed() {
-        let mut pool = MediaPool::new();
-        let mut media = MediaItem::synthetic_for_test("/tmp/trim-speed.mov".into(), None);
-        media.duration = tc(20.0);
-        let media_id = pool.add(media);
-        let mut c = Clip::media(media_id, tc(10.0), tc(14.0), tc(2.0), tc(10.0));
-        c.speed = 2.0;
-        assert_eq!(super::trim_limits(&c, &pool), (9.0, 19.0));
-        let mut r = c.clone();
-        r.speed = -2.0;
-        assert_eq!(super::trim_limits(&r, &pool), (5.0, 15.0), "reversed: its head is the file's end");
-        let mut seq = Sequence::new_default();
-        seq.fps = Fps::new(25, 1);
-        let mut v = Track::new("V1", TrackKind::Video);
-        v.clips = vec![c.clone()];
-        seq.tracks = vec![v];
-        let drag = TrimState {
-            clip_id: c.id, track_idx: 0, edge: TrimEdge::Right, start_x: 0.0,
-            original_source_in: c.source_in, original_source_out: c.source_out,
-            original_timeline_in: c.timeline_in, original_timeline_out: c.timeline_out,
-            ripple: false, linked: true, original: seq.clone(), target: Some(tc(15.0)), at_media_end: false, wanted: None, hold: None,
-        };
-        let command = drag.finish(&mut seq).unwrap();
-        let edit = crate::clip_edits::trim(&seq, &pool, &command).unwrap().unwrap();
-        let mut fps = seq.fps;
-        let mut seqs = vec![seq];
-        DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_forward(&edit);
-        let after = &seqs[0].tracks[0].clips[0];
-        assert_eq!((after.timeline_out, after.source_out), (tc(15.0), tc(12.0)), "1 s of timeline is 2 s of the file");
     }
 }
 
