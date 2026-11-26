@@ -6452,7 +6452,7 @@ impl AppState {
     /// still leaves, empty, is put in as an added track before it: undo
     /// takes it away after the clips, redo puts it back first. A step that
     /// takes its own track away (an import's linked track) is left as it is.
-    fn with_made_tracks(&self, command: EditCommand) -> EditCommand {
+    pub(crate) fn with_made_tracks(&self, command: EditCommand) -> EditCommand {
         if command.scope() != crate::history::Scope::Sequence {
             return command;
         }
