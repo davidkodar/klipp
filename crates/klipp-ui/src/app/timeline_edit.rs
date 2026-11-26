@@ -1483,7 +1483,8 @@ impl KlippApp {
 
         // 8. The move and the still, after the cut, in the same step.
         let new = self.state.document.sequences[seq_idx].tracks.clone();
-        self.state.push_history(EditCommand::SetTracks { description: "Freeze Frame", old: after_blade, new });
+        // The tracks are already the new ones; the step sets them again.
+        let _ = self.state.commit(EditCommand::SetTracks { description: "Freeze Frame", old: after_blade, new });
         if owns_batch {
             self.state.active_history_mut().end_batch_as("Freeze Frame");
         }

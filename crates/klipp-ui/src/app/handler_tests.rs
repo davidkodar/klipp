@@ -964,6 +964,38 @@ fn a_title_added_takes_back_only_the_track_made_for_it() {
     assert!(app.state.sequence().tracks.iter().any(|t| t.name == "Lower Thirds" && t.clips.len() == 1), "the title on the track the person had");
 }
 
+/// Three 2 s clips end to end on the primary storyline: their ids.
+fn on_the_storyline(app: &mut KlippApp) -> [klipp_core::ClipId; 3] {
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let p = app.state.sequence().tracks.iter().position(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary).unwrap();
+    let clips: Vec<_> = (0..3).map(|i| klipp_timeline::Clip::media(klipp_core::MediaId::new(), at(2.0 * i as f64), at(2.0 * i as f64 + 2.0), at(0.0), at(2.0))).collect();
+    let ids = [clips[0].id, clips[1].id, clips[2].id];
+    app.state.sequence_mut().tracks[p].clips = clips;
+    ids
+}
+
+/// Storyline removals and block moves, effect edits and the All Effects
+/// switch are each one step that redoes as it was made: the step makes
+/// the edit, not a record of it next to one made in place.
+#[test]
+fn storyline_removals_moves_and_effect_edits_redo_as_made() {
+    for lift in [false, true] {
+        let (mut app, _engine) = KlippApp::for_test();
+        let ids = on_the_storyline(&mut app);
+        redoes_as_done(&mut app, |app| { super::selection_removal::remove_clips(&mut app.state, &[ids[1]], lift, "Delete").unwrap(); });
+    }
+    for overwrite in [false, true] {
+        let (mut app, _engine) = KlippApp::for_test();
+        let ids = on_the_storyline(&mut app);
+        let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        redoes_as_done(&mut app, |app| super::primary_block::move_block(&mut app.state, &[(ids[0], at(0.0))], &[], at(4.0), overwrite).unwrap());
+    }
+    let (mut app, _engine) = KlippApp::for_test();
+    let ids = on_the_storyline(&mut app);
+    redoes_as_made(&mut app, vec![AppCommand::AddBuiltinEffect { clip_id: ids[0], effect: klipp_effects::BuiltinEffect::Opacity { value: 0.5 } }]);
+    redoes_as_made(&mut app, vec![AppCommand::SetEffectsSwitchedOff { clip_id: ids[0], nodes: vec![uuid::Uuid::new_v4()] }]);
+}
+
 /// Each change to a sound's audio chain, its effects and their keys, is
 /// one step that redoes as it was made.
 #[test]

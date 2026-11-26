@@ -38,35 +38,31 @@ pub(crate) fn move_block(state: &mut AppState, block: &[(ClipId, Timecode)], oth
     if own_batch {
         state.active_history_mut().begin_batch();
     }
-    let magnetic = |state: &mut AppState, command| state.push_history(EditCommand::Magnetic(command));
     for (id, _) in &block {
-        let r = MagneticEditor::lift(state.sequence_mut(), *id);
-        magnetic(state, r.command);
+        let _ = state.commit_magnetic(|seq| MagneticEditor::lift(seq, *id).command);
     }
     let zero = |at: Timecode| if at.value < 0 { RationalTime { value: 0, rate: at.rate } } else { at };
     if overwrite {
         for (clip, (_, at)) in clips.into_iter().zip(&block) {
-            let r = MagneticEditor::overwrite_primary(state.sequence_mut(), clip, zero(*at + delta));
-            magnetic(state, r.command);
+            let _ = state.commit_magnetic(|seq| MagneticEditor::overwrite_primary(seq, clip, zero(*at + delta)).command);
         }
     } else {
         let mut at = zero(block[0].1 + delta);
         for clip in clips {
             let len = clip.duration();
-            let r = MagneticEditor::insert_primary(state.sequence_mut(), clip, at, None, Some(&klipp_timeline::magnetic::PLACED));
-            magnetic(state, r.command);
+            let _ = state.commit_magnetic(|seq| MagneticEditor::insert_primary(seq, clip, at, None, Some(&klipp_timeline::magnetic::PLACED)).command);
             at += len;
         }
     }
     // Gap clips after the last clip: an empty tail, taken off.
     while let Some(last) = state.sequence().tracks[p].clips.last().filter(|c| c.kind.is_gap()).cloned() {
         let position = state.sequence().tracks[p].clips.len() - 1;
-        state.sequence_mut().tracks[p].clips.pop();
-        state.push_history(EditCommand::LegacyRemoveClip { clip: last, track_index: p, position });
+        let _ = state.commit(EditCommand::LegacyRemoveClip { clip: last, track_index: p, position });
     }
     if state.linked_selection {
+        // Worked out in place; each step sets the sound where it now is.
         for f in MagneticEditor::follow_linked_partners(&before, state.sequence_mut()) {
-            state.push_history(EditCommand::LegacyMoveClip { clip_id: f.clip_id, old_timeline_in: f.old_in, old_timeline_out: f.old_out, new_timeline_in: f.new_in, new_timeline_out: f.new_out, linked_partner: None });
+            let _ = state.commit(EditCommand::LegacyMoveClip { clip_id: f.clip_id, old_timeline_in: f.old_in, old_timeline_out: f.old_out, new_timeline_in: f.new_in, new_timeline_out: f.new_out, linked_partner: None });
         }
     }
     // The caller syncs the engine once the move is done.
