@@ -1016,6 +1016,20 @@ fn clip_depth_and_sequence_settings_count_and_redo_as_made() {
     }
 }
 
+/// A clip's level set from the inspector and gains set by Normalize are
+/// each one step for the pair that redoes as made.
+#[test]
+fn clip_levels_and_normalized_gains_redo_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let (picture, sound) = linked_pair(&mut app);
+    let c = app.state.sequence().all_clips().find(|c| c.id == sound).unwrap().clone();
+    redoes_as_made(&mut app, vec![AppCommand::UpdateClipAudio {
+        clip_id: sound, gain: c.gain, volume: 0.5, pan: 0.25, fade_in_secs: 0.5, fade_out_secs: 0.0,
+        fade_in_curve: c.fade_in_curve, fade_out_curve: c.fade_out_curve, channel_config: c.channel_config,
+    }]);
+    redoes_as_made(&mut app, vec![AppCommand::ApplyClipGains { gains: vec![(picture, 1.5)] }]);
+}
+
 /// Each change to a sound's audio chain, its effects and their keys, is
 /// one step that redoes as it was made.
 #[test]

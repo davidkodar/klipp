@@ -356,9 +356,7 @@ pub fn dispatch_template(state: &mut AppState, kind: &TemplateKind, cmds: &mut V
         match recipe_plan(name, &template_context(state)) {
             Ok(plan) => {
                 for step in plan.steps {
-                    let active = state.active_sequence_idx;
-                    let _ = klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(&step.edit);
-                    state.push_history(step.edit);
+                    let _ = state.commit(step.edit);
                 }
                 state.dirty = true;
                 cmds.push(AppCommand::SequenceUpdated);

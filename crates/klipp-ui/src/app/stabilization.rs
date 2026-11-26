@@ -805,7 +805,8 @@ impl KlippApp {
                 if let Some((edit, frames)) = window_edit {
                     // Only a change is a step (`edit_clip_masks` gives none
                     // for a grade left as it was).
-                    self.state.push_history(edit);
+                    // Already made in place; the step sets it again.
+                    let _ = self.state.commit(edit);
                     self.sync_sequence_to_engine();
                     self.state.toast.show(format!("The window follows the picture over {frames} frames"));
                 }

@@ -60,8 +60,8 @@ fn set_reuse_warns(state: &mut crate::state::AppState, warns: bool) {
     let old = seq.brief.clone();
     let brief = klipp_timeline::Brief { reused_footage_warns: warns, ..old.clone().unwrap_or_default() };
     seq.brief = Some(brief.clone());
-    state.push_history(crate::history::EditCommand::SetBrief { old: old.map(Box::new), new: Some(Box::new(brief)) });
-    state.dirty = true;
+    // Already made in place; the step sets it again.
+    let _ = state.commit(crate::history::EditCommand::SetBrief { old: old.map(Box::new), new: Some(Box::new(brief)) });
 }
 
 #[cfg(test)]

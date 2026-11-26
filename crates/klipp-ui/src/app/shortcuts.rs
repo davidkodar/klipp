@@ -364,9 +364,7 @@ impl KlippApp {
                         .position(|t| t.clips.iter().any(|c| c.id == clip_id));
                     if let Some(ti) = track_idx {
                         if self.is_magnetic_track(ti) {
-                            let result = klipp_timeline::magnetic::MagneticEditor::lift(
-                                &mut self.state.document.sequences[self.state.active_sequence_idx], clip_id);
-                            self.state.push_history(crate::history::EditCommand::Magnetic(result.command));
+                            let _ = self.state.commit_magnetic(|seq| klipp_timeline::magnetic::MagneticEditor::lift(seq, clip_id).command);
                             self.state.selected_clip = None;
                             self.sync_sequence_to_engine();
                             self.state.dirty = true;

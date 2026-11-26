@@ -389,7 +389,8 @@ impl KlippApp {
                     let edits = self.state.set_clip_audio(*clip_id, *gain, *volume, *pan, *fade_in_secs, *fade_out_secs, *fade_in_curve, *fade_out_curve, *channel_config);
                     let drag_key = format!("{:?}:audio", clip_id);
                     if !edits.is_empty() && !self.state.active_history().is_dragging(&drag_key) {
-                        self.state.push_history(if edits.len() == 1 { edits.into_iter().next().unwrap() } else { EditCommand::Batch(edits) });
+                        // Already made in place; the step sets it again.
+                        let _ = self.state.commit(if edits.len() == 1 { edits.into_iter().next().unwrap() } else { EditCommand::Batch(edits) });
                     }
                     self.sync_sequence_to_engine();
                     // Instant clip gain + volume + pan + channel config — bypass command channel latency

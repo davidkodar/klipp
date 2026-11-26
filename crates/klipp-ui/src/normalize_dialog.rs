@@ -95,11 +95,11 @@ pub fn apply_gains(state: &mut crate::state::AppState, gains: &[(ClipId, f32)]) 
     match edits.len() {
         0 => false,
         1 => {
-            state.push_history(edits.remove(0));
+            let _ = state.commit(edits.remove(0));
             true
         }
         _ => {
-            state.push_history(klipp_document::history::EditCommand::Batch(edits));
+            let _ = state.commit(klipp_document::history::EditCommand::Batch(edits));
             true
         }
     }

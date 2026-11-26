@@ -1112,7 +1112,8 @@ impl KlippApp {
                         let after = picture_of(&self.state.document.sequences[seq_idx], clip_id);
                         if let (Some(before), Some(after)) = (before, after) {
                             let edit = klipp_timeline::PictureEdit { before, after };
-                            self.state.push_history(EditCommand::PictureEdit { description: "Hyperzoom", clip_id, edit: Box::new(edit) });
+                            // Already made in place; the step sets it again.
+                            let _ = self.state.commit(EditCommand::PictureEdit { description: "Hyperzoom", clip_id, edit: Box::new(edit) });
                         }
                     }
                     if let Some(inserted) = maybe_insert_whoosh_for_apply(
@@ -1123,7 +1124,12 @@ impl KlippApp {
                         *whoosh_variant,
                         whoosh_custom_path.as_deref(),
                     ) {
-                        self.state.push_history(EditCommand::LegacyAppendClip {
+                        // Placed in place; taken off again for the step to
+                        // place it, a track made for it found as made.
+                        if let Some(track) = self.state.document.sequences[seq_idx].tracks.get_mut(inserted.track_index) {
+                            track.clips.retain(|c| c.id != inserted.clip.id);
+                        }
+                        let _ = self.state.commit(EditCommand::LegacyAppendClip {
                             clip: inserted.clip,
                             track_index: inserted.track_index,
                         });

@@ -1584,7 +1584,8 @@ impl KlippApp {
                     })
                 });
                 if let Some(edit) = edit {
-                    self.state.push_history(edit);
+                    // Already made in place; the step sets it again.
+                    let _ = self.state.commit(edit);
                 }
                 self.state.dirty = true;
                 *needs_refresh = true;
