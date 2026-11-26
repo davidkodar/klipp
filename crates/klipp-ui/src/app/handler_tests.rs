@@ -964,6 +964,26 @@ fn a_title_added_takes_back_only_the_track_made_for_it() {
     assert!(app.state.sequence().tracks.iter().any(|t| t.name == "Lower Thirds" && t.clips.len() == 1), "the title on the track the person had");
 }
 
+/// A clip's depth and the sequence's shutter, title brightness and
+/// camera keys are each one step that counts toward autosave and redoes
+/// as made. They went onto the history past the edit's bookkeeping.
+#[test]
+fn clip_depth_and_sequence_settings_count_and_redo_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let (clip_id, _) = linked_pair(&mut app);
+    for step in [
+        AppCommand::SetClipDepth { clip_id, depth: 4.0 },
+        AppCommand::SetSequenceShutter { sequence_idx: 0, shutter_deg: 90.0, samples: 8 },
+        AppCommand::SetSequenceTitleNits { sequence_idx: 0, nits: 600.0 },
+        AppCommand::SetSequenceCameraKey { sequence_idx: 0, param: klipp_core::CameraParam::Zoom, time_secs: 1.0, value: 1.5 },
+    ] {
+        let counted = app.state.history_ops_since_save;
+        app.state.dirty = false;
+        redoes_as_made(&mut app, vec![step.clone()]);
+        assert!(app.state.history_ops_since_save > counted, "{step:?}: counted toward autosave");
+    }
+}
+
 /// Each change to a sound's audio chain, its effects and their keys, is
 /// one step that redoes as it was made.
 #[test]

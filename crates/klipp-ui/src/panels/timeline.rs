@@ -17565,26 +17565,25 @@ fn hover_timeline_time(state: &AppState, track_idx: usize, clip_index: usize, fr
 /// and the sound one undo step; with Linked off, the picture alone.
 fn record_primary_drag(state: &mut AppState, before: &klipp_timeline::Sequence, command: klipp_timeline::magnetic_commands::MagneticEditCommand) {
     let partners = if state.linked_selection { klipp_timeline::magnetic::MagneticEditor::follow_linked_partners(before, state.sequence_mut()) } else { Vec::new() };
-    let history = state.active_history_mut();
+    // The drag moved the clips live; the step records what it did, with
+    // the follow-ups every edit gets.
+    let moved = crate::history::EditCommand::Magnetic(command);
     if partners.is_empty() {
-        history.push(crate::history::HistoryEntry { command: crate::history::EditCommand::Magnetic(command) });
+        state.push_history(moved);
         return;
     }
-    history.begin_batch();
-    history.push(crate::history::HistoryEntry { command: crate::history::EditCommand::Magnetic(command) });
-    for p in partners {
-        history.push(crate::history::HistoryEntry {
-            command: crate::history::EditCommand::LegacyMoveClip {
-                clip_id: p.clip_id,
-                old_timeline_in: p.old_in,
-                old_timeline_out: p.old_out,
-                new_timeline_in: p.new_in,
-                new_timeline_out: p.new_out,
-                linked_partner: None,
-            },
-        });
-    }
-    history.end_batch_as("Move Clip");
+    let sounds = partners.into_iter().map(|p| crate::history::EditCommand::LegacyMoveClip {
+        clip_id: p.clip_id,
+        old_timeline_in: p.old_in,
+        old_timeline_out: p.old_out,
+        new_timeline_in: p.new_in,
+        new_timeline_out: p.new_out,
+        linked_partner: None,
+    });
+    state.push_history(crate::history::EditCommand::Named {
+        label: "Move Clip".into(),
+        edit: Box::new(crate::history::EditCommand::Batch(std::iter::once(moved).chain(sounds).collect())),
+    });
 }
 
 
@@ -17629,7 +17628,9 @@ mod linked_drag_tests {
             let before = state.sequence().clone();
             let to = RationalTime::from_secs_f64(4.0, state.sequence().fps.rate());
             let result = klipp_timeline::magnetic::MagneticEditor::move_primary(state.sequence_mut(), ids[0], to);
+            let counted = state.history_ops_since_save;
             record_primary_drag(&mut state, &before, result.command);
+            assert_eq!(state.history_ops_since_save, counted + 1, "one step, counted toward autosave");
             assert_ne!(span(&state, ids[0]), before_spans[0], "the picture moved");
             for (&id, &sound) in ids.iter().zip(&sounds) {
                 if linked {
