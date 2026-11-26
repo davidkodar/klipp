@@ -6325,6 +6325,46 @@ impl AppState {
         effects
     }
 
+    /// `edit`, worked out by a gesture from where it began, shown in place
+    /// of the edit it showed last frame (U2): the timeline and the viewer
+    /// show it, no step is recorded yet. [`Self::end_live`] records it,
+    /// [`Self::cancel_live`] takes it back.
+    #[must_use = "the engine is told of the edit only by running its effects"]
+    pub fn show_live(&mut self, edit: EditCommand) -> klipp_document::apply::Effects {
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut self.document.sequences, active: self.active_sequence_idx, media_pool: &mut self.document.media_pool, fps: &mut self.fps };
+        self.document.live.show(&mut view, edit)
+    }
+
+    /// The edit a gesture shows, recorded as one step, as [`Self::commit`]
+    /// records one: the follow-ups every step gets, the autosave count,
+    /// the project unsaved. False when none is shown. Its effects ran as it
+    /// was shown; those of the follow-ups are the caller's sync.
+    pub fn end_live(&mut self) -> bool {
+        let Some((id, edit)) = self.document.live.end() else { return false };
+        if id != self.active_sequence_id() {
+            // Shown on a sequence no longer open: its step goes on that
+            // sequence's history, where the edit is.
+            let Some(idx) = self.document.sequences.iter().position(|s| s.id == id) else { return false };
+            self.record_on_sequence(idx, edit);
+            return true;
+        }
+        self.push_history(edit);
+        self.dirty = true;
+        true
+    }
+
+    /// The edit a gesture shows taken back; nothing recorded.
+    #[must_use = "the engine is told of the edit only by running its effects"]
+    pub fn cancel_live(&mut self) -> klipp_document::apply::Effects {
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut self.document.sequences, active: self.active_sequence_idx, media_pool: &mut self.document.media_pool, fps: &mut self.fps };
+        self.document.live.cancel(&mut view)
+    }
+
+    /// Whether a gesture's edit is shown, not yet recorded.
+    pub fn is_live(&self) -> bool {
+        self.document.live.is_live()
+    }
+
     /// `edit`, a setting of sequence `sequence_idx` already made there,
     /// recorded as its step: through [`Self::commit`] on the active
     /// sequence, onto that sequence's own history otherwise (its undo runs
