@@ -733,27 +733,6 @@ impl KlippApp {
         }
     }
 
-    pub(super) fn push_audio_chain_history(
-        &mut self,
-        clip_id: klipp_core::ClipId,
-        description: &'static str,
-        old_state: Option<crate::history::AudioChainSnapshot>,
-    ) {
-        let Some(old_state) = old_state else { return };
-        let Some(new_state) = self.state.document.sequences[self.state.active_sequence_idx]
-            .all_clips()
-            .find(|c| c.id == clip_id)
-            .map(crate::history::AudioChainSnapshot::from_clip)
-        else {
-            return;
-        };
-        self.state.push_history(EditCommand::EditAudioChain {
-                clip_id,
-                description,
-                old_state,
-                new_state,
-            });
-    }
 }
 
 /// Read `[start_secs, end_secs)` of a conformed 48 kHz stereo f32 PCM cache
@@ -811,29 +790,30 @@ impl crate::state::AppState {
     /// step. Whether the effect was there to set.
     pub(crate) fn set_audio_effect_params(&mut self, clip_id: klipp_core::ClipId, effect_index: usize, params: &[(String, f32)], description: &'static str) -> bool {
         self.close_path_drag_before_edit();
-        let seq = self.active_sequence_idx;
-        let Some(old_state) = self.document.sequences[seq].all_clips().find(|c| c.id == clip_id).map(crate::history::AudioChainSnapshot::from_clip) else { return false };
-        let mut applied = false;
-        for track in &mut self.document.sequences[seq].tracks {
-            if let Some(clip) = track.find_clip_mut(clip_id) {
-                if let Some(inst) = clip.audio_effects.get_mut(effect_index) {
-                    for (name, value) in params {
-                        if let Some(p) = inst.params.iter_mut().find(|(k, _)| k == name) {
-                            p.1 = *value;
-                        } else {
-                            inst.params.push((name.clone(), *value));
-                        }
+        let there = self.sequence().all_clips().find(|c| c.id == clip_id).is_some_and(|c| effect_index < c.audio_effects.len());
+        there
+            && self.edit_audio_chain(clip_id, description, |clip| {
+                let inst = &mut clip.audio_effects[effect_index];
+                for (name, value) in params {
+                    if let Some(p) = inst.params.iter_mut().find(|(k, _)| k == name) {
+                        p.1 = *value;
+                    } else {
+                        inst.params.push((name.clone(), *value));
                     }
-                    applied = true;
                 }
-                break;
-            }
-        }
-        if !applied {
-            return false;
-        }
-        let Some(new_state) = self.document.sequences[seq].all_clips().find(|c| c.id == clip_id).map(crate::history::AudioChainSnapshot::from_clip) else { return false };
-        self.push_history(EditCommand::EditAudioChain { clip_id, description, old_state, new_state });
+            })
+    }
+
+    /// Clip `clip_id`'s audio chain (its effects and their keys) changed
+    /// by `f` on a copy of the clip and made as one step named
+    /// `description` through one commit; `false` when the clip is gone.
+    /// The caller syncs the engine.
+    pub(crate) fn edit_audio_chain(&mut self, clip_id: klipp_core::ClipId, description: &'static str, f: impl FnOnce(&mut klipp_timeline::Clip)) -> bool {
+        let Some(mut clip) = self.sequence().all_clips().find(|c| c.id == clip_id).cloned() else { return false };
+        let old_state = crate::history::AudioChainSnapshot::from_clip(&clip);
+        f(&mut clip);
+        let new_state = crate::history::AudioChainSnapshot::from_clip(&clip);
+        let _ = self.commit(EditCommand::EditAudioChain { clip_id, description, old_state, new_state });
         true
     }
 }

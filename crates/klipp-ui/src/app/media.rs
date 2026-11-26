@@ -1286,21 +1286,15 @@ impl KlippApp {
                     true
                 }
                 AppCommand::RenameMediaItem { media_id, new_filename } => {
-                    if let Some(item) = self.state.document.media_pool.get_mut(media_id) {
-                        let old = item.filename.clone();
-                        if old != *new_filename {
-                            item.filename = new_filename.clone();
-                            // Synthetic title assets keep their
-                            // display_name in sync with the pool's
-                            // filename so the Inspector banner and
-                            // Media-tab card label always agree.
-                            if let Some(asset) = self.state.title_assets.get_mut(media_id) {
-                                asset.display_name = new_filename.clone();
-                            }
-                            self.state.push_history(crate::history::EditCommand::BatchRenameMediaItems {
-                                    changes: vec![(*media_id, old, new_filename.clone())],
-                                });
-                            self.state.dirty = true;
+                    let old = self.state.document.media_pool.get(media_id).map(|item| item.filename.clone());
+                    if let Some(old) = old.filter(|old| old != new_filename) {
+                        self.commit(crate::history::EditCommand::BatchRenameMediaItems { changes: vec![(*media_id, old, new_filename.clone())] });
+                        // Synthetic title assets keep their display_name
+                        // in sync with the pool's filename so the
+                        // Inspector banner and Media-tab card label
+                        // always agree.
+                        if let Some(asset) = self.state.title_assets.get_mut(media_id) {
+                            asset.display_name = new_filename.clone();
                         }
                     }
                     true
@@ -2319,47 +2313,58 @@ mod retarget_drop_tests {
 
 impl crate::state::AppState {
     /// Make the bin `name` with the items `ids` moved into it (none for
-    /// an empty bin): one undo step, which takes the bin away too.
+    /// an empty bin): one undo step, which takes the bin away too. A bin
+    /// of that name already there is used, and left there by an undo.
     pub(crate) fn new_bin(&mut self, name: &str, ids: &[klipp_core::MediaId]) {
-        let id = self.document.media_pool.find_or_create_bin(name);
-        let Some(bin) = self.document.media_pool.bins.iter().find(|b| b.id == id).cloned() else { return };
-        let batch = !self.project_history_mut().is_batching();
-        if batch {
-            self.project_history_mut().begin_batch();
-        }
-        self.push_history(crate::history::EditCommand::CreateBin { bin });
-        self.move_media_to_bin(ids, Some(name));
-        if batch {
-            self.project_history_mut().end_batch_as("New Bin");
-        }
-        self.dirty = true;
+        let edits = self.to_bin_edits(ids, Some(name));
+        self.commit_bin_edits(edits, "New Bin");
     }
 
     /// Move the media items `ids` into the bin named `bin`, made if there
     /// is none, or out of their bins with `None`: one undo step, however
-    /// many move.
+    /// many move, which takes a bin it made away too.
     pub(crate) fn move_media_to_bin(&mut self, ids: &[klipp_core::MediaId], bin: Option<&str>) {
+        let edits = self.to_bin_edits(ids, bin);
+        self.commit_bin_edits(edits, "Move to Bin");
+    }
+
+    /// The steps that put `ids` in the bin named `bin`, or out of their
+    /// bins with `None`: the bin's making first when there is none, then
+    /// each item that is not there yet. Worked out, nothing changed; the
+    /// pool's own record, a project step reachable from any sequence
+    /// (#1986).
+    fn to_bin_edits(&self, ids: &[klipp_core::MediaId], bin: Option<&str>) -> Vec<crate::history::EditCommand> {
+        use crate::history::EditCommand;
+        let pool = &self.document.media_pool;
+        let mut edits = Vec::new();
+        let to_bin_id = bin.map(|name| match pool.bins.iter().find(|b| b.name == name && b.parent_id.is_none()) {
+            Some(made) => made.id,
+            None => {
+                let made = klipp_media::Bin { id: klipp_core::BinId::new(), name: name.to_string(), parent_id: None };
+                let id = made.id;
+                edits.push(EditCommand::CreateBin { bin: made });
+                id
+            }
+        });
         let to_bin = bin.map(str::to_string);
-        let to_bin_id = bin.map(|name| self.document.media_pool.find_or_create_bin(name));
-        let batch = !self.project_history_mut().is_batching();
-        if batch {
-            self.project_history_mut().begin_batch();
-        }
         for id in ids {
-            let Some(item) = self.document.media_pool.get_mut(id) else { continue };
+            let Some(item) = pool.get(id) else { continue };
             if item.bin == to_bin {
                 continue;
             }
-            let (from_bin, from_bin_id) = (std::mem::replace(&mut item.bin, to_bin.clone()), item.bin_id);
-            item.bin_id = to_bin_id;
-            // The pool's own record: a project step, reachable from any
-            // sequence (#1986).
-            self.push_history(crate::history::EditCommand::MoveMediaToBin { media_id: *id, from_bin, to_bin: to_bin.clone(), from_bin_id, to_bin_id });
-            self.dirty = true;
+            edits.push(EditCommand::MoveMediaToBin { media_id: *id, from_bin: item.bin.clone(), to_bin: to_bin.clone(), from_bin_id: item.bin_id, to_bin_id });
         }
-        if batch {
-            self.project_history_mut().end_batch_as("Move to Bin");
+        edits
+    }
+
+    /// `edits` made as one step named `label` through one commit; none,
+    /// no step.
+    fn commit_bin_edits(&mut self, edits: Vec<crate::history::EditCommand>, label: &str) {
+        if edits.is_empty() {
+            return;
         }
+        // The pool's bins and items' bins only: nothing for the engine.
+        let _ = self.commit(crate::history::EditCommand::Named { label: label.into(), edit: Box::new(crate::history::EditCommand::Batch(edits)) });
     }
 
     /// The editor's marker on media item `id`, in time order: an edit.
