@@ -886,3 +886,64 @@ fn a_first_clip_undoes_its_format_whichever_way_it_is_placed() {
         assert_eq!(app.state.fps, own.1, "way {n}: and the app's rate with it");
     }
 }
+
+/// A blade through a linked pair cuts both as one step, undone whole,
+/// even with no batch open around it.
+#[test]
+fn a_blade_through_a_pair_is_one_step_and_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let [(picture, _), _] = two_pairs(&mut app);
+    let track = app.state.sequence().tracks.iter().position(|t| t.clips.iter().any(|c| c.id == picture)).unwrap();
+    redoes_as_done(&mut app, |app| assert!(app.state.blade_one(track, picture, klipp_core::RationalTime::from_secs_f64(2.0, 24))));
+    assert_eq!(app.state.sequence().all_clips().filter(|c| !c.kind.is_gap()).count(), 6, "both halves of both clips, the other pair whole");
+}
+
+/// A roll at a cut, the linked sounds rolling with it.
+#[test]
+fn a_roll_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let [(a, _), (b, _)] = two_pairs(&mut app);
+    // The second pair moved up against the first, so they share a cut.
+    for c in app.state.sequence_mut().all_clips_mut() {
+        if c.timeline_in == at(6.0) {
+            (c.timeline_in, c.timeline_out) = (at(4.0), at(8.0));
+        }
+    }
+    redoes_as_done(&mut app, |app| app.state.roll_trim(a, b, (at(3.0), at(3.0)), (at(-1.0), at(3.0)), true));
+}
+
+/// A clip's input colour space, set on its file and the file's other
+/// clips with it.
+#[test]
+fn an_input_colour_space_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let media = a_file(&mut app);
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let (one, two) = (klipp_timeline::Clip::media(media, at(0.0), at(2.0), at(0.0), at(2.0)), klipp_timeline::Clip::media(media, at(0.0), at(2.0), at(2.0), at(4.0)));
+    let id = one.id;
+    let video = app.state.sequence().tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    app.state.sequence_mut().tracks[video].clips.extend([one, two]);
+    let format = |app: &KlippApp| app.state.document.media_pool.get(&media).map(|i| (i.log_format, i.log_format_user_set)).unwrap();
+    let was = format(&app);
+    redoes_as_done(&mut app, |app| assert_eq!(app.state.set_clip_log_format(id, klipp_core::LogFormat::SLog3), Some(media)));
+    assert_eq!(format(&app), (klipp_core::LogFormat::SLog3, true), "redone, the file's format");
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(format(&app), was, "undone, the file's own");
+}
+
+/// A published title field changed: one step, put back and made again
+/// as it was made.
+#[test]
+fn a_title_field_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Jane Doe".into(), ..Default::default() });
+    td.published = td.default_fields();
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let mut clip = klipp_timeline::Clip::gap(at(0.0), at(4.0));
+    clip.kind = klipp_timeline::ClipKind::Title(td);
+    let id = clip.id;
+    let video = app.state.sequence().tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    app.state.sequence_mut().tracks[video].clips.push(clip);
+    redoes_as_done(&mut app, |app| app.state.set_title_field(id, 0, &klipp_core::TitleFieldValue::Text("John Roe".into()), true).unwrap());
+}

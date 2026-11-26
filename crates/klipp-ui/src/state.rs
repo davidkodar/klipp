@@ -5800,22 +5800,25 @@ impl AppState {
     /// refusal says why when there is something to say. Whether it cut.
     pub fn blade_one(&mut self, track_index: usize, clip_id: ClipId, cut_at: Timecode) -> bool {
         let magnetic: Vec<bool> = (0..self.sequence().tracks.len()).map(|ti| self.is_magnetic_track(ti)).collect();
-        let seq = &mut self.document.sequences[self.active_sequence_idx];
-        match klipp_document::blade::blade_linked(seq, track_index, clip_id, cut_at, |ti| magnetic.get(ti).copied().unwrap_or(false)) {
-            Ok(edits) => {
-                for edit in edits {
-                    self.push_history(edit);
+        let mut refused = None;
+        // The cut and its partner's, one step made through one commit:
+        // pushed one by one, a blade outside a batch was two undos.
+        let cut = self.commit_worked_out(|s| {
+            let seq = &mut s.document.sequences[s.active_sequence_idx];
+            match klipp_document::blade::blade_linked(seq, track_index, clip_id, cut_at, |ti| magnetic.get(ti).copied().unwrap_or(false)) {
+                Ok(mut edits) if edits.len() == 1 => edits.pop(),
+                Ok(edits) => edits.first().map(|first| first.label().to_string()).map(|label| EditCommand::Named { label, edit: Box::new(EditCommand::Batch(edits)) }),
+                Err(refusal) => {
+                    refused = Some(refusal);
+                    None
                 }
-                self.dirty = true;
-                true
             }
-            Err(refusal) => {
-                if let Some(message) = refusal.message() {
-                    self.toast.show(message);
-                }
-                false
-            }
+        });
+        if let Some(message) = refused.as_ref().and_then(|r| r.message()) {
+            self.toast.show(message);
         }
+        // The caller syncs the engine.
+        cut.is_some()
     }
 
     /// Whether `track_index` cuts and moves the magnetic way: the
@@ -5857,66 +5860,61 @@ impl AppState {
         let old_a = seq.all_clips().find(|c| c.id == a).map(|c| (c.source_out, c.timeline_out));
         let old_b = seq.all_clips().find(|c| c.id == b).map(|c| (c.source_in, c.timeline_in));
         let (Some((old_a_src_out, old_a_tl_out)), Some((old_b_src_in, old_b_tl_in))) = (old_a, old_b) else { return };
-        // The roll and its linked partners, one undo step.
-        let batching = self.active_history_mut().is_batching();
-        if !batching {
-            self.active_history_mut().begin_batch();
-        }
-        self.push_history(EditCommand::LegacyRollTrimClip {
-            clip_a_id: a,
-            clip_b_id: b,
-            old_a_source_out: old_a_src_out,
-            old_a_timeline_out: old_a_tl_out,
-            old_b_source_in: old_b_src_in,
-            old_b_timeline_in: old_b_tl_in,
-            new_a_source_out: a_out.0,
-            new_a_timeline_out: a_out.1,
-            new_b_source_in: b_in.0,
-            new_b_timeline_in: b_in.1,
-        });
-        let seq = &mut self.document.sequences[self.active_sequence_idx];
-        for track in &mut seq.tracks {
-            if let Some(c) = track.find_clip_mut(a) {
-                c.source_out = a_out.0;
-                c.timeline_out = a_out.1;
-            }
-            if let Some(c) = track.find_clip_mut(b) {
-                c.source_in = b_in.0;
-                c.timeline_in = b_in.1;
-            }
-        }
-        // Linked partners follow by the same amounts (#911): each moved
-        // from its own source times, which may start elsewhere (sound
-        // recorded apart and synced, a slipped partner).
-        let (a_tl, a_src) = (a_out.1 - old_a_tl_out, a_out.0 - old_a_src_out);
-        let (b_tl, b_src) = (b_in.1 - old_b_tl_in, b_in.0 - old_b_src_in);
-        let partner = |id: ClipId| if linked { seq.all_clips().find(|c| c.id == id).and_then(|c| c.linked_clip_id) } else { None };
-        let (linked_a, linked_b) = (partner(a), partner(b));
-        let mut partner_edits = Vec::new();
-        for track in &mut seq.tracks {
-            for c in track.clips.iter_mut() {
-                let old = c.clone();
-                if Some(c.id) == linked_a && c.id != b {
-                    c.timeline_out += a_tl;
-                    c.source_out += a_src;
-                } else if Some(c.id) == linked_b && c.id != a {
-                    c.timeline_in += b_tl;
-                    c.source_in += b_src;
-                } else {
-                    continue;
+        // The roll and its linked partners, one step made through one
+        // commit; the caller syncs the engine.
+        let _ = self.commit_worked_out(|s| {
+            let mut edits = vec![EditCommand::LegacyRollTrimClip {
+                clip_a_id: a,
+                clip_b_id: b,
+                old_a_source_out: old_a_src_out,
+                old_a_timeline_out: old_a_tl_out,
+                old_b_source_in: old_b_src_in,
+                old_b_timeline_in: old_b_tl_in,
+                new_a_source_out: a_out.0,
+                new_a_timeline_out: a_out.1,
+                new_b_source_in: b_in.0,
+                new_b_timeline_in: b_in.1,
+            }];
+            let seq = &mut s.document.sequences[s.active_sequence_idx];
+            for track in &mut seq.tracks {
+                if let Some(c) = track.find_clip_mut(a) {
+                    c.source_out = a_out.0;
+                    c.timeline_out = a_out.1;
                 }
-                partner_edits.push(EditCommand::ReplaceClip { description: "Roll", old: Box::new(old), new: Box::new(c.clone()) });
+                if let Some(c) = track.find_clip_mut(b) {
+                    c.source_in = b_in.0;
+                    c.timeline_in = b_in.1;
+                }
             }
-        }
-        // B's picture moved against its start: a multicam primary's cuts
-        // stay on the picture they cut.
-        partner_edits.extend(klipp_document::ops::keep_angle_cuts(seq, b, b_tl.to_secs_f64()));
-        for edit in partner_edits {
-            self.push_history(edit);
-        }
-        if !batching {
-            self.active_history_mut().end_batch_as("Roll");
-        }
+            // Linked partners follow by the same amounts (#911): each moved
+            // from its own source times, which may start elsewhere (sound
+            // recorded apart and synced, a slipped partner).
+            let (a_tl, a_src) = (a_out.1 - old_a_tl_out, a_out.0 - old_a_src_out);
+            let (b_tl, b_src) = (b_in.1 - old_b_tl_in, b_in.0 - old_b_src_in);
+            let partner = |id: ClipId| if linked { seq.all_clips().find(|c| c.id == id).and_then(|c| c.linked_clip_id) } else { None };
+            let (linked_a, linked_b) = (partner(a), partner(b));
+            let mut partner_edits = Vec::new();
+            for track in &mut seq.tracks {
+                for c in track.clips.iter_mut() {
+                    let old = c.clone();
+                    if Some(c.id) == linked_a && c.id != b {
+                        c.timeline_out += a_tl;
+                        c.source_out += a_src;
+                    } else if Some(c.id) == linked_b && c.id != a {
+                        c.timeline_in += b_tl;
+                        c.source_in += b_src;
+                    } else {
+                        continue;
+                    }
+                    partner_edits.push(EditCommand::ReplaceClip { description: "Roll", old: Box::new(old), new: Box::new(c.clone()) });
+                }
+            }
+            // B's picture moved against its start: a multicam primary's cuts
+            // stay on the picture they cut.
+            partner_edits.extend(klipp_document::ops::keep_angle_cuts(seq, b, b_tl.to_secs_f64()));
+            edits.extend(partner_edits);
+            Some(EditCommand::Named { label: "Roll".into(), edit: Box::new(EditCommand::Batch(edits)) })
+        });
     }
 
     /// A clip's sound settings set, and its linked partner's with them, so
@@ -6161,26 +6159,15 @@ impl AppState {
         let format_of = |state: &Self| media.and_then(|m| state.document.media_pool.get(&m)).map_or((Default::default(), false), |i| (i.log_format, i.log_format_user_set));
         let old = format_of(self);
         let of_file = |c: &klipp_timeline::Clip| c.id == clip_id || (media.is_some() && c.media_id() == media);
-        let before: Vec<(klipp_core::ClipId, klipp_nodes::NodeGraph)> = self.document.sequences.iter().flat_map(|s| s.all_clips()).filter(|c| of_file(c)).map(|c| (c.id, c.grade().clone())).collect();
-        if let Some(clip) = self.document.sequences[active].all_clips_mut().find(|c| c.id == clip_id) {
-            clip.set_input_log_format(log_format);
-        }
-        if let Some(mid) = media {
-            if let Some(item) = self.document.media_pool.get_mut(&mid) {
-                item.log_format = log_format;
-                item.log_format_user_set = true;
-            }
-            for clip in self.document.sequences.iter_mut().flat_map(|s| s.all_clips_mut()).filter(|c| c.media_id() == Some(mid)) {
-                clip.set_input_log_format(log_format);
-            }
-        }
-        let grades = before.into_iter().filter_map(|(id, was)| {
-            let now = self.document.sequences.iter().find_map(|s| s.all_clips().find(|c| c.id == id))?.grade().clone();
-            Some((id, was, now))
+        // Each clip's grade worked out on a copy, the step made through
+        // one commit; the caller brings the engine alongside.
+        let grades = self.document.sequences.iter().flat_map(|s| s.all_clips()).filter(|c| of_file(c)).map(|c| {
+            let mut now = c.clone();
+            now.set_input_log_format(log_format);
+            (c.id, c.grade().clone(), now.grade().clone())
         }).collect();
-        let new = format_of(self);
-        self.push_history(EditCommand::SetMediaLogFormat { media_id: media, old, new, grades });
-        self.dirty = true;
+        let new = if media.is_some_and(|m| self.document.media_pool.get(&m).is_some()) { (log_format, true) } else { old };
+        let _ = self.commit(EditCommand::SetMediaLogFormat { media_id: media, old, new, grades });
         media
     }
 
@@ -6228,23 +6215,31 @@ impl AppState {
     pub fn set_title_field(&mut self, clip_id: klipp_core::ClipId, index: usize, value: &klipp_core::TitleFieldValue, done: bool) -> Result<(), String> {
         use klipp_core::TitleFieldValue as V;
         let seq = self.active_sequence_idx;
-        let clip = self.document.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("the title is gone")?;
-        let klipp_timeline::ClipKind::Title(td) = &mut clip.kind else { return Err("that clip isn't a title".into()) };
+        let clip = self.document.sequences[seq].tracks.iter().find_map(|t| t.find_clip(clip_id)).ok_or("the title is gone")?;
+        let klipp_timeline::ClipKind::Title(td) = &clip.kind else { return Err("that clip isn't a title".into()) };
         let now = td.clone();
         let mut edited = now.clone();
         edited.set_field(index, value)?;
-        *td = edited.clone();
-        self.dirty = true;
+        // Shown at once where no step is made: a drag's steps, and a
+        // change joined to the step before it.
+        let show = |state: &mut Self, edited: &klipp_timeline::TitleData| {
+            if let Some(klipp_timeline::ClipKind::Title(td)) = state.document.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).map(|c| &mut c.kind) {
+                *td = edited.clone();
+            }
+            state.dirty = true;
+        };
         // The title as the gesture found it, kept from its first step.
         let old = match self.title_field_before.take() {
             Some((c, before)) if c == clip_id => before,
             _ => now,
         };
         if !done {
+            show(self, &edited);
             self.title_field_before = Some((clip_id, old));
             return Ok(());
         }
         if old == edited {
+            show(self, &edited);
             return Ok(());
         }
         let description = match value {
@@ -6258,18 +6253,20 @@ impl AppState {
         };
         let history = self.active_history_mut();
         if matches!(value, V::Text(_)) && history.try_coalesce_title_text(clip_id, &old, &edited) {
+            show(self, &edited);
             return Ok(());
         }
         let recent = self.title_colour_edit.is_some_and(|(c, i, at)| c == clip_id && i == index && at.elapsed() < std::time::Duration::from_millis(1500));
         if matches!(value, V::Colour(_)) {
             self.title_colour_edit = Some((clip_id, index, std::time::Instant::now()));
             if recent && self.active_history_mut().amend_last_title(clip_id, description, &edited) {
+                show(self, &edited);
                 return Ok(());
             }
         }
-        self.active_history_mut().push(crate::history::HistoryEntry {
-            command: crate::history::EditCommand::EditTitle { clip_id, description, old_data: old, new_data: edited },
-        });
+        // A step of its own, made through one commit; the caller draws
+        // the title and syncs the engine.
+        let _ = self.commit(EditCommand::EditTitle { clip_id, description, old_data: old, new_data: edited });
         if matches!(value, V::Text(_)) {
             self.active_history_mut().note_title_text_edit(clip_id);
         }
@@ -6294,9 +6291,11 @@ impl AppState {
             item.bin = Some(bin);
         }
         if requested && is_new {
-            self.push_history(EditCommand::AddMediaToPool { item: item.clone() });
+            // The caller syncs the pool.
+            let _ = self.commit(EditCommand::AddMediaToPool { item });
+        } else {
+            self.document.media_pool.add(item);
         }
-        self.document.media_pool.add(item);
     }
 
     /// Push a single edit onto the active sequence's undo stack and
