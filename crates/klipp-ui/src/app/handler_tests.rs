@@ -948,6 +948,22 @@ fn a_title_field_redoes_as_made() {
     redoes_as_done(&mut app, |app| app.state.set_title_field(id, 0, &klipp_core::TitleFieldValue::Text("John Roe".into()), true).unwrap());
 }
 
+/// A title added at the playhead is one step: a text track made for it
+/// goes with its undo, and an empty text track the person already had
+/// stays. That one used to be taken for made and went with the title.
+#[test]
+fn a_title_added_takes_back_only_the_track_made_for_it() {
+    let (mut app, _engine) = KlippApp::for_test();
+    // The tracks there are, as each frame notes them.
+    app.state.seed_recorded_tracks();
+    redoes_as_made(&mut app, vec![AppCommand::AddTitleAtPlayhead { over_clip: None }]);
+    let (mut app, _engine) = KlippApp::for_test();
+    app.state.sequence_mut().add_text_track("Lower Thirds".into());
+    app.state.note_recorded_tracks();
+    redoes_as_made(&mut app, vec![AppCommand::AddTitleAtPlayhead { over_clip: None }]);
+    assert!(app.state.sequence().tracks.iter().any(|t| t.name == "Lower Thirds" && t.clips.len() == 1), "the title on the track the person had");
+}
+
 /// Each change to a sound's audio chain, its effects and their keys, is
 /// one step that redoes as it was made.
 #[test]

@@ -8936,11 +8936,9 @@ impl TimelinePanel {
                         // the name of another editor rather than "resolve
                         // the overlap".
                         if ui.button("Move Overlapping Clip After This One").on_hover_text("This clip overlaps another on the track: move that one so it starts where this one ends").clicked() {
-                            let result = klipp_timeline::magnetic::MagneticEditor::resolve_collision_push(state.sequence_mut(), clip_id, colliding_id);
-                            state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::Magnetic(result.command),
-                            });
-                            state.dirty = true;
+                            let _ = state.commit_worked_out(|s| Some(crate::history::EditCommand::Magnetic(
+                                klipp_timeline::magnetic::MagneticEditor::resolve_collision_push(s.sequence_mut(), clip_id, colliding_id).command,
+                            )));
                             cmds.push(AppCommand::SequenceUpdated);
                             ui.close_kind(egui::UiKind::Menu);
                         }
@@ -10701,24 +10699,19 @@ impl TimelinePanel {
                                             })
                                             .map(|c| c.id);
                                         if let Some(anchor_id) = anchor_id {
-                                            let result = klipp_timeline::magnetic::MagneticEditor::connect_clip(
-                                                state.sequence_mut(), clip_id, anchor_id,
-                                                klipp_timeline::AnchorAlignment::StartAligned);
-                                            state.active_history_mut().push(crate::history::HistoryEntry {
-                                                command: crate::history::EditCommand::Magnetic(result.command),
-                                            });
-                                            state.dirty = true;
+                                            let _ = state.commit_worked_out(|s| Some(crate::history::EditCommand::Magnetic(
+                                                klipp_timeline::magnetic::MagneticEditor::connect_clip(
+                                                    s.sequence_mut(), clip_id, anchor_id,
+                                                    klipp_timeline::AnchorAlignment::StartAligned).command,
+                                            )));
                                             cmds.push(AppCommand::SequenceUpdated);
                                         }
                                     }
                                 } else if dist_tracks > klipp_timeline::magnetic::AUTO_DISCONNECT_TRACK_DISTANCE && clip_is_connected {
                                     // Auto-disconnect
-                                    let result = klipp_timeline::magnetic::MagneticEditor::disconnect_clip(
-                                        state.sequence_mut(), clip_id);
-                                    state.active_history_mut().push(crate::history::HistoryEntry {
-                                        command: crate::history::EditCommand::Magnetic(result.command),
-                                    });
-                                    state.dirty = true;
+                                    let _ = state.commit_worked_out(|s| Some(crate::history::EditCommand::Magnetic(
+                                        klipp_timeline::magnetic::MagneticEditor::disconnect_clip(s.sequence_mut(), clip_id).command,
+                                    )));
                                     cmds.push(AppCommand::SequenceUpdated);
                                 }
                             }
@@ -10935,17 +10928,22 @@ impl TimelinePanel {
                                 old_right_in: old_r_in,
                                 new_right_in,
                             };
-                            // The right neighbour's picture moved against its
-                            // start: its angle cuts stay on what they cut.
-                            let cuts = match (r_id, old_r_in, new_right_in) {
-                                (Some(rid), Some(old), Some(new)) => klipp_document::ops::keep_angle_cuts(state.sequence_mut(), rid, (new - old).to_secs_f64()),
-                                _ => None,
-                            };
-                            let command = match cuts {
-                                Some(cuts) => crate::history::EditCommand::Batch(vec![slid, cuts]),
-                                None => slid,
-                            };
-                            state.active_history_mut().push(crate::history::HistoryEntry { command });
+                            // The drag moved the clips live: put them back,
+                            // then make the step from where they were.
+                            let _ = state.document_view().apply_inverse(&slid);
+                            let _ = state.commit_worked_out(|s| {
+                                let _ = s.document_view().apply_forward(&slid);
+                                // The right neighbour's picture moved against its
+                                // start: its angle cuts stay on what they cut.
+                                let cuts = match (r_id, old_r_in, new_right_in) {
+                                    (Some(rid), Some(old), Some(new)) => klipp_document::ops::keep_angle_cuts(s.sequence_mut(), rid, (new - old).to_secs_f64()),
+                                    _ => None,
+                                };
+                                Some(match cuts {
+                                    Some(cuts) => crate::history::EditCommand::Batch(vec![slid, cuts]),
+                                    None => slid,
+                                })
+                            });
                             cmds.push(AppCommand::SlideClip {
                                 clip_id: cid,
                                 new_timeline_in: new_tl_in,
@@ -11068,14 +11066,19 @@ impl TimelinePanel {
                                 new_source_in: new_src_in,
                                 new_source_out: new_src_out,
                             };
-                            // The angle cuts follow the picture.
-                            let moved = state.sequence().find_clip(cid).map(|(ti, ci)| state.sequence().tracks[ti].clips[ci].picture_moved_by_slip((new_src_in - old_si).to_secs_f64()));
-                            let cuts = moved.and_then(|m| klipp_document::ops::keep_angle_cuts(state.sequence_mut(), cid, m));
-                            let command = match cuts {
-                                Some(cuts) => crate::history::EditCommand::Batch(vec![slipped, cuts]),
-                                None => slipped,
-                            };
-                            state.active_history_mut().push(crate::history::HistoryEntry { command });
+                            // The drag slipped the clip live: put it back,
+                            // then make the step from where it was.
+                            let _ = state.document_view().apply_inverse(&slipped);
+                            let _ = state.commit_worked_out(|s| {
+                                let _ = s.document_view().apply_forward(&slipped);
+                                // The angle cuts follow the picture.
+                                let moved = s.sequence().find_clip(cid).map(|(ti, ci)| s.sequence().tracks[ti].clips[ci].picture_moved_by_slip((new_src_in - old_si).to_secs_f64()));
+                                let cuts = moved.and_then(|m| klipp_document::ops::keep_angle_cuts(s.sequence_mut(), cid, m));
+                                Some(match cuts {
+                                    Some(cuts) => crate::history::EditCommand::Batch(vec![slipped, cuts]),
+                                    None => slipped,
+                                })
+                            });
                             cmds.push(AppCommand::SlipClip {
                                 clip_id: cid,
                                 new_source_in: new_src_in,
@@ -12532,13 +12535,15 @@ impl TimelinePanel {
                                 let new_in = state.sequence().in_point;
                                 let new_out = state.sequence().out_point;
                                 if drag.original_in != new_in || drag.original_out != new_out {
-                                    state.active_history_mut().push(crate::history::HistoryEntry {
-                                        command: crate::history::EditCommand::SetRange {
-                                            old_in: drag.original_in,
-                                            old_out: drag.original_out,
-                                            new_in,
-                                            new_out,
-                                        },
+                                    // The drag set the marks live: put them
+                                    // back, then make the step.
+                                    state.sequence_mut().in_point = drag.original_in;
+                                    state.sequence_mut().out_point = drag.original_out;
+                                    let _ = state.commit(crate::history::EditCommand::SetRange {
+                                        old_in: drag.original_in,
+                                        old_out: drag.original_out,
+                                        new_in,
+                                        new_out,
                                     });
                                 }
                             }

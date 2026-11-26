@@ -3379,10 +3379,8 @@ impl crate::state::AppState {
             Some(t_railed || g_railed)
         })?;
         let new_graph = clip.grade().clone();
-        self.active_history_mut().push(crate::history::HistoryEntry {
-            command: crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph },
-        });
-        self.dirty = true;
+        // The grade is already the new one; the step sets it again.
+        let _ = self.commit(crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph });
         Some(railed)
     }
 }
@@ -3681,9 +3679,8 @@ pub(super) fn edit_clip_graph(
     }
     let new_graph = clip.grade().clone();
     if record {
-        state.active_history_mut().push(crate::history::HistoryEntry {
-            command: crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph },
-        });
+        // The grade is already the new one; the step sets it again.
+        let _ = state.commit(crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph });
     }
     Some(Ok(()))
 }
@@ -3854,10 +3851,8 @@ pub(super) fn close_gesture(state: &mut AppState, clip_id: klipp_core::ClipId, o
     let seq = state.active_sequence_idx;
     let Some(clip) = state.document.sequences[seq].tracks.iter().find_map(|t| t.find_clip(clip_id)) else { return };
     let new_graph = clip.grade().clone();
-    state.active_history_mut().push(crate::history::HistoryEntry {
-        command: crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph },
-    });
-    state.dirty = true;
+    // The grade is already the new one; the step sets it again.
+    let _ = state.commit(crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph });
 }
 
 /// A node-param gesture taken back: `clip_id`'s grade restored to

@@ -1421,11 +1421,10 @@ impl KlippApp {
                         .find_map(|t| t.clips.iter().find(|c| c.id == *clip_id))
                         .and_then(|c| c.title_data()).cloned()
                     {
-                        self.state.active_history_mut().push(crate::history::HistoryEntry {
-                            command: EditCommand::EditTitle {
-                                clip_id: *clip_id, description: "Set Alignment",
-                                old_data: old, new_data: new,
-                            },
+                        // The title is already the new one; the step sets it again.
+                        let _ = self.state.commit(EditCommand::EditTitle {
+                            clip_id: *clip_id, description: "Set Alignment",
+                            old_data: old, new_data: new,
                         });
                     }
                 }
@@ -3931,10 +3930,6 @@ pub(super) fn add_title_clip(
     duration_frames: u32,
 ) -> (klipp_core::ClipId, Option<klipp_core::RationalTime>) {
     let ti = track_index;
-    // Check if this track was just created (it's a fresh text track with no clips)
-    let created_track = state.document.sequences[state.active_sequence_idx].tracks
-        .get(ti)
-        .is_some_and(|t| t.kind == klipp_timeline::TrackKind::Text && t.clips.is_empty());
     let fps_rate = state.document.sequences[state.active_sequence_idx].fps.rate();
     let timeline_in = timeline_in.rescale_to(fps_rate);
     let duration = klipp_core::RationalTime::from_frames(duration_frames as i64, fps_rate);
@@ -4014,21 +4009,14 @@ pub(super) fn add_title_clip(
     };
     let clip_id = clip.id;
     let rest = title_rest_time(&clip, fps_rate);
-    if let Some(track) = state.document.sequences[state.active_sequence_idx].tracks.get_mut(ti) {
-        track.clips.push(clip.clone());
-        track.clips.sort_by_key(|c| c.timeline_in.value);
-    }
-    // The track made for it, by its id, for a redo to make it again (#2802).
-    let track_id = created_track.then(|| state.document.sequences[state.active_sequence_idx].tracks.get(ti).map(|t| t.id)).flatten();
-    state.active_history_mut().push(crate::history::HistoryEntry {
-        command: crate::history::EditCommand::AddTitleClip {
-            clip,
-            track_index: ti,
-            created_track,
-            track_id,
-        },
+    // The step puts the clip on its track; a text track made for it is
+    // found as made and goes with the step, one the person had stays.
+    let _ = state.commit(crate::history::EditCommand::AddTitleClip {
+        clip,
+        track_index: ti,
+        created_track: false,
+        track_id: None,
     });
-    state.dirty = true;
     // The new title is the selection and the inspector opens on its
     // text; the playhead stays where it is (see [`after_title_added`]).
     state.selected_clip = Some(clip_id);
