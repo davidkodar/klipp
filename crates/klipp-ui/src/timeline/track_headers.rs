@@ -61,12 +61,6 @@ pub fn show(
     let mut toggle_mute: Option<usize> = None;
     let mut toggle_lock: Option<usize> = None;
     // Deferred magnetic operation from context menu (track_idx, action)
-    #[derive(Clone)]
-    enum TrackAction {
-        PromoteToStoryline(usize),
-        BreakApartStoryline(usize),
-        SetAsPrimary(usize),
-    }
     let mut deferred_action: Option<TrackAction> = None;
     // A header dragged to reorder its track (#922): the track being
     // dragged, kept between frames, and every row drawn, to drop on.
@@ -1082,54 +1076,7 @@ pub fn show(
 
     // Apply deferred magnetic track actions
     if let Some(action) = deferred_action {
-        match action {
-            TrackAction::PromoteToStoryline(ti) => {
-                // Find nearest primary clip as anchor (same logic as Shift+S in app.rs)
-                let primary_idx = state.sequence().primary_track_index();
-                if let Some(pi) = primary_idx {
-                    let first_clip_in = state.sequence().tracks[ti].clips.first()
-                        .map(|c| c.timeline_in);
-                    if let Some(clip_in) = first_clip_in {
-                        let anchor_id = state.sequence().tracks[pi].clips.iter()
-                            .min_by_key(|c| {
-                                let mid = c.timeline_in + (c.timeline_out - c.timeline_in);
-                                let diff = mid - clip_in;
-                                diff.value.unsigned_abs()
-                            })
-                            .map(|c| c.id);
-                        if let Some(anchor_id) = anchor_id {
-                            let result = klipp_timeline::magnetic::MagneticEditor::promote_to_storyline(
-                                state.sequence_mut(), ti, anchor_id);
-                            state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::Magnetic(result.command),
-                            });
-                            state.dirty = true;
-                            cmds.push(AppCommand::SequenceUpdated);
-                        }
-                    }
-                }
-            }
-            TrackAction::BreakApartStoryline(ti) => {
-                let result = klipp_timeline::magnetic::MagneticEditor::break_apart_storyline(
-                    state.sequence_mut(), ti);
-                state.active_history_mut().push(crate::history::HistoryEntry {
-                    command: crate::history::EditCommand::Magnetic(result.command),
-                });
-                state.dirty = true;
-                cmds.push(AppCommand::SequenceUpdated);
-            }
-            TrackAction::SetAsPrimary(ti) => {
-                // Clear old primary, set new one
-                for track in &mut state.sequence_mut().tracks {
-                    if track.magnetic_role == klipp_timeline::TrackRole::Primary {
-                        track.magnetic_role = klipp_timeline::TrackRole::Free;
-                    }
-                }
-                state.sequence_mut().tracks[ti].magnetic_role = klipp_timeline::TrackRole::Primary;
-                state.dirty = true;
-                cmds.push(AppCommand::SequenceUpdated);
-            }
-        }
+        apply_track_action(state, &mut cmds, action);
     }
 
     // The dragged header: a frame round the track it would land on, of
@@ -1152,6 +1099,63 @@ pub fn show(
     }
 
     cmds
+}
+
+/// A track header's magnetic action, asked for from its menu.
+#[derive(Clone)]
+pub(crate) enum TrackAction {
+    PromoteToStoryline(usize),
+    BreakApartStoryline(usize),
+    SetAsPrimary(usize),
+}
+
+/// `action` made as one step, the engine told by `SequenceUpdated`.
+pub(crate) fn apply_track_action(state: &mut AppState, cmds: &mut Vec<AppCommand>, action: TrackAction) {
+    match action {
+        TrackAction::PromoteToStoryline(ti) => {
+            // Find nearest primary clip as anchor (same logic as Shift+S in app.rs)
+            let primary_idx = state.sequence().primary_track_index();
+            if let Some(pi) = primary_idx {
+                let first_clip_in = state.sequence().tracks[ti].clips.first()
+                    .map(|c| c.timeline_in);
+                if let Some(clip_in) = first_clip_in {
+                    let anchor_id = state.sequence().tracks[pi].clips.iter()
+                        .min_by_key(|c| {
+                            let mid = c.timeline_in + (c.timeline_out - c.timeline_in);
+                            let diff = mid - clip_in;
+                            diff.value.unsigned_abs()
+                        })
+                        .map(|c| c.id);
+                    if let Some(anchor_id) = anchor_id {
+                        // Worked out in place, made through one
+                        // commit; the engine hears by SequenceUpdated.
+                        let _ = state.commit_worked_out(|s| Some(crate::history::EditCommand::Magnetic(
+                            klipp_timeline::magnetic::MagneticEditor::promote_to_storyline(s.sequence_mut(), ti, anchor_id).command)));
+                        cmds.push(AppCommand::SequenceUpdated);
+                    }
+                }
+            }
+        }
+        TrackAction::BreakApartStoryline(ti) => {
+            let _ = state.commit_worked_out(|s| Some(crate::history::EditCommand::Magnetic(
+                klipp_timeline::magnetic::MagneticEditor::break_apart_storyline(s.sequence_mut(), ti).command)));
+            cmds.push(AppCommand::SequenceUpdated);
+        }
+        TrackAction::SetAsPrimary(ti) => {
+            // The old primary cleared and the new one set, one step
+            // through one commit.
+            let old = state.sequence().tracks.clone();
+            let mut new = old.clone();
+            for track in &mut new {
+                if track.magnetic_role == klipp_timeline::TrackRole::Primary {
+                    track.magnetic_role = klipp_timeline::TrackRole::Free;
+                }
+            }
+            new[ti].magnetic_role = klipp_timeline::TrackRole::Primary;
+            let _ = state.commit(crate::history::EditCommand::SetTracks { description: "Set as Primary", old, new });
+            cmds.push(AppCommand::SequenceUpdated);
+        }
+    }
 }
 
 /// Where a track's name must end, in a header whose right edge is at

@@ -1004,6 +1004,16 @@ fn bins_made_by_a_step_go_with_its_undo() {
     step(&mut app, AppCommand::NewBin { media_ids: vec![a] });
     step(&mut app, AppCommand::MoveItemsToBin { media_ids: vec![a, b], bin: Some("Selects".into()) });
     step(&mut app, AppCommand::MoveItemToBin { media_id: b, bin: None });
+    step(&mut app, AppCommand::CreateBin { name: "B-roll".into() });
+    let parent_id = app.state.document.media_pool.bins.iter().find(|b| b.name == "B-roll").unwrap().id;
+    step(&mut app, AppCommand::CreateSubBin { parent_id, name: "Drone".into() });
+    // Taken out with its item moved back to the root, and put back in its
+    // place with the item in it.
+    step(&mut app, AppCommand::DeleteBin { name: "Selects".into() });
+    let order = |app: &KlippApp| app.state.document.media_pool.bins.iter().map(|b| b.name.clone()).collect::<Vec<_>>();
+    let was = order(&app);
+    app.send_commands(vec![AppCommand::DeleteBin { name: "New Bin".into() }, AppCommand::Undo]);
+    assert_eq!(order(&app), was, "undone, each bin in its place");
 }
 
 /// A file renamed is one step, undone and redone.
@@ -1019,4 +1029,33 @@ fn a_rename_of_a_file_redoes_as_made() {
     assert_eq!(name(&app), was);
     app.send_commands(vec![AppCommand::Redo]);
     assert_eq!(name(&app), "Interview");
+}
+
+/// A track header's magnetic actions: a connected track promoted to a
+/// storyline, broken apart again, and a track set as the primary, each
+/// one step redone as it was made.
+#[test]
+fn track_header_storyline_actions_redo_as_made() {
+    use crate::timeline::track_headers::{apply_track_action, TrackAction};
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let (mut app, _engine) = KlippApp::for_test();
+    linked_pair(&mut app);
+    app.state.sequence_mut().add_video_track("Video 2".into());
+    let above = app.state.sequence().tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video && t.magnetic_role != klipp_timeline::TrackRole::Primary).unwrap();
+    app.state.sequence_mut().tracks[above].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), at(1.0), at(2.0), at(0.0), at(1.0)));
+    app.state.sequence_mut().tracks[above].magnetic_role = klipp_timeline::TrackRole::Connected;
+    let mut cmds = Vec::new();
+    for action in [TrackAction::PromoteToStoryline(above), TrackAction::BreakApartStoryline(above), TrackAction::SetAsPrimary(above)] {
+        redoes_as_done(&mut app, |app| apply_track_action(&mut app.state, &mut cmds, action));
+    }
+    assert_eq!(app.state.sequence().primary_track_index(), Some(above));
+}
+
+/// A mixer routing change dragged: heard live as it moves, then one step
+/// from where the drag began that undo and redo replay.
+#[test]
+fn a_routing_drag_is_one_step_redone_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let mut cmds = Vec::new();
+    redoes_as_done(&mut app, |app| crate::panels::aux_routing::drag_for_test(&mut app.state, &mut cmds));
 }

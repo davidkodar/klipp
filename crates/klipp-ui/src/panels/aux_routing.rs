@@ -8,7 +8,7 @@ use klipp_core::{AppCommand, BusId, TrackId};
 use klipp_timeline::routing::{level_text, route_loops, Routing, MAX_BUSES, MAX_SENDS};
 use klipp_timeline::{AuxBus, AuxSend};
 
-use crate::history::{EditCommand, HistoryEntry};
+use crate::history::EditCommand;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 
@@ -102,10 +102,36 @@ fn edit(state: &mut AppState, cmds: &mut Vec<AppCommand>, change: impl FnOnce(&m
     let mut new = old.clone();
     change(&mut new);
     if new != old {
-        state.sequence_mut().set_routing(&new);
-        state.active_history_mut().push(HistoryEntry { command: EditCommand::SetRouting { old: Box::new(old), new: Box::new(new) } });
+        // The engine hears of it by RoutingChanged.
+        let _ = state.commit(EditCommand::SetRouting { old: Box::new(old), new: Box::new(new) });
         cmds.push(AppCommand::RoutingChanged);
     }
+}
+
+/// A drag's end: the routing it heard live put back to where the drag
+/// began, and the drag made as one step through one commit.
+fn end_drag(state: &mut AppState, cmds: &mut Vec<AppCommand>) {
+    if let Some(old) = state.mixer_routing_drag.take() {
+        let new = state.sequence().routing();
+        if new != old {
+            state.sequence_mut().set_routing(&old);
+            let _ = state.commit(EditCommand::SetRouting { old: Box::new(old), new: Box::new(new) });
+            cmds.push(AppCommand::RoutingChanged);
+        }
+    }
+}
+
+/// A drag as a control makes one: a bus added live, a frame at a time,
+/// then the drag's end.
+#[cfg(test)]
+pub(crate) fn drag_for_test(state: &mut AppState, cmds: &mut Vec<AppCommand>) {
+    state.mixer_routing_drag = Some(state.sequence().routing());
+    for _ in 0..2 {
+        let mut r = state.sequence().routing();
+        add_bus(&mut r);
+        state.sequence_mut().set_routing(&r);
+    }
+    end_drag(state, cmds);
 }
 
 /// A control's change: dragged, heard at once and one step when the drag
@@ -125,13 +151,7 @@ fn control(state: &mut AppState, cmds: &mut Vec<AppCommand>, resp: &egui::Respon
         }
     }
     if resp.drag_stopped() {
-        if let Some(old) = state.mixer_routing_drag.take() {
-            let new = state.sequence().routing();
-            if new != old {
-                state.active_history_mut().push(HistoryEntry { command: EditCommand::SetRouting { old: Box::new(old), new: Box::new(new) } });
-                cmds.push(AppCommand::RoutingChanged);
-            }
-        }
+        end_drag(state, cmds);
     }
 }
 
@@ -147,15 +167,7 @@ fn bus_card_command(state: &mut AppState, cmds: &mut Vec<AppCommand>, at: usize,
                 state.mixer_routing_drag = Some(state.sequence().routing());
             }
         }
-        AppCommand::EndAudioChainDrag { clip_id, .. } if *clip_id == stand_in => {
-            if let Some(old) = state.mixer_routing_drag.take() {
-                let new = state.sequence().routing();
-                if new != old {
-                    state.active_history_mut().push(HistoryEntry { command: EditCommand::SetRouting { old: Box::new(old), new: Box::new(new) } });
-                    cmds.push(AppCommand::RoutingChanged);
-                }
-            }
-        }
+        AppCommand::EndAudioChainDrag { clip_id, .. } if *clip_id == stand_in => end_drag(state, cmds),
         AppCommand::OpenModelDownloadDialog { .. } => cmds.push(cmd.clone()),
         _ => {
             let mut r = state.sequence().routing();

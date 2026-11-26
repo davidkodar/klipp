@@ -1227,10 +1227,10 @@ impl KlippApp {
                     true
                 }
                 AppCommand::CreateBin { name } => {
-                    // Create a root-level bin in the bins collection
-                    let _bin_id = self.state.document.media_pool.find_or_create_bin(name);
+                    // A root-level bin, one step; a bin of that name
+                    // already there is kept as it is.
+                    self.state.new_bin(name, &[]);
                     tracing::info!("Bin created: {}", name);
-                    self.state.dirty = true;
                     true
                 }
                 AppCommand::CreateSubBin { parent_id, name } => {
@@ -1239,27 +1239,13 @@ impl KlippApp {
                         name: name.clone(),
                         parent_id: Some(*parent_id),
                     };
-                    self.state.document.media_pool.bins.push(bin);
+                    let _ = self.state.commit(crate::history::EditCommand::CreateBin { bin });
                     tracing::info!("Sub-bin created: {} (parent: {})", name, parent_id);
-                    self.state.dirty = true;
                     true
                 }
                 AppCommand::DeleteBin { name } => {
-                    // Move all items in this bin back to root
-                    let ids: Vec<MediaId> = self.state.document.media_pool.all()
-                        .filter(|m| m.bin.as_deref() == Some(name.as_str()))
-                        .map(|m| m.id)
-                        .collect();
-                    for id in ids {
-                        if let Some(item) = self.state.document.media_pool.get_mut(&id) {
-                            item.bin = None;
-                            item.bin_id = None;
-                        }
-                    }
-                    // Remove the bin from the collection
-                    self.state.document.media_pool.bins.retain(|b| b.name != *name);
+                    self.state.delete_bin(name);
                     tracing::info!("Bin deleted: {}", name);
-                    self.state.dirty = true;
                     true
                 }
                 AppCommand::MoveItemToBin { media_id, bin } => {
@@ -2326,6 +2312,18 @@ impl crate::state::AppState {
     pub(crate) fn move_media_to_bin(&mut self, ids: &[klipp_core::MediaId], bin: Option<&str>) {
         let edits = self.to_bin_edits(ids, bin);
         self.commit_bin_edits(edits, "Move to Bin");
+    }
+
+    /// The bins named `name` taken out of the pool, their items moved back
+    /// to the root first: one step, which undo puts back whole.
+    pub(crate) fn delete_bin(&mut self, name: &str) {
+        let pool = &self.document.media_pool;
+        let ids: Vec<klipp_core::MediaId> = pool.all().filter(|m| m.bin.as_deref() == Some(name)).map(|m| m.id).collect();
+        let mut edits = self.to_bin_edits(&ids, None);
+        // From the last place back, so each keeps its place for the undo.
+        let bins = pool.bins.iter().enumerate().filter(|(_, b)| b.name == name).map(|(at, b)| (at, b.clone())).collect::<Vec<_>>();
+        edits.extend(bins.into_iter().rev().map(|(at, bin)| crate::history::EditCommand::DeleteBin { bin, at }));
+        self.commit_bin_edits(edits, "Delete Bin");
     }
 
     /// The steps that put `ids` in the bin named `bin`, or out of their
