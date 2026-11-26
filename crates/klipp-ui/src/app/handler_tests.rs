@@ -1141,3 +1141,60 @@ fn a_routing_drag_is_one_step_redone_as_made() {
     let mut cmds = Vec::new();
     redoes_as_done(&mut app, |app| crate::panels::aux_routing::drag_for_test(&mut app.state, &mut cmds));
 }
+
+/// A gesture's edit shown frame after frame, each worked out from where
+/// the gesture began: cancelled, it gives the timeline back with no step
+/// and nothing unsaved; ended, it is one step that counts toward autosave
+/// and redoes as it was shown.
+#[test]
+fn a_live_edit_shown_cancels_to_the_start_and_ends_as_one_step() {
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    // Each frame's edit, from the timeline the gesture began on: the
+    // middle clip's tail dragged back and forth, rippling the one after,
+    // or its head.
+    let frame = |start: &klipp_timeline::Sequence, id, k: usize| {
+        let mut s = start.clone();
+        let to = 0.5 + 1.4 * ((k as f64 * 0.37).sin() * 0.5 + 0.5);
+        let cmd = if k.is_multiple_of(3) { klipp_timeline::magnetic::MagneticEditor::trim_head(&mut s, id, at(2.0 + to * 0.5)) } else { klipp_timeline::magnetic::MagneticEditor::trim_tail(&mut s, id, at(2.0 + to)) };
+        klipp_document::history::EditCommand::Magnetic(cmd.command)
+    };
+    for end in [false, true] {
+        let (mut app, _engine) = KlippApp::for_test();
+        app.suppress_fps_prompt = true;
+        let ids = on_the_storyline(&mut app);
+        app.state.note_recorded_tracks();
+        let start = app.state.sequence().clone();
+        let before = contents(&app);
+        let (depth, ops) = (app.state.undo_depth(), app.state.history_ops_since_save);
+        let mut last = None;
+        for k in 0..200 {
+            let edit = frame(&start, ids[1], k);
+            let _ = app.state.show_live(edit.clone());
+            last = Some(edit);
+        }
+        assert!(app.state.is_live());
+        assert_eq!(app.state.undo_depth(), depth, "nothing recorded while it is shown");
+        // What is shown is the last frame's edit made once on the start.
+        let mut once = KlippApp::for_test().0;
+        once.state.document.sequences = vec![start.clone()];
+        let _ = once.state.commit(last.unwrap());
+        assert!(contents(&app) == contents(&once), "the last frame shown, made once on the start");
+        if !end {
+            let _ = app.state.cancel_live();
+            assert!(!app.state.is_live());
+            assert!(contents(&app) == before, "cancelled, the timeline as the gesture found it");
+            assert_eq!((app.state.undo_depth(), app.state.history_ops_since_save, app.state.dirty), (depth, ops, false), "and no step");
+            continue;
+        }
+        let shown = contents(&app);
+        assert!(app.state.end_live());
+        assert!(!app.state.is_live() && !app.state.end_live(), "ended once");
+        assert!(contents(&app) == shown, "what lands is what was shown");
+        assert_eq!((app.state.undo_depth(), app.state.history_ops_since_save), (depth + 1, ops + 1), "one step, toward autosave");
+        assert!(app.state.dirty);
+        app.send_commands(vec![AppCommand::Undo]);
+        assert!(contents(&app) == before, "undo gives the timeline back");
+        app.send_commands(vec![AppCommand::Redo]);
+        assert!(contents(&app) == shown, "redo makes it as it was shown");
+    }
+}

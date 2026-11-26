@@ -32,6 +32,8 @@ pub struct Document {
     /// The clock every history stamps its steps from, so the project's
     /// and a sequence's compare.
     pub history_clock: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// The edit a gesture shows while it is under way, not yet a step.
+    pub live: crate::live::LiveEdit,
 }
 
 impl Default for Document {
@@ -44,6 +46,7 @@ impl Default for Document {
             command_histories: std::collections::HashMap::new(),
             project_history: CommandHistory::new(),
             history_clock: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            live: crate::live::LiveEdit::default(),
         }
     }
 }
