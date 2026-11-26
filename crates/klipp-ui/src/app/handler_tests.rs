@@ -495,9 +495,10 @@ fn redoes_as_made(app: &mut KlippApp, send: Vec<AppCommand>) {
     assert_eq!(app.state.undo_depth(), depth + 1, "one step");
     assert!(app.state.dirty);
     app.send_commands(vec![AppCommand::Undo]);
-    assert_eq!(contents(app), before, "undo gives the timeline back");
+    // Whole timelines are long: a mismatch names itself, not both.
+    assert!(contents(app) == before, "undo gives the timeline back");
     app.send_commands(vec![AppCommand::Redo]);
-    assert_eq!(contents(app), made, "redo makes it as the edit made it");
+    assert!(contents(app) == made, "redo makes it as the edit made it");
 }
 
 fn a_file(app: &mut KlippApp) -> klipp_core::MediaId {
@@ -589,4 +590,84 @@ fn a_storyline_edit_that_makes_its_audio_track_redoes_as_made() {
         app.send_commands(vec![AppCommand::Undo]);
         assert_eq!(app.state.sequence().tracks.len(), tracks, "undo takes the track away");
     }
+}
+
+/// A clip above the storyline connected to the primary clip nearest it,
+/// disconnected again, and its track promoted to a storyline and broken
+/// apart: each one step, redone as made.
+#[test]
+fn storyline_connections_redo_as_made() {
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let (mut app, _engine) = KlippApp::for_test();
+    linked_pair(&mut app);
+    app.state.sequence_mut().add_video_track("Video 2".into());
+    let above = app.state.sequence().tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video && t.magnetic_role != klipp_timeline::TrackRole::Primary).unwrap();
+    let title = klipp_timeline::Clip::media(klipp_core::MediaId::new(), at(1.0), at(2.0), at(0.0), at(1.0));
+    let clip_id = title.id;
+    app.state.sequence_mut().tracks[above].clips.push(title);
+    redoes_as_made(&mut app, vec![AppCommand::ConnectToPrimary { clip_id }]);
+    redoes_as_made(&mut app, vec![AppCommand::DisconnectFromPrimary { clip_id }]);
+    app.state.sequence_mut().tracks[above].magnetic_role = klipp_timeline::TrackRole::Connected;
+    redoes_as_made(&mut app, vec![AppCommand::ToggleStoryline { clip_id }]);
+    redoes_as_made(&mut app, vec![AppCommand::ToggleStoryline { clip_id }]);
+}
+
+/// Two linked pairs side by side on free tracks.
+fn two_pairs(app: &mut KlippApp) -> [(klipp_core::ClipId, klipp_core::ClipId); 2] {
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    app.state.magnetic_timeline_enabled = false;
+    for t in &mut app.state.sequence_mut().tracks {
+        t.magnetic_role = klipp_timeline::TrackRole::Free;
+    }
+    let pair = |app: &mut KlippApp, from: f64, to: f64| {
+        let media = klipp_core::MediaId::new();
+        let (mut picture, mut sound) = (klipp_timeline::Clip::media(media, at(from), at(to), at(0.0), at(to - from)), klipp_timeline::Clip::media(media, at(from), at(to), at(0.0), at(to - from)));
+        (picture.linked_clip_id, sound.linked_clip_id) = (Some(sound.id), Some(picture.id));
+        let ids = (picture.id, sound.id);
+        let tracks = &mut app.state.sequence_mut().tracks;
+        tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(picture);
+        tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap().clips.push(sound);
+        ids
+    };
+    [pair(app, 0.0, 4.0), pair(app, 6.0, 10.0)]
+}
+
+/// A clip dragged along its track over the next pair, and onto another
+/// track: laid over what is there, its sound with it and the covered
+/// clip's sound cut the same way, one step redone as made.
+#[test]
+fn a_clip_dropped_over_a_pair_redoes_as_made() {
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let (mut app, _engine) = KlippApp::for_test();
+    let [(first, _), _] = two_pairs(&mut app);
+    redoes_as_made(&mut app, vec![AppCommand::MoveClip { clip_id: first, new_timeline_in: at(7.0) }]);
+
+    let (mut app, _engine) = KlippApp::for_test();
+    let [(first, _), _] = two_pairs(&mut app);
+    app.state.sequence_mut().add_video_track("Video 2".into());
+    let tracks = &app.state.sequence().tracks;
+    let from = tracks.iter().position(|t| t.clips.iter().any(|c| c.id == first)).unwrap();
+    let to = tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video && t.clips.is_empty()).unwrap();
+    redoes_as_made(&mut app, vec![AppCommand::MoveClipToTrack { clip_id: first, new_timeline_in: at(2.0), from_track: from, to_track: to }]);
+}
+
+/// A clip moved with the clips grouped with it: they move by the same
+/// amount, in the same step, and undo puts them all back.
+#[test]
+fn a_grouped_clip_moved_takes_its_group_in_one_step() {
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let (mut app, _engine) = KlippApp::for_test();
+    app.state.linked_selection = false;
+    let [(first, _), (second, _)] = two_pairs(&mut app);
+    let group = Some(klipp_core::GroupId::new());
+    for c in app.state.sequence_mut().tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        if c.id == first || c.id == second {
+            c.group_id = group;
+        }
+    }
+    let start = |app: &KlippApp, id| app.state.sequence().all_clips().find(|c| c.id == id).unwrap().timeline_in;
+    redoes_as_made(&mut app, vec![AppCommand::MoveClip { clip_id: first, new_timeline_in: at(1.0) }]);
+    assert_eq!((start(&app, first), start(&app, second)), (at(1.0), at(7.0)), "the group moved with it");
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!((start(&app, first), start(&app, second)), (at(0.0), at(6.0)), "undo puts the group back");
 }
