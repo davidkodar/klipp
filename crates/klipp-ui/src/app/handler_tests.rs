@@ -841,3 +841,48 @@ fn a_ripple_trim_on_the_storyline_redoes_as_made() {
     app.state.playhead = klipp_core::RationalTime::from_secs_f64(4.0, 24);
     redoes_as_made(&mut app, vec![AppCommand::RippleTrimTail { clip_id: first }]);
 }
+
+/// A file at another size and rate than a new sequence's.
+fn a_smaller_file(app: &mut KlippApp) -> klipp_core::MediaId {
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/media/small.mov".into(), None);
+    item.resolution = klipp_core::Resolution { width: 1280, height: 720 };
+    item.fps = klipp_core::Fps::new(25, 1);
+    item.duration = klipp_core::RationalTime { value: 250, rate: 25 };
+    app.state.document.media_pool.add(item)
+}
+
+/// The first clip on an empty timeline, however it is placed: the
+/// sequence takes its size and rate in the same step, so undo gives the
+/// sequence its own format back and redo takes the clip's again. Most
+/// ways recorded the clip alone, and an undone first clip left the
+/// sequence at the clip's size.
+#[test]
+fn a_first_clip_undoes_its_format_whichever_way_it_is_placed() {
+    let ways: [fn(klipp_core::MediaId, usize) -> AppCommand; 7] = [
+        |media_id, track_index| AppCommand::AppendClipToTrack { media_id, track_index },
+        |media_id, _| AppCommand::AppendClip { media_id },
+        |_, _| AppCommand::InsertSourceAtPlayhead,
+        |_, _| AppCommand::OverwriteEdit,
+        |_, _| AppCommand::InsertEdit,
+        |_, _| AppCommand::PlaceOnTopEdit,
+        |_, _| AppCommand::FitToFillEdit,
+    ];
+    for (n, way) in ways.iter().enumerate() {
+        let (mut app, _engine) = KlippApp::for_test();
+        let media_id = a_smaller_file(&mut app);
+        app.state.source_media_id = Some(media_id);
+        let track_index = app.state.sequence().primary_track_index().unwrap();
+        let format = |app: &KlippApp| (app.state.sequence().resolution, app.state.sequence().fps);
+        let own = format(&app);
+        if n == 6 {
+            // Fit to Fill fills the timeline's marks.
+            let seq = app.state.sequence_mut();
+            (seq.in_point, seq.out_point) = (Some(klipp_core::RationalTime::from_secs_f64(0.0, 24)), Some(klipp_core::RationalTime::from_secs_f64(2.0, 24)));
+        }
+        redoes_as_made(&mut app, vec![way(media_id, track_index)]);
+        assert_eq!(format(&app).0.width, 1280, "way {n}: the sequence took the clip's size");
+        app.send_commands(vec![AppCommand::Undo]);
+        assert_eq!(format(&app), own, "way {n}: undone, the sequence's own format");
+        assert_eq!(app.state.fps, own.1, "way {n}: and the app's rate with it");
+    }
+}

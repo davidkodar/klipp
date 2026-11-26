@@ -1549,6 +1549,13 @@ pub struct AppState {
     /// the last load or save (#2633): a track not among them when a step
     /// is recorded was made for it.
     pub recorded_tracks: std::collections::HashMap<klipp_core::SequenceId, Vec<klipp_core::TrackId>>,
+    /// The size and rate a sequence took from its first clip, before and
+    /// after, waiting for the step that places the clip: put into it, so
+    /// undo gives the sequence its format back. Most ways of placing a
+    /// clip took the format before working out the edit and recorded the
+    /// clip alone, and an undone first clip left the sequence at the
+    /// clip's size. Dropped at the next step, undo or redo.
+    pub first_clip_format: Option<(SequenceId, ((klipp_core::Resolution, Fps), (klipp_core::Resolution, Fps)))>,
     /// The grade nodes a Bypass of each clip's grade group turned off,
     /// so its Enable turns those back on and leaves a node that was off
     /// before off (#2553). For this session only: after a reload, Enable
@@ -4884,6 +4891,7 @@ impl Default for AppState {
             unsaved: false,
             saved_digest: None,
             recorded_tracks: Default::default(),
+            first_clip_format: None,
             grade_bypassed: Default::default(),
             history_ops_since_save: 0,
             tracks_undo_gesture: None,
@@ -6342,6 +6350,7 @@ impl AppState {
         let command = self.with_primary_holes_filled(command);
         let command = self.with_marks_on_shorter_timeline(command);
         let command = self.with_broken_transitions_removed(command);
+        let command = self.with_first_clip_format(command);
         // The project's steps go to its own history, reachable from any
         // sequence (#1986); inside a batch already open they are one more
         // edit of it, and the batch stays where it is.
@@ -6460,6 +6469,29 @@ impl AppState {
         let seq = self.sequence();
         let (id, tracks) = (seq.id, seq.tracks.iter().map(|t| t.id).collect());
         self.recorded_tracks.insert(id, tracks);
+        self.first_clip_format = None;
+    }
+
+    /// `command` with the format its sequence took from a first clip
+    /// ([`Self::first_clip_format`]) set before it, under its own name:
+    /// redo takes the format first and places the clip at its rate, undo
+    /// takes the clip away and then gives the format back. A step that
+    /// sets the format itself (an import's) is left as it is.
+    fn with_first_clip_format(&mut self, command: EditCommand) -> EditCommand {
+        fn sets_format(edit: &EditCommand) -> bool {
+            match edit {
+                EditCommand::SetSequenceFormat { .. } | EditCommand::LinkedImport { autoset: Some(_), .. } => true,
+                EditCommand::Named { edit, .. } => sets_format(edit),
+                EditCommand::Batch(edits) => edits.iter().any(sets_format),
+                _ => false,
+            }
+        }
+        let Some((sequence, (old, new))) = self.first_clip_format.take() else { return command };
+        if sequence != self.active_sequence_id() || sets_format(&command) {
+            return command;
+        }
+        let label = command.label().to_string();
+        EditCommand::Named { label, edit: Box::new(EditCommand::Batch(vec![EditCommand::SetSequenceFormat { old, new }, command])) }
     }
 
     /// `command`, already applied, with the tracks made for it in the same
