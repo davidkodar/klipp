@@ -947,3 +947,76 @@ fn a_title_field_redoes_as_made() {
     app.state.sequence_mut().tracks[video].clips.push(clip);
     redoes_as_done(&mut app, |app| app.state.set_title_field(id, 0, &klipp_core::TitleFieldValue::Text("John Roe".into()), true).unwrap());
 }
+
+/// Each change to a sound's audio chain, its effects and their keys, is
+/// one step that redoes as it was made.
+#[test]
+fn audio_chain_edits_redo_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let (_, clip_id) = linked_pair(&mut app);
+    let param_name = || "frequency".to_string();
+    let key = |t: f64| AppCommand::AddAudioEffectKeyframe { clip_id, effect_index: 0, param_name: param_name(), time_secs: t, value: 0.5 };
+    for step in [
+        vec![AppCommand::AddAudioEffect { clip_id, effect_type: "high_pass".into() }],
+        vec![AppCommand::AddAudioEffect { clip_id, effect_type: "hum_removal".into() }],
+        vec![AppCommand::UpdateAudioEffectParam { clip_id, effect_index: 0, param_name: param_name(), value: 120.0 }],
+        vec![AppCommand::SetAudioEffectParams { clip_id, effect_index: 1, params: vec![("strength".into(), 0.8)] }],
+        vec![AppCommand::SetAudioEffectWetDry { clip_id, effect_index: 0, wet_dry: 0.4 }],
+        vec![AppCommand::ToggleAudioEffect { clip_id, effect_index: 1 }],
+        vec![key(0.5)],
+        vec![key(2.0)],
+        vec![AppCommand::ReverseAudioEffectKeyframes { clip_id, effect_index: 0, param_name: param_name() }],
+        vec![AppCommand::ScaleAudioEffectKeyframeTiming { clip_id, effect_index: 0, param_name: param_name(), factor: 0.5 }],
+        vec![AppCommand::InsertAudioEffectKeyframeBump { clip_id, effect_index: 0, param_name: param_name(), center_time: 2.5, bump_value: 1.0, base_value: 0.2, duration_secs: 0.5, ramp_secs: 0.25 }],
+        vec![AppCommand::ReorderAudioEffect { clip_id, from_index: 0, to_index: 1 }],
+        vec![AppCommand::RemoveAudioEffect { clip_id, effect_index: 1 }],
+    ] {
+        redoes_as_made(&mut app, step);
+    }
+    let keyframes = [(0.5, 0.2), (1.5, 0.9)].map(|(time_secs, value)| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).to_vec();
+    app.state.keyframe_clipboard = Some(crate::state::KeyframeClipboard { keyframes, source_duration_secs: 2.0 });
+    redoes_as_made(&mut app, vec![AppCommand::PasteAudioEffectKeyframes { clip_id, effect_index: 0, param_name: "strength".into() }]);
+}
+
+/// A new bin, and items moved into a bin that is not there yet: each one
+/// step whose undo takes the bin it made away, and whose redo makes it
+/// again as it was.
+#[test]
+fn bins_made_by_a_step_go_with_its_undo() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let (a, b) = (a_file(&mut app), a_sound_file(&mut app));
+    let pool = |app: &KlippApp| {
+        let p = &app.state.document.media_pool;
+        let mut bins: Vec<_> = p.bins.iter().map(|b| (b.id, b.name.clone())).collect();
+        bins.sort_by(|x, y| x.1.cmp(&y.1));
+        (bins, [a, b].map(|id| p.get(&id).map(|m| (m.bin.clone(), m.bin_id))))
+    };
+    let step = |app: &mut KlippApp, send: AppCommand| {
+        let before = pool(app);
+        app.send_commands(vec![send]);
+        let made = pool(app);
+        assert_ne!(made, before, "the step changed the pool");
+        app.send_commands(vec![AppCommand::Undo]);
+        assert_eq!(pool(app), before, "undo takes it back, the bin it made too");
+        app.send_commands(vec![AppCommand::Redo]);
+        assert_eq!(pool(app), made, "redo makes it as it was made");
+    };
+    step(&mut app, AppCommand::NewBin { media_ids: vec![a] });
+    step(&mut app, AppCommand::MoveItemsToBin { media_ids: vec![a, b], bin: Some("Selects".into()) });
+    step(&mut app, AppCommand::MoveItemToBin { media_id: b, bin: None });
+}
+
+/// A file renamed is one step, undone and redone.
+#[test]
+fn a_rename_of_a_file_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let media_id = a_file(&mut app);
+    let name = |app: &KlippApp| app.state.document.media_pool.get(&media_id).unwrap().filename.clone();
+    let was = name(&app);
+    app.send_commands(vec![AppCommand::RenameMediaItem { media_id, new_filename: "Interview".into() }]);
+    assert_eq!((name(&app), app.state.undo_depth()), ("Interview".to_string(), 1));
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(name(&app), was);
+    app.send_commands(vec![AppCommand::Redo]);
+    assert_eq!(name(&app), "Interview");
+}

@@ -154,24 +154,14 @@ impl KlippApp {
                 // a drop, or another command so the new chain entry and its
                 // controls are immediately discoverable.
                 self.layout.active_inspector_tab = crate::layout_state::InspectorTab::Audio;
-                // Snapshot pre-state for undo.
-                let old_state = self.state.document.sequences[self.state.active_sequence_idx]
-                    .all_clips()
-                    .find(|c| c.id == *clip_id)
-                    .map(crate::history::AudioChainSnapshot::from_clip);
                 // Build default instance from effect descriptors. LADSPA plugins
                 // don't expose `&'static str` param names, so their defaults
                 // come from the discovered plugin info instead of the factory.
                 let instance = self.default_audio_effect(effect_type);
-                let mut added = false;
-                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.audio_effects.push(instance.clone());
-                        tracing::debug!("audio_fx: added effect '{}' to clip {:?}, total: {}", effect_type, clip.id, clip.audio_effects.len());
-                        added = true;
-                        break;
-                    }
-                }
+                let added = self.state.edit_audio_chain(*clip_id, "Add Audio Effect", |clip| {
+                    clip.audio_effects.push(instance);
+                    tracing::debug!("audio_fx: added effect '{}' to clip {:?}, total: {}", effect_type, clip.id, clip.audio_effects.len());
+                });
                 if !added {
                     // A stale browser/inspector command must be visible to the
                     // user rather than looking like a no-op. This can happen
@@ -181,32 +171,23 @@ impl KlippApp {
                     self.state.toast.show("Select an audio clip before adding an effect");
                     return true;
                 }
-                self.push_audio_chain_history(*clip_id, "Add Audio Effect", old_state);
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 true
             }
             AppCommand::RemoveAudioEffect { clip_id, effect_index } => {
-                let old_state = self.state.document.sequences[self.state.active_sequence_idx]
-                    .all_clips()
-                    .find(|c| c.id == *clip_id)
-                    .map(crate::history::AudioChainSnapshot::from_clip);
-                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if *effect_index < clip.audio_effects.len() {
-                            clip.audio_effects.remove(*effect_index);
-                            // Drop kf tracks belonging to this effect — keys
-                            // are "{idx}:..." so the prefix tells us. Higher
-                            // indices DO NOT shift here; that's a known
-                            // limitation matching how video effects behave.
-                            let prefix = format!("{}:", effect_index);
-                            clip.audio_effect_keyframes.retain(|k, _| !k.starts_with(&prefix));
-                        }
-                        break;
+                self.state.edit_audio_chain(*clip_id, "Remove Audio Effect", |clip| {
+                    if *effect_index < clip.audio_effects.len() {
+                        clip.audio_effects.remove(*effect_index);
+                        // Drop kf tracks belonging to this effect — keys
+                        // are "{idx}:..." so the prefix tells us. Higher
+                        // indices DO NOT shift here; that's a known
+                        // limitation matching how video effects behave.
+                        let prefix = format!("{}:", effect_index);
+                        clip.audio_effect_keyframes.retain(|k, _| !k.starts_with(&prefix));
                     }
-                }
-                self.push_audio_chain_history(*clip_id, "Remove Audio Effect", old_state);
+                });
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -215,37 +196,28 @@ impl KlippApp {
             AppCommand::UpdateAudioEffectParam { clip_id, effect_index, ref param_name, value } => {
                 let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
                 let is_dragging = self.state.active_history().is_dragging(&drag_key);
-                // Snapshot only when we'll actually push — saves an
-                // AudioChainSnapshot::clone on every drag tick.
-                let old_state = if !is_dragging {
-                    self.state.document.sequences[self.state.active_sequence_idx]
-                        .all_clips()
-                        .find(|c| c.id == *clip_id)
-                        .map(crate::history::AudioChainSnapshot::from_clip)
-                } else {
-                    None
-                };
-                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
-                            if let Some(p) = inst.params.iter_mut().find(|(k, _)| k == param_name) {
-                                p.1 = *value;
-                            } else {
-                                inst.params.push((param_name.clone(), *value));
-                            }
+                let set = |clip: &mut klipp_timeline::Clip| {
+                    if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
+                        if let Some(p) = inst.params.iter_mut().find(|(k, _)| k == param_name) {
+                            p.1 = *value;
+                        } else {
+                            inst.params.push((param_name.clone(), *value));
                         }
-                        break;
                     }
-                }
-                // History push only on non-drag updates (text-entry,
-                // single-click reset). During a drag the
-                // BeginAudioChainDrag / EndAudioChainDrag pair owns
-                // history coalescing — without this guard every
+                };
+                // A step only on non-drag updates (text-entry,
+                // single-click reset). During a drag the value is shown
+                // at once and the BeginAudioChainDrag / EndAudioChainDrag
+                // pair owns history coalescing — without this guard every
                 // 60Hz drag tick pushes a separate entry, bumping
                 // ops_since_save and triggering "Auto saved" toasts
                 // continuously while the user moves a slider.
-                if !is_dragging {
-                    self.push_audio_chain_history(*clip_id, "Edit Audio Effect Param", old_state);
+                if is_dragging {
+                    if let Some(clip) = self.state.sequence_mut().all_clips_mut().find(|c| c.id == *clip_id) {
+                        set(clip);
+                    }
+                } else {
+                    self.state.edit_audio_chain(*clip_id, "Edit Audio Effect Param", set);
                 }
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
@@ -265,19 +237,11 @@ impl KlippApp {
                 true
             }
             AppCommand::ToggleAudioEffect { clip_id, effect_index } => {
-                let old_state = self.state.document.sequences[self.state.active_sequence_idx]
-                    .all_clips()
-                    .find(|c| c.id == *clip_id)
-                    .map(crate::history::AudioChainSnapshot::from_clip);
-                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
-                            inst.enabled = !inst.enabled;
-                        }
-                        break;
+                self.state.edit_audio_chain(*clip_id, "Toggle Audio Effect", |clip| {
+                    if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
+                        inst.enabled = !inst.enabled;
                     }
-                }
-                self.push_audio_chain_history(*clip_id, "Toggle Audio Effect", old_state);
+                });
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -289,24 +253,17 @@ impl KlippApp {
                 // would spam autosave too.
                 let drag_key = format!("audio_chain:{}:{}:__wetdry", clip_id.0, effect_index);
                 let is_dragging = self.state.active_history().is_dragging(&drag_key);
-                let old_state = if !is_dragging {
-                    self.state.document.sequences[self.state.active_sequence_idx]
-                        .all_clips()
-                        .find(|c| c.id == *clip_id)
-                        .map(crate::history::AudioChainSnapshot::from_clip)
-                } else {
-                    None
-                };
-                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
-                            inst.wet_dry = *wet_dry;
-                        }
-                        break;
+                let set = |clip: &mut klipp_timeline::Clip| {
+                    if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
+                        inst.wet_dry = *wet_dry;
                     }
-                }
-                if !is_dragging {
-                    self.push_audio_chain_history(*clip_id, "Set Wet/Dry", old_state);
+                };
+                if is_dragging {
+                    if let Some(clip) = self.state.sequence_mut().all_clips_mut().find(|c| c.id == *clip_id) {
+                        set(clip);
+                    }
+                } else {
+                    self.state.edit_audio_chain(*clip_id, "Set Wet/Dry", set);
                 }
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
@@ -314,19 +271,16 @@ impl KlippApp {
                 true
             }
             AppCommand::ReorderAudioEffect { clip_id, from_index, to_index } => {
-                let old_state = self.state.document.sequences[self.state.active_sequence_idx]
-                    .all_clips()
-                    .find(|c| c.id == *clip_id)
-                    .map(crate::history::AudioChainSnapshot::from_clip);
-                // Its keyframes with it: they are kept by its place.
-                let mut moved = old_state.clone();
-                if !moved.as_mut().is_some_and(|m| m.reorder_effect(*from_index, *to_index)) {
+                let len = self.state.sequence().all_clips().find(|c| c.id == *clip_id).map_or(0, |c| c.audio_effects.len());
+                if *from_index >= len || *to_index >= len {
                     return true;
                 }
-                if let (Some(clip), Some(moved)) = (self.state.document.sequences[self.state.active_sequence_idx].all_clips_mut().find(|c| c.id == *clip_id), &moved) {
+                // Its keyframes with it: they are kept by its place.
+                self.state.edit_audio_chain(*clip_id, "Reorder Audio Effect", |clip| {
+                    let mut moved = crate::history::AudioChainSnapshot::from_clip(clip);
+                    moved.reorder_effect(*from_index, *to_index);
                     moved.apply_to_clip(clip);
-                }
-                self.push_audio_chain_history(*clip_id, "Reorder Audio Effect", old_state);
+                });
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
