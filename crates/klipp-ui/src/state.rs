@@ -6325,6 +6325,21 @@ impl AppState {
         effects
     }
 
+    /// `edit`, a setting of sequence `sequence_idx` already made there,
+    /// recorded as its step: through [`Self::commit`] on the active
+    /// sequence, onto that sequence's own history otherwise (its undo runs
+    /// when it is active again). The project is changed either way.
+    pub(crate) fn record_on_sequence(&mut self, sequence_idx: usize, edit: EditCommand) {
+        if sequence_idx == self.active_sequence_idx {
+            let _ = self.commit(edit);
+            return;
+        }
+        let Some(id) = self.document.sequences.get(sequence_idx).map(|s| s.id) else { return };
+        self.history_for_mut(id).push(crate::history::HistoryEntry { command: edit });
+        self.history_ops_since_save = self.history_ops_since_save.saturating_add(1);
+        self.dirty = true;
+    }
+
     /// [`Self::commit`] for an edit worked out by helpers that change the
     /// active sequence in place: `work` makes it there and returns the
     /// step it recorded, then the sequence is put back as it was and the

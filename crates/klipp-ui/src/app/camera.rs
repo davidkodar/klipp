@@ -94,11 +94,8 @@ impl KlippApp {
         }
         let new = seq.camera.clone();
         let id = seq.id;
-        let history = self.state.history_for_mut(id);
-        if !history.is_dragging(&camera_drag_key(sequence_idx)) {
-            history.push(crate::history::HistoryEntry {
-                command: crate::history::EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::new(new) },
-            });
+        if !self.state.history_for_mut(id).is_dragging(&camera_drag_key(sequence_idx)) {
+            self.state.record_on_sequence(sequence_idx, crate::history::EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::new(new) });
         }
         self.sync_sequence_to_engine();
         self.state.dirty = true;

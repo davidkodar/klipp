@@ -25,9 +25,8 @@ impl KlippApp {
             _ => false,
         });
         if !merged {
-            history.push(crate::history::HistoryEntry {
-                command: crate::history::EditCommand::SetTemplateInstance { clip_id, parameter: key.to_string(), old: Box::new(old), new: Box::new(new) },
-            });
+            // The clip already holds the new value; the step sets it again.
+            let _ = self.state.commit(crate::history::EditCommand::SetTemplateInstance { clip_id, parameter: key.to_string(), old: Box::new(old), new: Box::new(new) });
         }
         self.sync_sequence_to_engine();
         self.state.dirty = true;
@@ -303,9 +302,8 @@ impl KlippApp {
                                 _ => false,
                             });
                             if !merged {
-                                history.push(crate::history::HistoryEntry {
-                                    command: crate::history::EditCommand::SetClipDepth { clip_id: cid, old, new: depth },
-                                });
+                                // The clip is already at the new depth; the step sets it again.
+                                let _ = self.state.commit(crate::history::EditCommand::SetClipDepth { clip_id: cid, old, new: depth });
                             }
                             self.sync_sequence_to_engine();
                             self.state.dirty = true;
@@ -384,10 +382,7 @@ impl KlippApp {
                         seq.camera.shutter_samples = (*samples).clamp(2, 32);
                         if seq.camera != old {
                             let new = seq.camera.clone();
-                            let id = seq.id;
-                            self.state.history_for_mut(id).push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::new(new) },
-                            });
+                            self.state.record_on_sequence(*sequence_idx, crate::history::EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::new(new) });
                             self.sync_sequence_to_engine();
                             self.state.dirty = true;
                         }
@@ -401,10 +396,7 @@ impl KlippApp {
                         let old = seq.title_nits;
                         if new != old {
                             seq.title_nits = new;
-                            let id = seq.id;
-                            self.state.history_for_mut(id).push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::SetSequenceTitleNits { old, new },
-                            });
+                            self.state.record_on_sequence(*sequence_idx, crate::history::EditCommand::SetSequenceTitleNits { old, new });
                             self.sync_sequence_to_engine();
                             self.state.dirty = true;
                         }
