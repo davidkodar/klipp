@@ -789,3 +789,37 @@ fn a_lut_tile_dropped_on_a_clip_puts_it_on() {
         assert!(tl.state.drag_drop.payload.is_none(), "the drag is over");
     }
 }
+
+/// A slide and a slip (the Trim tool, with and without Shift) are each one
+/// step, made through commit: the project is changed, undo puts the clips
+/// back and redo makes them as the drag left them.
+#[test]
+fn a_slide_and_a_slip_are_one_step_that_redoes_as_made() {
+    for shift in [true, false] {
+        let (mut state, _) = clips_on_video_2(&[(0.0, 2.0), (2.0, 3.0), (3.0, 5.0)]);
+        state.active_tool = klipp_core::Tool::Trim;
+        let before = serde_json::to_value(state.sequence()).unwrap();
+        let mut tl = Timeline::new(state);
+        let v2 = tl.track("Video 2");
+        let grab = tl.at(v2, 2.5);
+        let m = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+        let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+        tl.frame(vec![egui::Event::PointerMoved(grab)], m);
+        tl.frame(vec![b(grab, true)], m);
+        tl.frame(vec![egui::Event::PointerMoved(grab + egui::vec2(8.0, 0.0))], m);
+        let to = grab + egui::vec2(0.3 * ZOOM, 0.0);
+        tl.frame(vec![egui::Event::PointerMoved(to)], m);
+        tl.frame(vec![b(to, false)], m);
+        tl.frame(Vec::new(), egui::Modifiers::NONE);
+        let state = &mut tl.state;
+        let after = serde_json::to_value(state.sequence()).unwrap();
+        assert_ne!(after, before, "shift {shift}: the drag changed the clips");
+        assert_eq!(state.active_history().undo_count(), 1, "shift {shift}: one step");
+        assert!(state.dirty, "shift {shift}: the project is changed");
+        let entry = state.active_history_mut().undo().unwrap();
+        let _ = state.document_view().apply_inverse(&entry.command);
+        assert_eq!(serde_json::to_value(state.sequence()).unwrap(), before, "shift {shift}: undo");
+        let _ = state.document_view().apply_forward(&entry.command);
+        assert_eq!(serde_json::to_value(state.sequence()).unwrap(), after, "shift {shift}: redo");
+    }
+}

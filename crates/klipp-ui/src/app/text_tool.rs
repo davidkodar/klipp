@@ -234,6 +234,8 @@ mod tests {
     #[test]
     fn undo_takes_the_title_away_in_one_step() {
         let mut v = Viewer::new();
+        // The tracks there are, as each frame notes them.
+        v.state.seed_recorded_tracks();
         let tracks = v.state.document.sequences[0].tracks.len();
         let r = v.image_rect();
         v.click(r.center());

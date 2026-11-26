@@ -41,9 +41,8 @@ pub(super) fn push_title_undo(state: &mut AppState, clip_id: ClipId, description
     if crate::history::is_text_edit(description) && state.active_history_mut().try_coalesce_title_text(clip_id, &old, &new) {
         return;
     }
-    state.active_history_mut().push(crate::history::HistoryEntry {
-        command: crate::history::EditCommand::EditTitle { clip_id, description, old_data: old, new_data: new },
-    });
+    // The title is already the new one; the step sets it again.
+    let _ = state.commit(crate::history::EditCommand::EditTitle { clip_id, description, old_data: old, new_data: new });
     if crate::history::is_text_edit(description) {
         state.active_history_mut().note_title_text_edit(clip_id);
     }
