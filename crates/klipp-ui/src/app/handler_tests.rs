@@ -486,10 +486,16 @@ fn contents(app: &KlippApp) -> serde_json::Value {
 /// `send` makes one step; undo gives the timeline back and redo the one
 /// it made, field for field.
 fn redoes_as_made(app: &mut KlippApp, send: Vec<AppCommand>) {
+    redoes_as_done(app, |app| app.send_commands(send));
+}
+
+/// [`redoes_as_made`] for an edit `edit` makes some other way than by a
+/// command: an event come back from a worker.
+fn redoes_as_done(app: &mut KlippApp, edit: impl FnOnce(&mut KlippApp)) {
     app.suppress_fps_prompt = true;
     let before = contents(app);
     let depth = app.state.undo_depth();
-    app.send_commands(send);
+    edit(app);
     let made = contents(app);
     assert_ne!(made, before, "the edit changed the timeline");
     assert_eq!(app.state.undo_depth(), depth + 1, "one step");
@@ -753,4 +759,85 @@ fn audio_keys_reversed_and_pasted_redo_as_made() {
     redoes_as_made(&mut app, vec![AppCommand::ReverseAudioKeyframes { clip_id: picture, param: klipp_core::AudioParam::Volume }]);
     app.send_commands(vec![AppCommand::CopyAudioKeyframes { clip_id: picture, param: klipp_core::AudioParam::Volume }]);
     redoes_as_made(&mut app, vec![AppCommand::PasteAudioKeyframes { clip_id: picture, param: klipp_core::AudioParam::Pan }]);
+}
+
+/// Two files synced into a multicam group at the start of the timeline:
+/// one step, redone as made.
+fn a_multicam(app: &mut KlippApp) {
+    let (a, b) = (a_file(app), a_file(app));
+    let placement = |media_id, start_secs, is_reference| klipp_core::AnglePlacement { media_id, start_secs, method: Some(klipp_core::SyncMethod::Timecode), confidence: None, is_reference };
+    let plan = klipp_core::MulticamPlan { placements: vec![placement(a, 0.0, true), placement(b, 0.5, false)], notes: Vec::new() };
+    let sequence_id = app.state.sequence().id;
+    redoes_as_done(app, |app| app.apply_multicam_plan(plan, &[a, b], sequence_id, 0.0));
+}
+
+/// A multicam made from synced angles, an angle cut to and the group's
+/// sound chosen: each one step, redone as made.
+#[test]
+fn multicam_edits_redo_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    a_multicam(&mut app);
+    let at = klipp_core::RationalTime::from_secs_f64(2.0, 24);
+    redoes_as_made(&mut app, vec![AppCommand::SwitchMulticamAngleAt { angle: 2, at }]);
+    redoes_as_made(&mut app, vec![AppCommand::SetMulticamSound { sound: klipp_core::MulticamSound::Angle(1), at: Some(at) }]);
+}
+
+/// A clip split at the scene markers it carries: one step, redone as made.
+#[test]
+fn a_split_at_scene_markers_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let (picture, _) = linked_pair(&mut app);
+    let clip = app.state.sequence_mut().tracks.iter_mut().find_map(|t| t.find_clip_mut(picture)).unwrap();
+    for time_secs in [1.0, 2.5] {
+        clip.clip_markers.push(klipp_timeline::ClipMarker { time_secs, name: "Scene".into(), color: klipp_core::MarkerColor::Green, comment: String::new() });
+    }
+    redoes_as_made(&mut app, vec![AppCommand::SplitAtSceneMarkers { clip_id: picture }]);
+}
+
+/// A word taken as right: one step on the sequence's brief, redone as
+/// made. (The transcripts' language is left out: it is the transcriber's
+/// for the whole process, and the filler tests read it.)
+#[test]
+fn a_word_taken_as_right_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    redoes_as_made(&mut app, vec![AppCommand::SpellingIgnore { word: "Teh".into() }]);
+    super::transcription::brief_to_transcription(None);
+}
+
+/// A clip faded across the frame, and the fade taken off: each one step,
+/// redone as made.
+#[test]
+fn an_opacity_gradient_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let (picture, _) = linked_pair(&mut app);
+    let mask = klipp_core::Mask { feather: 0.5, ..klipp_core::Mask::new(klipp_core::MaskShape::LinearGradient { start_x: 0.5, start_y: 0.4, end_x: 0.5, end_y: 0.9 }) };
+    redoes_as_made(&mut app, vec![AppCommand::SetOpacityGradient { clip_id: picture, mask: Some(Box::new(mask)) }]);
+    redoes_as_made(&mut app, vec![AppCommand::SetOpacityGradient { clip_id: picture, mask: None }]);
+}
+
+/// A cut-out clip's background put back: one step, redone as made.
+#[test]
+fn a_background_restored_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let (picture, _) = linked_pair(&mut app);
+    let clip = app.state.sequence_mut().tracks.iter_mut().find_map(|t| t.find_clip_mut(picture)).unwrap();
+    klipp_timeline::GradeAccess::edit_grade(clip, |g| super::track_subject::bind_subject(g, klipp_nodes::SubjectMatte::Subject, None, true));
+    redoes_as_made(&mut app, vec![AppCommand::RestoreBackground { clip_id: picture }]);
+}
+
+/// A storyline clip's end trimmed to the playhead, what follows closing
+/// up: one step, redone as made.
+#[test]
+fn a_ripple_trim_on_the_storyline_redoes_as_made() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let media_id = a_file(&mut app);
+    let track_index = app.state.sequence().primary_track_index().unwrap();
+    app.state.append_brings_audio = false;
+    for _ in 0..2 {
+        app.send_commands(vec![AppCommand::AppendClipToTrack { media_id, track_index }]);
+    }
+    let first = app.state.sequence().tracks[track_index].clips[0].id;
+    app.state.selected_clip = Some(first);
+    app.state.playhead = klipp_core::RationalTime::from_secs_f64(4.0, 24);
+    redoes_as_made(&mut app, vec![AppCommand::RippleTrimTail { clip_id: first }]);
 }

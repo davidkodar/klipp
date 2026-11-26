@@ -188,12 +188,9 @@ impl KlippApp {
             }
             AppCommand::SpellingIgnore { word } => {
                 let word = word.trim();
-                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                let old = seq.brief.clone();
+                let old = self.state.sequence().brief.clone();
                 let Some(brief) = crate::spelling::ignored(old.as_ref(), word) else { return true };
-                seq.brief = Some(brief.clone());
-                self.state.push_history(crate::history::EditCommand::SetBrief { old: old.map(Box::new), new: Some(Box::new(brief)) });
-                self.state.dirty = true;
+                self.commit(crate::history::EditCommand::SetBrief { old: old.map(Box::new), new: Some(Box::new(brief)) });
                 self.apply_brief_to_transcription();
                 self.state.toast.show(format!("\u{201c}{word}\u{201d} is taken as right in this project"));
                 true
@@ -211,16 +208,13 @@ impl KlippApp {
             }
             AppCommand::SetTranscriptLanguage { language } => {
                 let language = language.as_deref().map(str::trim).filter(|l| !l.is_empty()).map(str::to_lowercase);
-                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                let old = seq.brief.clone();
+                let old = self.state.sequence().brief.clone();
                 let mut brief = old.clone().unwrap_or_default();
                 if brief.language == language {
                     return true;
                 }
                 brief.language = language;
-                seq.brief = Some(brief.clone());
-                self.state.push_history(crate::history::EditCommand::SetBrief { old: old.map(Box::new), new: Some(Box::new(brief)) });
-                self.state.dirty = true;
+                self.commit(crate::history::EditCommand::SetBrief { old: old.map(Box::new), new: Some(Box::new(brief)) });
                 self.apply_brief_to_transcription();
                 // Transcripts whisper detected in another language are stale
                 // now; asking for analysis makes those again, and only those.

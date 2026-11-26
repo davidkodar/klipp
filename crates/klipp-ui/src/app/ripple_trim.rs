@@ -13,7 +13,7 @@ use klipp_timeline::magnetic::MagneticEditor;
 pub(super) enum RippleTrim {
     /// The playhead isn't inside the clip.
     Nothing,
-    /// Made on the sequence, its undo step pushed.
+    /// Made on the sequence through one commit.
     Made,
     /// Planned by the document, for the app to apply.
     Planned(Box<EditCommand>),
@@ -54,12 +54,15 @@ pub(super) fn to_playhead(state: &mut AppState, clip_id: ClipId, edge: Edge) -> 
     }
     let with_partner = linked && clip.linked_clip_id.is_some_and(|p| seq.find_clip(p).is_some());
     if magnetic(state, ti) && !with_partner {
-        let seq = state.sequence_mut();
-        let result = match edge {
-            Edge::In => MagneticEditor::trim_head(seq, clip_id, playhead),
-            Edge::Out => MagneticEditor::trim_tail(seq, clip_id, playhead),
-        };
-        state.push_history(EditCommand::Magnetic(result.command));
+        // The caller syncs the engine.
+        let _ = state.commit_worked_out(|state| {
+            let seq = state.sequence_mut();
+            let result = match edge {
+                Edge::In => MagneticEditor::trim_head(seq, clip_id, playhead),
+                Edge::Out => MagneticEditor::trim_tail(seq, clip_id, playhead),
+            };
+            Some(EditCommand::Magnetic(result.command))
+        });
         return RippleTrim::Made;
     }
     match ops::trim_at_linked(state.sequence(), &state.document.media_pool, clip_id, edge, playhead, true, linked) {

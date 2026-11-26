@@ -6318,6 +6318,24 @@ impl AppState {
         effects
     }
 
+    /// [`Self::commit`] for an edit worked out by helpers that change the
+    /// active sequence in place: `work` makes it there and returns the
+    /// step it recorded, then the sequence is put back as it was and the
+    /// step made through one commit, so what the step records is what is
+    /// applied, now and on redo. `None` is no step, and the sequence is
+    /// put back all the same. The app's own twin also runs the effects.
+    #[must_use = "the engine is told of the edit only by running its effects"]
+    pub(crate) fn commit_worked_out(&mut self, work: impl FnOnce(&mut Self) -> Option<EditCommand>) -> Option<klipp_document::apply::Effects> {
+        let active = self.active_sequence_idx;
+        let before = self.document.sequences[active].clone();
+        // A track the helpers made goes into the step while it is there.
+        let edit = work(self).map(|edit| self.with_made_tracks(edit));
+        debug_assert_eq!(self.active_sequence_idx, active, "the edit stays on its sequence");
+        self.document.sequences[active] = before;
+        self.fps = self.document.sequences[active].fps;
+        edit.map(|edit| self.commit(edit))
+    }
+
     pub fn push_history(&mut self, command: EditCommand) {
         let command = self.with_made_tracks(command);
         let command = self.with_matched_follow(command);
