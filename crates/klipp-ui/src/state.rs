@@ -5856,63 +5856,17 @@ impl AppState {
     /// so a roll on a sound cut moved the picture's cut with Linked off.
     pub fn roll_trim(&mut self, a: ClipId, b: ClipId, a_out: (Timecode, Timecode), b_in: (Timecode, Timecode), linked: bool) {
         use crate::history::EditCommand;
-        let seq = &self.document.sequences[self.active_sequence_idx];
-        let old_a = seq.all_clips().find(|c| c.id == a).map(|c| (c.source_out, c.timeline_out));
-        let old_b = seq.all_clips().find(|c| c.id == b).map(|c| (c.source_in, c.timeline_in));
-        let (Some((old_a_src_out, old_a_tl_out)), Some((old_b_src_in, old_b_tl_in))) = (old_a, old_b) else { return };
-        // The roll and its linked partners, one step made through one
-        // commit; the caller syncs the engine.
+        let Some(old_b_tl_in) = self.sequence().all_clips().find(|c| c.id == b).map(|c| c.timeline_in) else { return };
+        // The roll and its linked partners, as the roll drag shows them,
+        // one step made through one commit; the caller syncs the engine.
         let _ = self.commit_worked_out(|s| {
-            let mut edits = vec![EditCommand::LegacyRollTrimClip {
-                clip_a_id: a,
-                clip_b_id: b,
-                old_a_source_out: old_a_src_out,
-                old_a_timeline_out: old_a_tl_out,
-                old_b_source_in: old_b_src_in,
-                old_b_timeline_in: old_b_tl_in,
-                new_a_source_out: a_out.0,
-                new_a_timeline_out: a_out.1,
-                new_b_source_in: b_in.0,
-                new_b_timeline_in: b_in.1,
-            }];
-            let seq = &mut s.document.sequences[s.active_sequence_idx];
-            for track in &mut seq.tracks {
-                if let Some(c) = track.find_clip_mut(a) {
-                    c.source_out = a_out.0;
-                    c.timeline_out = a_out.1;
-                }
-                if let Some(c) = track.find_clip_mut(b) {
-                    c.source_in = b_in.0;
-                    c.timeline_in = b_in.1;
-                }
-            }
-            // Linked partners follow by the same amounts (#911): each moved
-            // from its own source times, which may start elsewhere (sound
-            // recorded apart and synced, a slipped partner).
-            let (a_tl, a_src) = (a_out.1 - old_a_tl_out, a_out.0 - old_a_src_out);
-            let (b_tl, b_src) = (b_in.1 - old_b_tl_in, b_in.0 - old_b_src_in);
-            let partner = |id: ClipId| if linked { seq.all_clips().find(|c| c.id == id).and_then(|c| c.linked_clip_id) } else { None };
-            let (linked_a, linked_b) = (partner(a), partner(b));
-            let mut partner_edits = Vec::new();
-            for track in &mut seq.tracks {
-                for c in track.clips.iter_mut() {
-                    let old = c.clone();
-                    if Some(c.id) == linked_a && c.id != b {
-                        c.timeline_out += a_tl;
-                        c.source_out += a_src;
-                    } else if Some(c.id) == linked_b && c.id != a {
-                        c.timeline_in += b_tl;
-                        c.source_in += b_src;
-                    } else {
-                        continue;
-                    }
-                    partner_edits.push(EditCommand::ReplaceClip { description: "Roll", old: Box::new(old), new: Box::new(c.clone()) });
-                }
+            let mut edits = crate::timeline::cut_gestures::roll_edits(s.sequence(), a, b, a_out, b_in, linked)?;
+            for e in &edits {
+                let _ = s.document_view().apply_forward(e);
             }
             // B's picture moved against its start: a multicam primary's cuts
             // stay on the picture they cut.
-            partner_edits.extend(klipp_document::ops::keep_angle_cuts(seq, b, b_tl.to_secs_f64()));
-            edits.extend(partner_edits);
+            edits.extend(klipp_document::ops::keep_angle_cuts(s.sequence_mut(), b, (b_in.1 - old_b_tl_in).to_secs_f64()));
             Some(EditCommand::Named { label: "Roll".into(), edit: Box::new(EditCommand::Batch(edits)) })
         });
     }
