@@ -200,6 +200,8 @@ impl KlippApp {
         let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
         let change = seq.adopt_first_clip(item.resolution, item.fps)?;
         self.state.fps = seq.fps;
+        // For the step that places the clip, when it doesn't hold it.
+        self.state.first_clip_format = Some((seq.id, change));
         Some(change)
     }
 
