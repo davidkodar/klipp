@@ -551,8 +551,8 @@ fn clear_frozen_tracks(
 ) {
     let idx = state.active_sequence_idx;
     if let Some(step) = unfreeze_all(&mut state.document.sequences[idx], kind) {
-        state.push_history(step);
-        state.dirty = true;
+        // Already made in place; the step sets it again.
+        let _ = state.commit(step);
         super::engine_sync::sync_sequence(state, sequence, param_change_queue);
     }
 }

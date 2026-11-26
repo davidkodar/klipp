@@ -165,7 +165,8 @@ pub fn record(state: &mut AppState, before: Before) {
             return;
         }
     }
-    state.push_history(edit);
+    // Already made in place; the step sets it again.
+    let _ = state.commit(edit);
 }
 
 /// `edit` with the In and Out points cleared in the same step, for Lift and

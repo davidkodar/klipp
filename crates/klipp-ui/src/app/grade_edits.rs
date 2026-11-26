@@ -249,8 +249,8 @@ impl crate::state::AppState {
             return false;
         }
         let new = clip.clone();
-        self.push_history(crate::history::EditCommand::ReplaceClip { description, old: Box::new(old), new: Box::new(new) });
-        self.dirty = true;
+        // Already made in place; the step sets it again.
+        let _ = self.commit(crate::history::EditCommand::ReplaceClip { description, old: Box::new(old), new: Box::new(new) });
         true
     }
 }

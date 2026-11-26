@@ -564,7 +564,11 @@ impl NewTimelinePanel {
                     (seq.in_point, seq.out_point)
                 };
                 if drag.original_in != new_in || drag.original_out != new_out {
-                    state.push_history(crate::history::EditCommand::SetRange {
+                    // The drag set the marks live: put them back, then
+                    // make the step.
+                    state.sequence_mut().in_point = drag.original_in;
+                    state.sequence_mut().out_point = drag.original_out;
+                    let _ = state.commit(crate::history::EditCommand::SetRange {
                         old_in: drag.original_in,
                         old_out: drag.original_out,
                         new_in,

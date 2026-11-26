@@ -150,7 +150,8 @@ impl KlippApp {
                     })
                     .collect();
                 for e in edits {
-                    self.state.push_history(e);
+                    // Already made in place; the step sets it again.
+                    let _ = self.state.commit(e);
                 }
             }
         }
