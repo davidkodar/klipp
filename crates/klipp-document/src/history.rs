@@ -222,6 +222,44 @@ impl TrackContents {
     }
 }
 
+impl EditCommand {
+    /// The step taking tracks `old` to `new`, named `description`: the
+    /// whole list when a track came or went; else, for each track that
+    /// changed, the track itself when more than its clips and transitions
+    /// changed, or just those (#907), so undoing a clip's change leaves a
+    /// track's mute or height, changed since, alone. `None` when nothing
+    /// changed.
+    pub fn tracks_changed(description: &'static str, old: &[klipp_timeline::Track], new: &[klipp_timeline::Track]) -> Option<EditCommand> {
+        let ids = |tracks: &[klipp_timeline::Track]| tracks.iter().map(|t| t.id).collect::<Vec<_>>();
+        if ids(old) != ids(new) {
+            return Some(EditCommand::SetTracks { description, old: old.to_vec(), new: new.to_vec() });
+        }
+        let bare = |t: &klipp_timeline::Track| klipp_timeline::Track { clips: Vec::new(), transitions: Vec::new(), ..t.clone() };
+        let mut edits: Vec<EditCommand> = Vec::new();
+        for (i, (o, n)) in old.iter().zip(new).enumerate() {
+            let settings_same = same(&bare(o), &bare(n));
+            if settings_same && same(&(&o.clips, &o.transitions), &(&n.clips, &n.transitions)) {
+                continue;
+            }
+            edits.push(if settings_same {
+                EditCommand::SetTrackContents { description, track_index: i, old: Box::new(TrackContents::of(o)), new: Box::new(TrackContents::of(n)) }
+            } else {
+                EditCommand::SetTrack { description, track_index: i, old: Box::new(o.clone()), new: Box::new(n.clone()) }
+            });
+        }
+        match edits.len() {
+            0 => None,
+            1 => edits.pop(),
+            _ => Some(EditCommand::Named { label: description.to_string(), edit: Box::new(EditCommand::Batch(edits)) }),
+        }
+    }
+}
+
+/// Whether two values are the same, field for field.
+fn same<T: serde::Serialize>(a: &T, b: &T) -> bool {
+    serde_json::to_value(a).ok() == serde_json::to_value(b).ok()
+}
+
 /// A clip whose grade a change of working space converted (#1875): its
 /// sequence, and its picture before and after.
 #[derive(Debug, Clone)]

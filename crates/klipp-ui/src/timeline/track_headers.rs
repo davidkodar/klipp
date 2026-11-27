@@ -617,16 +617,9 @@ pub fn show(
             ui.menu_rows("Add Track Above", |ui| {
                 for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                     if ui.button(label).clicked() {
-                        // One undo step (#907).
-                        let before = crate::tracks_undo::before_labelled(state, "Add Track");
-                        let seq = &mut state.document.sequences[state.active_sequence_idx];
-                        let name = seq.next_track_name(kind);
-                        let new_track = klipp_timeline::Track::new(&name, kind);
-                        seq.tracks.insert(track_idx, new_track);
-                        seq.renumber_tracks();
-                        if let Some(before) = before {
-                            crate::tracks_undo::record(state, before);
-                        }
+                        // One undo step (#907); the engine is told by
+                        // the update sent.
+                        let _ = state.commit_tracks("Add Track", |seq| insert_new_track(seq, track_idx, kind));
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_kind(egui::UiKind::Menu);
                     }
@@ -635,16 +628,7 @@ pub fn show(
             ui.menu_rows("Add Track Below", |ui| {
                 for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                     if ui.button(label).clicked() {
-                        let before = crate::tracks_undo::before_labelled(state, "Add Track");
-                        let seq = &mut state.document.sequences[state.active_sequence_idx];
-                        let name = seq.next_track_name(kind);
-                        let new_track = klipp_timeline::Track::new(&name, kind);
-                        let idx = (track_idx + 1).min(seq.tracks.len());
-                        seq.tracks.insert(idx, new_track);
-                        seq.renumber_tracks();
-                        if let Some(before) = before {
-                            crate::tracks_undo::record(state, before);
-                        }
+                        let _ = state.commit_tracks("Add Track", |seq| insert_new_track(seq, track_idx + 1, kind));
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_kind(egui::UiKind::Menu);
                     }
@@ -1038,22 +1022,18 @@ pub fn show(
             ui.separator();
             for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                 if ui.button(label).clicked() {
-                    let before = crate::tracks_undo::before_labelled(state, "Add Track");
-                    let seq = &mut state.document.sequences[state.active_sequence_idx];
-                    let name = seq.next_track_name(kind);
-                    match kind {
-                        TrackKind::Video => { seq.add_video_track(name); }
-                        TrackKind::Audio => { seq.add_audio_track(name); }
-                        TrackKind::Text => { seq.add_text_track(name); }
-                        TrackKind::Subtitle => {
-                            let track = klipp_timeline::Track::new(&name, kind);
-                            seq.tracks.push(track);
-                            seq.renumber_tracks();
+                    let _ = state.commit_tracks("Add Track", |seq| {
+                        let name = seq.next_track_name(kind);
+                        match kind {
+                            TrackKind::Video => { seq.add_video_track(name); }
+                            TrackKind::Audio => { seq.add_audio_track(name); }
+                            TrackKind::Text => { seq.add_text_track(name); }
+                            TrackKind::Subtitle => {
+                                seq.tracks.push(klipp_timeline::Track::new(&name, kind));
+                                seq.renumber_tracks();
+                            }
                         }
-                    }
-                    if let Some(before) = before {
-                        crate::tracks_undo::record(state, before);
-                    }
+                    });
                     cmds.push(AppCommand::SequenceUpdated);
                     ui.close_kind(egui::UiKind::Menu);
                 }
@@ -1190,6 +1170,15 @@ fn rename_edit_id() -> egui::Id {
     egui::Id::new("track_header_rename_edit")
 }
 
+/// A new track of `kind` put at `at` (past the end goes last), and the
+/// tracks numbered again.
+fn insert_new_track(seq: &mut klipp_timeline::Sequence, at: usize, kind: TrackKind) {
+    let name = seq.next_track_name(kind);
+    let at = at.min(seq.tracks.len());
+    seq.tracks.insert(at, klipp_timeline::Track::new(&name, kind));
+    seq.renumber_tracks();
+}
+
 #[cfg(test)]
 mod badge_tests {
     use super::badge_number;
@@ -1214,3 +1203,4 @@ mod badge_tests {
         assert_eq!(after, before);
     }
 }
+

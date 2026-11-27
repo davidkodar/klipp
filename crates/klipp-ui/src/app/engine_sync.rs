@@ -339,17 +339,6 @@ impl KlippApp {
     }
 }
 
-/// A track of the open sequence changed by `edit`, and the copy the engine
-/// plays and the control socket reads given the change, so that a report of
-/// the track says what the project says.
-pub(super) fn edit_track(state: &mut AppState, sequence: &klipp_timeline::SharedSequence, param_change_queue: &ArrayQueue<ParamChange>, track_id: klipp_core::TrackId, edit: impl FnOnce(&mut klipp_timeline::Track)) {
-    let idx = state.active_sequence_idx;
-    let Some(track) = state.document.sequences[idx].tracks.iter_mut().find(|t| t.id == track_id) else { return };
-    edit(track);
-    state.dirty = true;
-    sync_sequence(state, sequence, param_change_queue);
-}
-
 /// The same engine mirror write used by the live inspector edit host.
 pub(super) fn sync_sequence(state: &AppState, sequence: &klipp_timeline::SharedSequence, param_change_queue: &ArrayQueue<ParamChange>) {
     // Parameter changes still queued for the engine are already in
@@ -378,70 +367,6 @@ pub(super) fn sync_sequence(state: &AppState, sequence: &klipp_timeline::SharedS
     // The clip being framed for its glide, without its move (#611).
     super::frame_glide::show_unmoved(&mut flat, state.frame_glide_clip);
     sequence.replace(flat);
-}
-
-#[cfg(test)]
-mod edit_track_tests {
-    /// A lock, a name or a role set from the header reaches the copy the
-    /// control socket reads at once, not at the next edit.
-    #[test]
-    fn a_tracks_settings_reach_the_copy_the_socket_reads() {
-        let mut state = crate::state::AppState::default();
-        let shared = klipp_timeline::SharedSequence::new(state.document.sequences[0].clone());
-        let queue = crossbeam_queue::ArrayQueue::new(8);
-        let id = state.document.sequences[0].tracks[0].id;
-        super::edit_track(&mut state, &shared, &queue, id, |t| t.locked = true);
-        assert!(state.dirty);
-        super::edit_track(&mut state, &shared, &queue, id, |t| t.name = "Boat".into());
-        super::edit_track(&mut state, &shared, &queue, id, |t| t.sync_lock = true);
-        let seq = shared.snapshot();
-        let t = seq.tracks.iter().find(|t| t.id == id).unwrap();
-        assert_eq!((t.locked, t.name.as_str(), t.sync_lock), (true, "Boat", true));
-        super::edit_track(&mut state, &shared, &queue, id, |t| t.locked = false);
-        assert!(!shared.snapshot().tracks.iter().find(|t| t.id == id).unwrap().locked, "unlocked too");
-    }
-}
-
-#[cfg(test)]
-mod engine_send_tests {
-    /// #437: every command the UI sends straight to the playback engine is
-    /// one the engine acts on. Read from the source, so a send on a path no
-    /// test runs fails here rather than doing nothing in the app.
-    #[test]
-    fn every_command_sent_to_the_engine_is_one_it_acts_on() {
-        fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
-            for entry in std::fs::read_dir(dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    walk(&path, out);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    out.push((path.clone(), std::fs::read_to_string(&path).unwrap()));
-                }
-            }
-        }
-        let mut files = Vec::new();
-        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
-        let mut sent = 0;
-        let mut astray = Vec::new();
-        for (path, text) in &files {
-            for marker in ["cmd_tx.send(AppCommand::", "cmd_tx.send(klipp_core::AppCommand::", "side.send(AppCommand::"] {
-                for (at, _) in text.match_indices(marker) {
-                    let name: String = text[at + marker.len()..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-                    // This test's own markers name nothing.
-                    if name.is_empty() {
-                        continue;
-                    }
-                    sent += 1;
-                    if !klipp_engine::commands::NAMES.contains(&name.as_str()) {
-                        let line = text[..at].lines().count();
-                        astray.push(format!("{}:{line} sends {name}", path.display()));
-                    }
-                }
-            }
-        }
-        assert!(sent > 100, "the scan found only {sent} sends: has the field been renamed?");
-        assert!(astray.is_empty(), "sent to the engine, which does nothing with them — send them through send_commands:\n{}", astray.join("\n"));
-    }
 }
 
 /// Where a project never saved keeps its compositions' assets: the

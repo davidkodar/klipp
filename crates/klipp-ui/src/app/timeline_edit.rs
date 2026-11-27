@@ -62,11 +62,12 @@ impl KlippApp {
                 // The picture changes, so the engine is given it and draws
                 // again: the eye left the viewer showing the track as it was.
                 AppCommand::SetTrackVisibility { track_index, visible } => {
-                    if let Some(track) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
-                        track.visible = *visible;
-                        self.state.dirty = true;
-                        *needs_refresh = true;
-                    }
+                    let label = if *visible { "Show Track" } else { "Hide Track" };
+                    *needs_refresh |= self.commit_tracks(label, |seq| {
+                        if let Some(track) = seq.tracks.get_mut(*track_index) {
+                            track.visible = *visible;
+                        }
+                    });
                     true
                 }
                 AppCommand::SetTrackVolume { track_index, volume } => {

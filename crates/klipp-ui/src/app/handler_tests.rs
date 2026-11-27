@@ -1281,3 +1281,75 @@ fn a_drop_off_the_tracks_makes_its_track_in_the_same_step() {
         assert_eq!(app.state.sequence().tracks.len(), tracks, "{kind:?}: undo takes the track away too");
     }
 }
+
+/// Each of a track's settings, a track added, moved or taken away, and a
+/// clip linked or grouped is one step under its own name, recorded by its
+/// handler: undo gives the timeline back, redo makes it again, and the
+/// copy the engine plays and the control socket reads has it at once.
+#[test]
+fn track_settings_and_links_are_each_their_own_named_step() {
+    use klipp_timeline::TrackKind;
+    type Make = fn(&KlippApp, (klipp_core::ClipId, klipp_core::ClipId)) -> AppCommand;
+    let cases: Vec<(&str, Make)> = vec![
+        ("Lock Track", |a, _| AppCommand::SetTrackLocked { track_id: first(a, TrackKind::Video).1, locked: true }),
+        ("Hide Track", |a, _| AppCommand::SetTrackVisibility { track_index: first(a, TrackKind::Video).0, visible: false }),
+        ("Freeze Track", |a, _| AppCommand::SetTrackFrozen { track_id: first(a, TrackKind::Video).1, frozen: true }),
+        ("Lock While Frozen", |a, _| AppCommand::SetTrackLockWhileFrozen { track_id: first(a, TrackKind::Video).1, on: true }),
+        ("Rename Track", |a, _| AppCommand::RenameTrack { track_id: first(a, TrackKind::Audio).1, name: "Boat".into() }),
+        ("Sync Lock Track", |a, _| AppCommand::SetTrackSyncLock { track_id: first(a, TrackKind::Audio).1, on: !a.state.sequence().tracks[first(a, TrackKind::Audio).0].sync_lock }),
+        ("Automation Mode", |a, _| AppCommand::SetTrackAutomationMode { track_index: first(a, TrackKind::Audio).0, mode: klipp_core::automation::AutomationMode::Off }),
+        ("Edit Track Automation", |a, _| AppCommand::SetTrackAutomationKeys { track_index: first(a, TrackKind::Audio).0, param: klipp_core::automation::TrackParam::Pan, keys: vec![klipp_core::Keyframe { time_secs: 1.0, value: 0.5, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }] }),
+        ("Track Language", |a, _| AppCommand::SetTrackLanguage { track_id: first(a, TrackKind::Audio).1, language: Some("de".into()) }),
+        ("Track Role", |a, _| AppCommand::SetTrackRole { track_id: first(a, TrackKind::Audio).1, role: klipp_core::roles::RoleRef::parse("music") }),
+        ("Untarget Track", |a, _| AppCommand::SetTrackTargeted { track_id: first(a, TrackKind::Video).1, on: false }),
+        ("Patch Source", |a, _| AppCommand::SetTrackSourcePatch { track_id: first(a, TrackKind::Video).1, on: true }),
+        ("Track Colour", |a, _| AppCommand::SetTrackColourLabel { track_index: first(a, TrackKind::Video).0, label: 3 }),
+        ("Add Track", |_, _| AppCommand::AddVideoTrack),
+        ("Add Track", |_, _| AppCommand::AddAudioTrack),
+        ("Add Track", |_, _| AppCommand::AddSubtitleTrack { name: "Subtitles".into() }),
+        ("Add Track", |a, _| AppCommand::AddTrackAbove { track_index: first(a, TrackKind::Audio).0 }),
+        ("Add Track", |a, _| AppCommand::AddTrackBelow { track_index: first(a, TrackKind::Video).0 }),
+        ("Remove Track", |a, _| AppCommand::RemoveTrack { track_id: a.state.sequence().tracks.iter().find(|t| t.clips.is_empty()).unwrap().id }),
+        ("Unlink", |_, (picture, _)| AppCommand::UnlinkClip { clip_id: picture }),
+        ("Group", |_, (picture, sound)| AppCommand::GroupClips { clip_ids: vec![picture, sound] }),
+    ];
+    for (label, make) in cases {
+        let (mut app, _engine) = KlippApp::for_test();
+        let pair = linked_pair(&mut app);
+        // A second picture track, so one can be taken away or moved.
+        app.state.sequence_mut().add_video_track("Video 2".into());
+        let cmd = make(&app, pair);
+        redoes_as_done(&mut app, |app| {
+            app.send_commands(vec![cmd.clone()]);
+            // Read before the undo and redo, which tell the engine anyway.
+            let seen = |tracks: &[klipp_timeline::Track]| serde_json::to_value(tracks.iter().map(|t| (&t.name, t.locked, t.visible, t.frozen, t.clips.len())).collect::<Vec<_>>()).unwrap();
+            assert_eq!(seen(&app.sequence.snapshot().tracks), seen(&app.state.sequence().tracks), "{cmd:?}: the engine's copy has it");
+        });
+        assert_eq!(app.state.undo_label().as_deref(), Some(label), "{cmd:?}");
+    }
+
+    // A move among tracks of one kind; an ungroup; a refused edit is no step.
+    let (mut app, _engine) = KlippApp::for_test();
+    let (picture, sound) = linked_pair(&mut app);
+    app.state.sequence_mut().add_video_track("Video 2".into());
+    let videos: Vec<usize> = app.state.sequence().tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Video).map(|(i, _)| i).collect();
+    redoes_as_made(&mut app, vec![AppCommand::MoveTrack { from: videos[0], to: videos[1] }]);
+    assert_eq!(app.state.undo_label().as_deref(), Some("Move Track"));
+    app.send_commands(vec![AppCommand::GroupClips { clip_ids: vec![picture, sound] }]);
+    let group = app.state.sequence().all_clips().find(|c| c.id == picture).unwrap().group_id.unwrap();
+    redoes_as_made(&mut app, vec![AppCommand::UngroupClips { group_id: group }]);
+    assert_eq!(app.state.undo_label().as_deref(), Some("Ungroup"));
+    let depth = app.state.undo_depth();
+    app.send_commands(vec![
+        AppCommand::RenameTrack { track_id: klipp_core::TrackId::new(), name: "Gone".into() },
+        AppCommand::MoveTrack { from: videos[0], to: first(&app, TrackKind::Audio).0 },
+        AppCommand::SetTrackLocked { track_id: first(&app, TrackKind::Video).1, locked: app.state.sequence().tracks[first(&app, TrackKind::Video).0].locked },
+    ]);
+    assert_eq!(app.state.undo_depth(), depth, "a track gone, a move across kinds, a lock as it was: no step");
+}
+
+/// The index and id of the first track of `kind`.
+fn first(app: &KlippApp, kind: klipp_timeline::TrackKind) -> (usize, klipp_core::TrackId) {
+    let i = app.state.sequence().tracks.iter().position(|t| t.kind == kind).unwrap();
+    (i, app.state.sequence().tracks[i].id)
+}

@@ -1009,50 +1009,31 @@ impl KlippApp {
                 true
             }
             AppCommand::AddVideoTrack => {
-                let name = self.state.document.sequences[self.state.active_sequence_idx].next_track_name(klipp_timeline::TrackKind::Video);
-                self.state.document.sequences[self.state.active_sequence_idx].add_video_track(name);
-                self.sync_sequence_to_engine();
-                self.state.dirty = true;
+                self.commit_tracks("Add Track", |seq| {
+                    let name = seq.next_track_name(klipp_timeline::TrackKind::Video);
+                    seq.add_video_track(name);
+                });
                 true
             }
             AppCommand::AddAudioTrack => {
-                let name = self.state.document.sequences[self.state.active_sequence_idx].next_track_name(klipp_timeline::TrackKind::Audio);
-                self.state.document.sequences[self.state.active_sequence_idx].add_audio_track(name);
-                self.sync_sequence_to_engine();
-                self.state.dirty = true;
+                self.commit_tracks("Add Track", |seq| {
+                    let name = seq.next_track_name(klipp_timeline::TrackKind::Audio);
+                    seq.add_audio_track(name);
+                });
                 true
             }
             AppCommand::AddSubtitleTrack { name } => {
-                let n = name.clone();
-                self.state.document.sequences[self.state.active_sequence_idx].add_subtitle_track(n);
-                self.sync_sequence_to_engine();
-                self.state.dirty = true;
+                self.commit_tracks("Add Track", |seq| {
+                    seq.add_subtitle_track(name.clone());
+                });
                 true
             }
             AppCommand::AddTrackAbove { track_index } => {
-                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                let ti = *track_index;
-                if let Some(kind) = seq.tracks.get(ti).map(|t| t.kind) {
-                    let name = seq.next_track_name(kind);
-                    let track = klipp_timeline::Track::new(&name, kind);
-                    seq.tracks.insert(ti, track);
-                    seq.renumber_tracks();
-                }
-                self.sync_sequence_to_engine();
-                self.state.dirty = true;
+                self.commit_tracks("Add Track", |seq| add_track_beside(seq, *track_index, 0));
                 true
             }
             AppCommand::AddTrackBelow { track_index } => {
-                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                let ti = *track_index;
-                if let Some(kind) = seq.tracks.get(ti).map(|t| t.kind) {
-                    let name = seq.next_track_name(kind);
-                    let track = klipp_timeline::Track::new(&name, kind);
-                    seq.tracks.insert((ti + 1).min(seq.tracks.len()), track);
-                    seq.renumber_tracks();
-                }
-                self.sync_sequence_to_engine();
-                self.state.dirty = true;
+                self.commit_tracks("Add Track", |seq| add_track_beside(seq, *track_index, 1));
                 true
             }
             AppCommand::RemoveTrack { track_id } => {
@@ -1065,67 +1046,67 @@ impl KlippApp {
                     // Show confirmation dialog
                     self.state.confirm_remove_track = Some(tid);
                 } else {
-                    let _ = self.state.document.sequences[self.state.active_sequence_idx].remove_track(tid);
-                    self.state.document.sequences[self.state.active_sequence_idx].renumber_tracks();
-                    self.sync_sequence_to_engine();
-                    self.state.dirty = true;
+                    self.commit_tracks("Remove Track", |seq| {
+                        let _ = seq.remove_track(tid);
+                        seq.renumber_tracks();
+                    });
                 }
                 true
             }
             AppCommand::SetTrackLanguage { track_id, language } => {
-                engine_sync::edit_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.language = language.clone());
+                self.commit_track(*track_id, "Track Language", |t| t.language = language.clone());
                 true
             }
             AppCommand::SetTrackRole { track_id, role } => {
-                engine_sync::edit_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.role = role.clone());
+                self.commit_track(*track_id, "Track Role", |t| t.role = role.clone());
                 true
             }
             AppCommand::SetTrackAutomationKeys { track_index, param, keys } => {
-                if let Some(t) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
-                    t.automation.lanes.insert(*param, keys.clone());
-                    self.state.dirty = true;
-                }
+                self.commit_tracks("Edit Track Automation", |seq| {
+                    if let Some(t) = seq.tracks.get_mut(*track_index) {
+                        t.automation.lanes.insert(*param, keys.clone());
+                    }
+                });
                 true
             }
             AppCommand::SetTrackAutomationMode { track_index, mode } => {
-                if let Some(t) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
-                    t.automation.mode = *mode;
-                    self.state.dirty = true;
-                }
+                self.commit_tracks("Automation Mode", |seq| {
+                    if let Some(t) = seq.tracks.get_mut(*track_index) {
+                        t.automation.mode = *mode;
+                    }
+                });
                 true
             }
             AppCommand::SetTrackSyncLock { track_id, on } => {
-                engine_sync::edit_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.sync_lock = *on);
+                self.commit_track(*track_id, if *on { "Sync Lock Track" } else { "Sync Unlock Track" }, |t| t.sync_lock = *on);
                 true
             }
             AppCommand::SetTrackTargeted { track_id, on } => {
-                engine_sync::edit_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.targeted = *on);
+                self.commit_track(*track_id, if *on { "Target Track" } else { "Untarget Track" }, |t| t.targeted = *on);
                 true
             }
             AppCommand::TargetTrackFromBadge { track_id } => {
-                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                if let Some(i) = seq.tracks.iter().position(|t| t.id == *track_id) {
-                    seq.target_from_badge(i);
-                    self.state.dirty = true;
-                    self.sync_sequence_to_engine();
-                }
+                self.commit_tracks("Target Track", |seq| {
+                    if let Some(i) = seq.tracks.iter().position(|t| t.id == *track_id) {
+                        seq.target_from_badge(i);
+                    }
+                });
                 true
             }
             AppCommand::SetTrackSourcePatch { track_id, on } => {
-                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                if let Some(i) = seq.tracks.iter().position(|t| t.id == *track_id) {
-                    if *on {
-                        seq.patch_source_to(i);
-                    } else {
-                        seq.tracks[i].source_patch = false;
+                self.commit_tracks("Patch Source", |seq| {
+                    if let Some(i) = seq.tracks.iter().position(|t| t.id == *track_id) {
+                        if *on {
+                            seq.patch_source_to(i);
+                        } else {
+                            seq.tracks[i].source_patch = false;
+                        }
                     }
-                    self.state.dirty = true;
-                    self.sync_sequence_to_engine();
-                }
+                });
                 true
             }
             AppCommand::RenameTrack { track_id, ref name } => {
-                engine_sync::edit_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.name = name.clone());
+                self.commit_track(*track_id, "Rename Track", |t| t.name = name.clone());
                 true
             }
             AppCommand::ResetWaveformZoom { track_id } => {
@@ -1208,34 +1189,33 @@ impl KlippApp {
             // Linked clips
             AppCommand::UnlinkClip { clip_id } => {
                 // Both halves unlinked, the picture's own sound kept out.
-                self.state.document.sequences[self.state.active_sequence_idx].unlink(*clip_id);
-                self.state.dirty = true;
+                self.commit_tracks("Unlink", |seq| seq.unlink(*clip_id));
                 true
             }
             AppCommand::LinkClips { clip_a, clip_b } => {
-                let a = *clip_a;
-                let b = *clip_b;
+                let (a, b) = (*clip_a, *clip_b);
                 // Set bidirectional link
-                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(c) = track.find_clip_mut(a) {
-                        c.linked_clip_id = Some(b);
+                self.commit_tracks("Link", |seq| {
+                    for track in &mut seq.tracks {
+                        if let Some(c) = track.find_clip_mut(a) {
+                            c.linked_clip_id = Some(b);
+                        }
+                        if let Some(c) = track.find_clip_mut(b) {
+                            c.linked_clip_id = Some(a);
+                        }
                     }
-                    if let Some(c) = track.find_clip_mut(b) {
-                        c.linked_clip_id = Some(a);
-                    }
-                }
-                self.state.dirty = true;
+                });
                 true
             }
             // Track locking
             AppCommand::SetTrackLocked { track_id, locked } => {
-                engine_sync::edit_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.locked = *locked);
+                self.commit_track(*track_id, if *locked { "Lock Track" } else { "Unlock Track" }, |t| t.locked = *locked);
                 true
             }
             // A picture or sound track freezes (#3207); its frames are drawn by
             // the freeze jobs (`freeze_jobs`), which see the change.
             AppCommand::SetTrackFrozen { track_id, frozen } => {
-                freeze_jobs::edit_freezable_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.set_frozen(*frozen));
+                self.commit_freezable_track(*track_id, if *frozen { "Freeze Track" } else { "Unfreeze Track" }, |t| t.set_frozen(*frozen));
                 true
             }
             // A track bounced to a media file (#3264): the dialog, then the
@@ -1251,26 +1231,26 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTrackLockWhileFrozen { track_id, on } => {
-                freeze_jobs::edit_freezable_track(&mut self.state, &self.sequence, &self.param_change_queue, *track_id, |t| t.set_lock_while_frozen(*on));
+                self.commit_freezable_track(*track_id, "Lock While Frozen", |t| t.set_lock_while_frozen(*on));
                 true
             }
             // A track's colour (#922), shown on its header.
             AppCommand::SetTrackColourLabel { track_index, label } => {
-                if let Some(track) = self.state.sequence_mut().tracks.get_mut(*track_index) {
-                    track.colour_label = *label;
-                    self.state.dirty = true;
-                }
+                self.commit_tracks("Track Colour", |seq| {
+                    if let Some(track) = seq.tracks.get_mut(*track_index) {
+                        track.colour_label = *label;
+                    }
+                });
                 true
             }
             // A track moved up or down among tracks of its kind (#922):
             // its order is the composite's, so the engine is told.
             AppCommand::MoveTrack { from, to } => {
-                let seq = self.state.sequence_mut();
-                if move_track(&mut seq.tracks, *from, *to) {
-                    seq.renumber_tracks();
-                    self.state.dirty = true;
-                    self.sync_sequence_to_engine();
-                }
+                self.commit_tracks("Move Track", |seq| {
+                    if move_track(&mut seq.tracks, *from, *to) {
+                        seq.renumber_tracks();
+                    }
+                });
                 true
             }
             AppCommand::SetTrackChannelWaveforms { track_index, on } => {
@@ -1281,12 +1261,10 @@ impl KlippApp {
                 true
             }
             AppCommand::SplitToMono { clip_id } => {
-                match split_to_mono(self.state.sequence_mut(), *clip_id) {
-                    Ok(()) => {
-                        self.state.dirty = true;
-                        self.sync_sequence_to_engine();
-                        self.state.toast.show("Split to mono: the left channel stays, the right is on the track below");
-                    }
+                let mut split = Ok(());
+                self.commit_tracks("Split to Mono", |seq| split = split_to_mono(seq, *clip_id));
+                match split {
+                    Ok(()) => self.state.toast.show("Split to mono: the left channel stays, the right is on the track below"),
                     Err(why) => self.state.toast.show(why),
                 }
                 true
@@ -1317,40 +1295,61 @@ impl KlippApp {
             }
             AppCommand::GroupClips { clip_ids } => {
                 let gid = GroupId::new();
-                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                    for clip in &mut track.clips {
-                        if clip_ids.contains(&clip.id) {
-                            clip.group_id = Some(gid);
-                        }
-                    }
-                }
-                self.state.dirty = true;
+                self.commit_clips("Group", |clip| clip_ids.contains(&clip.id), |clip| clip.group_id = Some(gid));
                 true
             }
             AppCommand::UngroupClips { group_id } => {
-                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                    for clip in &mut track.clips {
-                        if clip.group_id == Some(*group_id) {
-                            clip.group_id = None;
-                        }
-                    }
-                }
-                self.state.dirty = true;
+                self.commit_clips("Ungroup", |clip| clip.group_id == Some(*group_id), |clip| clip.group_id = None);
                 true
             }
             AppCommand::UngroupClip { clip_id } => {
-                for track in &mut self.state.document.sequences[self.state.active_sequence_idx].tracks {
-                    for clip in &mut track.clips {
-                        if clip.id == *clip_id {
-                            clip.group_id = None;
-                        }
-                    }
-                }
-                self.state.dirty = true;
+                self.commit_clips("Ungroup", |clip| clip.id == *clip_id, |clip| clip.group_id = None);
                 true
             }
             _ => false,
         }
+    }
+}
+
+/// A new track of the kind of the one at `index`, put `offset` past it
+/// (0 above, 1 below), and the tracks numbered again.
+fn add_track_beside(seq: &mut klipp_timeline::Sequence, index: usize, offset: usize) {
+    let Some(kind) = seq.tracks.get(index).map(|t| t.kind) else { return };
+    let name = seq.next_track_name(kind);
+    let at = (index + offset).min(seq.tracks.len());
+    seq.tracks.insert(at, klipp_timeline::Track::new(&name, kind));
+    seq.renumber_tracks();
+}
+
+impl KlippApp {
+    /// Track `track_id`'s settings changed by `change`, one step named
+    /// `label`; nothing when the track is gone or nothing changed.
+    fn commit_track(&mut self, track_id: klipp_core::TrackId, label: &'static str, change: impl FnOnce(&mut klipp_timeline::Track)) {
+        self.commit_tracks(label, |seq| {
+            if let Some(t) = seq.tracks.iter_mut().find(|t| t.id == track_id) {
+                change(t);
+            }
+        });
+    }
+
+    /// As [`Self::commit_track`], for a picture or sound track only: the
+    /// ones that freeze (#3207).
+    fn commit_freezable_track(&mut self, track_id: klipp_core::TrackId, label: &'static str, change: impl FnOnce(&mut klipp_timeline::Track)) {
+        self.commit_tracks(label, |seq| {
+            if let Some(t) = seq.tracks.iter_mut().find(|t| t.id == track_id && matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio)) {
+                change(t);
+            }
+        });
+    }
+
+    /// Every clip `pick` chooses changed by `change`, one step named
+    /// `label`.
+    fn commit_clips(&mut self, label: &'static str, pick: impl Fn(&klipp_timeline::Clip) -> bool, mut change: impl FnMut(&mut klipp_timeline::Clip)) {
+        self.commit_tracks(label, |seq| {
+            for clip in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| pick(c)) {
+                change(clip);
+            }
+        });
     }
 }
 

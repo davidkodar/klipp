@@ -326,17 +326,22 @@ impl DocumentView<'_> {
             }
             EditCommand::SetTracks { old, .. } => {
                 self.sequences[self.active].tracks = old.clone();
+                // The engine plays the tracks, and the control socket
+                // reads them, from the shared copy.
+                effects.sync_sequence = true;
             }
             EditCommand::SetTrack { track_index, old, .. } => {
                 if let Some(t) = self.sequences[self.active].tracks.get_mut(*track_index).filter(|t| t.id == old.id) {
                     *t = (**old).clone();
                 }
+                effects.sync_sequence = true;
             }
             EditCommand::SetTrackContents { track_index, old, .. } => {
                 if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
                     track.clips = old.clips.clone();
                     track.transitions = old.transitions.clone();
                 }
+                effects.sync_sequence = true;
             }
             EditCommand::SetGradeGroups { old, .. } => {
                 self.sequences[self.active].grade_groups = old.clone();
@@ -1106,17 +1111,22 @@ impl DocumentView<'_> {
             }
             EditCommand::SetTracks { new, .. } => {
                 self.sequences[self.active].tracks = new.clone();
+                // The engine plays the tracks, and the control socket
+                // reads them, from the shared copy.
+                effects.sync_sequence = true;
             }
             EditCommand::SetTrack { track_index, new, .. } => {
                 if let Some(t) = self.sequences[self.active].tracks.get_mut(*track_index).filter(|t| t.id == new.id) {
                     *t = (**new).clone();
                 }
+                effects.sync_sequence = true;
             }
             EditCommand::SetTrackContents { track_index, new, .. } => {
                 if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
                     track.clips = new.clips.clone();
                     track.transitions = new.transitions.clone();
                 }
+                effects.sync_sequence = true;
             }
             EditCommand::SetGradeGroups { new, .. } => {
                 self.sequences[self.active].grade_groups = new.clone();

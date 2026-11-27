@@ -6426,6 +6426,18 @@ impl AppState {
         edit.map(|edit| self.commit(edit))
     }
 
+    /// The active sequence's tracks changed by `change` on a copy and
+    /// committed as one step named `label`: what changed, as
+    /// [`EditCommand::tracks_changed`] works it out. `None`, and no step,
+    /// when nothing changed: a refused edit, a track gone.
+    #[must_use = "the engine is told of the edit only by running its effects"]
+    pub fn commit_tracks(&mut self, label: &'static str, change: impl FnOnce(&mut klipp_timeline::Sequence)) -> Option<klipp_document::apply::Effects> {
+        let mut seq = self.sequence().clone();
+        change(&mut seq);
+        let edit = EditCommand::tracks_changed(label, &self.sequence().tracks, &seq.tracks)?;
+        Some(self.commit(edit))
+    }
+
     pub fn push_history(&mut self, command: EditCommand) {
         let command = self.with_made_tracks(command);
         let command = self.with_matched_follow(command);
