@@ -1425,3 +1425,77 @@ fn clip_and_timeline_edits_are_each_their_own_named_step() {
         assert_eq!(marks(&app), (Some(at(1.0)), Some(at(2.0))), "{label}: nothing used up");
     }
 }
+
+/// A caption added or restyled, a transition's kind, a multicam made, a
+/// clip replaced from the bin at its In mark and subtitles imported are
+/// each one step under their own name, recorded by their handlers; a
+/// transition's settings dragged are one step from where the drag began.
+#[test]
+fn captions_transitions_and_the_rest_are_each_their_own_named_step() {
+    use klipp_timeline::TrackKind;
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    // Two clips end to end on a track of their own on top, a dissolve
+    // between them; a caption track with its style drafted.
+    let setup = |app: &mut KlippApp| {
+        let mut v2 = klipp_timeline::Track::new("Video 2", TrackKind::Video);
+        let m = klipp_core::MediaId::new();
+        let (a, b) = (klipp_timeline::Clip::media(m, at(0.0), at(4.0), at(0.0), at(4.0)), klipp_timeline::Clip::media(m, at(4.0), at(8.0), at(4.0), at(8.0)));
+        v2.transitions.push(klipp_timeline::Transition { id: klipp_core::TransitionId::new(), kind: klipp_core::TransitionKind::CrossDissolve, duration: at(1.0), clip_a_id: a.id, clip_b_id: b.id, user_params: Default::default(), alignment: Default::default() });
+        v2.clips = vec![a, b];
+        app.state.sequence_mut().tracks.insert(0, v2);
+        let id = app.state.sequence_mut().add_subtitle_track("Subtitles".into());
+        app.state.subtitle_editor.style_draft = Some((id, Default::default()));
+        app.state.playhead = at(1.0);
+        (app.state.sequence().tracks[0].transitions[0].id, id)
+    };
+    let other_kind = (1..=255u8).find(|&k| !matches!(klipp_engine::transition::transition_kind_from_id(k), klipp_core::TransitionKind::CrossDissolve | klipp_core::TransitionKind::SmoothCut)).unwrap();
+    type Make = fn(&mut KlippApp, (klipp_core::TransitionId, klipp_core::TrackId), u8) -> AppCommand;
+    let cases: Vec<(&str, Make)> = vec![
+        ("Add Caption", |_, _, _| AppCommand::AddSubtitleAtPlayhead { timeline_in: klipp_core::RationalTime::from_secs_f64(1.0, 24), duration_frames: 48 }),
+        ("Caption Style", |_, (_, track_id), _| AppCommand::SaveCaptionStyle { track_id, apply_to_all: false }),
+        ("Transition Kind", |_, (transition_id, _), kind_id| AppCommand::SetTransitionKind { track_index: 0, transition_id, kind_id }),
+        ("Transition Settings", |_, (transition_id, _), _| AppCommand::SetTransitionParam { track_index: 0, transition_id, user_params: klipp_core::TransitionUserParams { param0: 0.5, ..Default::default() } }),
+        ("Create Multicam", |_, _, _| AppCommand::CreateMulticamClip),
+        ("Replace From Bin", |a, _, _| {
+            let mut item = klipp_media::MediaItem::synthetic_for_test("/media/other.mov".into(), None);
+            item.default_source_in = Some(klipp_core::RationalTime::from_secs_f64(2.0, 24));
+            let new_media_id = a.state.document.media_pool.add(item);
+            let clip_id = a.state.sequence().tracks[0].clips[0].id;
+            AppCommand::ReplaceClipMedia { clip_id, new_media_id }
+        }),
+    ];
+    for (label, make) in cases {
+        let (mut app, _engine) = KlippApp::for_test();
+        linked_pair(&mut app);
+        let ids = setup(&mut app);
+        let cmd = make(&mut app, ids, other_kind);
+        redoes_as_made(&mut app, vec![cmd.clone()]);
+        assert_eq!(app.state.undo_label().as_deref(), Some(label), "{cmd:?}");
+    }
+
+    // A slider's run of changes is one step; undone, the drag's start.
+    let (mut app, _engine) = KlippApp::for_test();
+    let (transition_id, _) = setup(&mut app);
+    let depth = app.state.undo_depth();
+    let set = |app: &mut KlippApp, v: f32| app.send_commands(vec![AppCommand::SetTransitionParam { track_index: 0, transition_id, user_params: klipp_core::TransitionUserParams { param0: v, ..Default::default() } }]);
+    for v in [0.1, 0.2, 0.3] {
+        set(&mut app, v);
+    }
+    assert_eq!(app.state.undo_depth(), depth + 1, "one drag, one step");
+    let param = |app: &KlippApp| app.state.sequence().tracks[0].transitions[0].user_params.param0;
+    assert_eq!(param(&app), 0.3);
+    assert_eq!(app.sequence.snapshot().tracks[0].transitions[0].user_params.param0, 0.3, "the engine's copy at the drag's end");
+    app.send_commands(vec![AppCommand::Undo]);
+    assert_eq!(param(&app), klipp_core::TransitionUserParams::default().param0, "undone: where the drag began");
+    // After an undo, the next change is a step of its own.
+    set(&mut app, 0.4);
+    assert_eq!(app.state.undo_depth(), depth + 1);
+
+    // Subtitles imported onto a track of their own, one step.
+    let (mut app, _engine) = KlippApp::for_test();
+    let path = std::env::temp_dir().join(format!("klipp-handler-test-{}.srt", uuid::Uuid::new_v4()));
+    std::fs::write(&path, "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n2\n00:00:03,000 --> 00:00:04,000\nThere\n").unwrap();
+    redoes_as_made(&mut app, vec![AppCommand::ImportSubtitles { path: path.clone() }]);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(app.state.undo_label().as_deref(), Some("Import Subtitles"));
+}

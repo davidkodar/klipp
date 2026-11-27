@@ -72,23 +72,15 @@ impl KlippApp {
                         return true;
                     }
                 }
-                if let Some(track) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
-                    if let Some(t) = track.transitions.iter_mut().find(|t| t.id == *transition_id) {
+                self.commit_tracks("Transition Kind", |seq| {
+                    if let Some(t) = seq.tracks.get_mut(*track_index).and_then(|track| track.transitions.iter_mut().find(|t| t.id == *transition_id)) {
                         t.kind = klipp_engine::transition::transition_kind_from_id(*kind_id);
                     }
-                }
-                self.sync_sequence_to_engine();
-                self.state.dirty = true;
+                });
                 true
             }
             AppCommand::SetTransitionParam { track_index, transition_id, user_params } => {
-                if let Some(track) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
-                    if let Some(t) = track.transitions.iter_mut().find(|t| t.id == *transition_id) {
-                        t.user_params = *user_params;
-                    }
-                }
-                self.sync_sequence_to_engine();
-                self.state.dirty = true;
+                self.set_transition_settings(*track_index, *transition_id, *user_params);
                 true
             }
             AppCommand::SetTransitionAlignment { track_index, transition_id, alignment } => {
@@ -105,6 +97,34 @@ impl KlippApp {
 }
 
 impl KlippApp {
+    /// A transition's settings changed from the inspector, one undo step.
+    /// A slider dragged sends a change each frame: the run of them close
+    /// together on the same transition is the one step, from where the
+    /// drag began to where it ended.
+    fn set_transition_settings(&mut self, track_index: usize, transition_id: klipp_core::TransitionId, params: klipp_core::TransitionUserParams) {
+        let Some(track) = self.state.sequence().tracks.get(track_index) else { return };
+        let mut changed = track.clone();
+        let Some(t) = changed.transitions.iter_mut().find(|t| t.id == transition_id).filter(|t| t.user_params != params) else { return };
+        t.user_params = params;
+        let new = crate::history::TrackContents::of(&changed);
+        let edit = EditCommand::SetTrackContents { description: "Transition Settings", track_index, old: Box::new(crate::history::TrackContents::of(track)), new: Box::new(new.clone()) };
+        let recent = self.state.transition_settings_edit.is_some_and(|(id, at)| id == transition_id && at.elapsed() < TRANSITION_DRAG_GAP);
+        self.state.transition_settings_edit = Some((transition_id, std::time::Instant::now()));
+        let merged = recent && self.state.active_history_mut().merge_into_last(|last| match last {
+            EditCommand::SetTrackContents { description: "Transition Settings", track_index: last_track, new: last_new, .. } if *last_track == track_index => {
+                **last_new = new.clone();
+                true
+            }
+            _ => false,
+        });
+        if merged {
+            self.apply_edit_forward(&edit);
+            self.state.dirty = true;
+        } else {
+            self.commit(edit);
+        }
+    }
+
     /// A transition's duration or alignment changed from the inspector:
     /// through the document op that checks the clips have the footage
     /// for it, refused with a toast when they have not, one undo step.
@@ -179,3 +199,7 @@ pub(super) fn transition_edits(seq: &klipp_timeline::Sequence, pool: &klipp_medi
         Err(r) => Err(format!("No transition: {}. {}", r.why, capitalise(&r.hint))),
     }
 }
+
+/// How close together two changes of one transition's settings must come
+/// to be one drag, and one undo step.
+const TRANSITION_DRAG_GAP: std::time::Duration = std::time::Duration::from_millis(700);
