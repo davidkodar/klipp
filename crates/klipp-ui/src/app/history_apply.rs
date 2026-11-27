@@ -73,6 +73,15 @@ impl KlippApp {
         }
     }
 
+    /// The active sequence's tracks changed by `change` on a copy and
+    /// committed as one step named `label`, through
+    /// [`crate::state::AppState::commit_tracks`]. Whether a step was made.
+    pub(super) fn commit_tracks(&mut self, label: &'static str, change: impl FnOnce(&mut klipp_timeline::Sequence)) -> bool {
+        let Some(effects) = self.state.commit_tracks(label, change) else { return false };
+        self.run_document_effects(effects);
+        true
+    }
+
     /// Clip `clip_id`'s keys, and those of `partner` with it, changed by
     /// `f` on copies of the two and committed as one keyframe step named
     /// `description`; nothing when the clip is gone or `f` changes no key.

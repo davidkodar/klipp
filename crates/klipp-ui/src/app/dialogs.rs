@@ -895,14 +895,10 @@ impl KlippApp {
                     ui.horizontal(|ui| {
                         if ui.button("Remove").clicked() {
                             // One undo step, clips and all (#907).
-                            let before = crate::tracks_undo::before_labelled(&self.state, "Remove Track");
-                            let _ = self.state.document.sequences[self.state.active_sequence_idx].remove_track_with_clips(track_id);
-                            self.state.document.sequences[self.state.active_sequence_idx].renumber_tracks();
-                            if let Some(before) = before {
-                                crate::tracks_undo::record(&mut self.state, before);
-                            }
-                            self.sync_sequence_to_engine();
-                            self.state.dirty = true;
+                            self.commit_tracks("Remove Track", |seq| {
+                                let _ = seq.remove_track_with_clips(track_id);
+                                seq.renumber_tracks();
+                            });
                             self.state.confirm_remove_track = None;
                         }
                         if ui.button("Cancel").clicked() {

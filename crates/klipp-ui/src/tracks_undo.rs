@@ -1,15 +1,16 @@
 //! Undo for the timeline edits whose handlers change the active
 //! sequence's tracks in place without recording it (#907): lift and
-//! extract, close and insert gap, a clip enabled, soloed, linked or
-//! grouped, a track added, locked, renamed or removed, a transition
-//! changed or taken off. Each became an edit Ctrl+Z skipped, so the next
+//! extract, close and insert gap, a clip enabled or soloed, a transition
+//! changed. A track's own settings, a track added, moved or removed, and
+//! clips linked or grouped record their own steps now
+//! (`KlippApp::commit_tracks`). Each became an edit Ctrl+Z skipped, so the next
 //! undo took back something older, out of order. Their tracks are kept
 //! before the edit, and what changed is recorded as one named step: the
 //! clips and transitions of the tracks whose clips changed, the one track
 //! locked or renamed, the whole list when a track came or went. Undoing a
 //! lift therefore leaves a track's mute or height, changed since, alone.
 
-use crate::history::{EditCommand, TrackContents};
+use crate::history::EditCommand;
 use klipp_timeline::Track;
 use crate::state::AppState;
 use klipp_core::AppCommand;
@@ -39,46 +40,15 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         AppCommand::SetClipEnabled { enabled: true, .. } => "Enable Clip",
         AppCommand::SetClipEnabled { .. } => "Disable Clip",
         AppCommand::SetClipSolo { .. } => "Solo Clip",
-        AppCommand::UnlinkClip { .. } => "Unlink",
-        AppCommand::LinkClips { .. } => "Link",
-        AppCommand::GroupClips { .. } => "Group",
-        AppCommand::UngroupClips { .. } | AppCommand::UngroupClip { .. } => "Ungroup",
-        AppCommand::SetTrackLocked { locked: true, .. } => "Lock Track",
-        AppCommand::SetTrackLocked { .. } => "Unlock Track",
-        AppCommand::SetTrackVisibility { visible: false, .. } => "Hide Track",
-        AppCommand::SetTrackVisibility { .. } => "Show Track",
-        AppCommand::SetTrackFrozen { frozen: true, .. } => "Freeze Track",
-        AppCommand::SetTrackFrozen { .. } => "Unfreeze Track",
-        AppCommand::SetTrackLockWhileFrozen { .. } => "Lock While Frozen",
-        AppCommand::RenameTrack { .. } => "Rename Track",
-        AppCommand::SetTrackSyncLock { on: true, .. } => "Sync Lock Track",
-        AppCommand::SetTrackSyncLock { .. } => "Sync Unlock Track",
-        AppCommand::SetTrackAutomationMode { .. } => "Automation Mode",
-        AppCommand::SetTrackAutomationKeys { .. } => "Edit Track Automation",
-        AppCommand::SetTrackLanguage { .. } => "Track Language",
-        AppCommand::SetTrackRole { .. } => "Track Role",
-        AppCommand::SetTrackTargeted { on: true, .. } => "Target Track",
-        AppCommand::SetTrackTargeted { .. } => "Untarget Track",
-        AppCommand::SetTrackSourcePatch { .. } => "Patch Source",
-        AppCommand::TargetTrackFromBadge { .. } => "Target Track",
         // Captions (#70): adding one was not undoable; a caption style,
         // with the captions it restyles, is one step.
         AppCommand::AddSubtitleAtPlayhead { .. } => "Add Caption",
         AppCommand::SaveCaptionStyle { apply_to_all: true, .. } => "Restyle Captions",
         AppCommand::SaveCaptionStyle { .. } => "Caption Style",
         AppCommand::ClearCaptionStyle { .. } => "Caption Style",
-        AppCommand::AddVideoTrack
-        | AppCommand::AddAudioTrack
-        | AppCommand::AddSubtitleTrack { .. }
-        | AppCommand::AddTrackAbove { .. }
-        | AppCommand::AddTrackBelow { .. } => "Add Track",
-        AppCommand::RemoveTrack { .. } => "Remove Track",
         // Removing a transition, its duration and its alignment record
         // themselves (through the document's transition ops).
         AppCommand::SetTransitionKind { .. } => "Transition Kind",
-        AppCommand::SetTrackColourLabel { .. } => "Track Colour",
-        AppCommand::MoveTrack { .. } => "Move Track",
-        AppCommand::SplitToMono { .. } => "Split to Mono",
         AppCommand::SetTransitionParam { .. } => "Transition Settings",
         _ => return None,
     })
@@ -181,29 +151,10 @@ fn with_marks_used_up(state: &mut AppState, label: &'static str, edit: EditComma
     EditCommand::Named { label: label.into(), edit: Box::new(EditCommand::Batch(vec![edit, EditCommand::SetRange { old_in, old_out, new_in: None, new_out: None }])) }
 }
 
-/// The undo record taking `old` to `new`: the whole list when a track
-/// came or went; else, for each track that changed, the track itself when
-/// more than its clips and transitions changed, or just those.
+/// The undo record taking `old` to `new`; see
+/// [`EditCommand::tracks_changed`].
 fn edit_between(label: &'static str, old: &[Track], new: &[Track]) -> Option<EditCommand> {
-    let ids = |tracks: &[Track]| tracks.iter().map(|t| t.id).collect::<Vec<_>>();
-    if ids(old) != ids(new) {
-        return Some(EditCommand::SetTracks { description: label, old: old.to_vec(), new: new.to_vec() });
-    }
-    let mut edits: Vec<EditCommand> = Vec::new();
-    for (i, (o, n)) in old.iter().zip(new).enumerate() {
-        if !same((&o.clips, &o.transitions), (&n.clips, &n.transitions)) || !same(bare(o), bare(n)) {
-            edits.push(if same(bare(o), bare(n)) {
-                EditCommand::SetTrackContents { description: label, track_index: i, old: Box::new(TrackContents::of(o)), new: Box::new(TrackContents::of(n)) }
-            } else {
-                EditCommand::SetTrack { description: label, track_index: i, old: Box::new(o.clone()), new: Box::new(n.clone()) }
-            });
-        }
-    }
-    match edits.len() {
-        0 => None,
-        1 => edits.pop(),
-        _ => Some(EditCommand::Named { label: label.to_string(), edit: Box::new(EditCommand::Batch(edits)) }),
-    }
+    EditCommand::tracks_changed(label, old, new)
 }
 
 /// How many steps the history has taken: pushes counted for autosave,
@@ -222,16 +173,6 @@ fn at_index(edit: EditCommand, i: usize) -> EditCommand {
     }
 }
 
-/// A track without its clips and transitions: the rest of what it is.
-fn bare(track: &Track) -> Track {
-    Track { clips: Vec::new(), transitions: Vec::new(), ..track.clone() }
-}
-
-/// Whether two values are the same, field for field.
-fn same(a: impl serde::Serialize, b: impl serde::Serialize) -> bool {
-    serde_json::to_value(a).ok() == serde_json::to_value(b).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,20 +189,6 @@ mod tests {
         state.active_history_mut().undo_label().map(str::to_string)
     }
 
-    /// The eye on a track header is a step of its own: Ctrl+Z took back
-    /// whatever came before it, and left the track hidden.
-    #[test]
-    fn hiding_a_track_is_one_named_undo_step() {
-        let mut state = state_with_a_clip();
-        let v1 = state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        for (visible, name) in [(false, "Hide Track"), (true, "Show Track")] {
-            let before = before(&state, &AppCommand::SetTrackVisibility { track_index: v1, visible }).expect("recorded here");
-            state.document.sequences[0].tracks[v1].visible = visible;
-            record(&mut state, before);
-            assert_eq!(top_label(&mut state).as_deref(), Some(name));
-        }
-    }
-
     #[test]
     fn an_edit_made_in_place_is_one_named_undo_step() {
         let mut state = state_with_a_clip();
@@ -273,38 +200,6 @@ mod tests {
         assert_eq!(top_label(&mut state).as_deref(), Some("Disable Clip"));
         let count = state.active_history_mut().undo_count();
         assert_eq!(count, 1);
-    }
-
-    /// Unlink is one step that undo takes back whole: the pair linked
-    /// again and the picture's sound no longer set apart; a redo unlinks
-    /// it and sets it apart again, so the sound plays once either way.
-    #[test]
-    fn an_unlink_undoes_and_redoes_with_its_sound_apart() {
-        let mut state = AppState::default();
-        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
-        let media = klipp_core::MediaId::new();
-        let (v1, a1) = (
-            state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap(),
-            state.document.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap(),
-        );
-        let (mut picture, mut sound) = (klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0)), klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0)));
-        picture.linked_clip_id = Some(sound.id);
-        sound.linked_clip_id = Some(picture.id);
-        let p = picture.id;
-        state.document.sequences[0].tracks[v1].clips.push(picture);
-        state.document.sequences[0].tracks[a1].clips.push(sound);
-        let cmd = AppCommand::UnlinkClip { clip_id: p };
-        let before = before(&state, &cmd).expect("recorded here");
-        state.document.sequences[0].unlink(p);
-        record(&mut state, before);
-        assert_eq!(top_label(&mut state).as_deref(), Some("Unlink"));
-        let picture = |state: &AppState| state.document.sequences[0].all_clips().find(|c| c.id == p).cloned().unwrap();
-        assert!(picture(&state).sound_apart && picture(&state).linked_clip_id.is_none());
-        let entry = state.take_undo().expect("the unlink");
-        klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
-        assert!(!picture(&state).sound_apart && picture(&state).linked_clip_id.is_some(), "undone: linked, its sound not apart");
-        klipp_document::apply::DocumentView { sequences: &mut state.document.sequences, active: 0, media_pool: &mut state.document.media_pool, fps: &mut state.fps }.apply_forward(&entry.command);
-        assert!(picture(&state).sound_apart && picture(&state).linked_clip_id.is_none(), "redone: unlinked, its sound apart");
     }
 
     #[test]
@@ -517,15 +412,7 @@ mod tests {
         for cmd in [
             AppCommand::LiftEdit,
             AppCommand::ExtractEdit,
-            AppCommand::UnlinkClip { clip_id: id },
-            AppCommand::AddVideoTrack,
-            AppCommand::AddAudioTrack,
-            AppCommand::SetTrackSyncLock { track_id: klipp_core::TrackId::new(), on: true },
-            AppCommand::SetTrackLanguage { track_id: klipp_core::TrackId::new(), language: Some("de".into()) },
-            AppCommand::SetTrackRole { track_id: klipp_core::TrackId::new(), role: klipp_core::roles::RoleRef::parse("music") },
-            AppCommand::SetTrackTargeted { track_id: klipp_core::TrackId::new(), on: false },
-            AppCommand::SetTrackSourcePatch { track_id: klipp_core::TrackId::new(), on: true },
-            AppCommand::TargetTrackFromBadge { track_id: klipp_core::TrackId::new() },
+            AppCommand::SetClipEnabled { clip_id: id, enabled: false },
         ] {
             assert!(label(&cmd).is_some(), "{cmd:?}");
         }
