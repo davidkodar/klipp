@@ -825,3 +825,42 @@ fn a_slide_and_a_slip_are_one_step_that_redoes_as_made() {
         assert_eq!(serde_json::to_value(state.sequence()).unwrap(), after, "shift {shift}: redo");
     }
 }
+
+/// A slip of a J cut's picture (the Trim tool on its body) moves its
+/// sound by as much, through the sound's own range: the second the sound
+/// runs ahead stays. The drag copied the picture's range onto the sound,
+/// and putting that back for the step left the sound a second off. Undo
+/// gives both back; a slide moves the pair together and undoes the same.
+#[test]
+fn a_slip_and_a_slide_of_a_j_cut_keep_its_sound_ahead_and_undo_whole() {
+    for slide in [false, true] {
+        let mut state = AppState { snap_threshold_px: 10.0, playhead: t(30.0), active_tool: klipp_core::Tool::Trim, ..Default::default() };
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/j-cut.mov".into(), None);
+        item.duration = t(30.0);
+        let media = state.document.media_pool.add(item);
+        let seq = &mut state.document.sequences[0];
+        let v1 = seq.tracks.iter().position(|t| t.name == "Video 1").unwrap();
+        let a1 = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let mut picture = Clip::media(media, t(4.0), t(8.0), t(5.0), t(9.0));
+        let mut sound = Clip::media(media, t(3.0), t(8.0), t(4.0), t(9.0));
+        (picture.linked_clip_id, sound.linked_clip_id) = (Some(sound.id), Some(picture.id));
+        let (pid, sid) = (picture.id, sound.id);
+        seq.tracks[v1].clips = vec![Clip::gap(t(0.0), t(4.0)), picture];
+        seq.tracks[a1].clips = vec![sound];
+        let mut tl = Timeline::new(state);
+        let before = serde_json::to_value(&tl.state.sequence().tracks).unwrap();
+        let grab = tl.at(v1, 6.0);
+        let m = if slide { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+        tl.drag(grab, &[grab + egui::vec2(ZOOM, 0.0)], m);
+        assert!(!tl.state.is_live(), "slide {slide}: no live edit left");
+        let c = |tl: &Timeline, id| tl.state.sequence().all_clips().find(|c| c.id == id).unwrap().clone();
+        let (p, s) = (c(&tl, pid), c(&tl, sid));
+        assert_ne!(p.source_in, t(5.0), "slide {slide}: the drag changed the picture");
+        assert_eq!(p.source_in - s.source_in, t(1.0), "slide {slide}: the sound a second ahead in its file");
+        assert_eq!(p.timeline_in - s.timeline_in, t(1.0), "slide {slide}: and on the timeline");
+        let undo = tl.state.take_undo().expect("one step");
+        let _ = tl.state.document_view().apply_inverse(&undo.command);
+        assert!(serde_json::to_value(&tl.state.sequence().tracks).unwrap() == before, "slide {slide}: undo gives the tracks back");
+        assert!(tl.state.take_undo().is_none(), "slide {slide}: one step");
+    }
+}

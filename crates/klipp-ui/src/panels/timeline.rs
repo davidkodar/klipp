@@ -1114,110 +1114,21 @@ impl TrimState {
     }
 }
 
-/// Roll trim: adjusts the boundary between two adjacent clips simultaneously.
-/// Clip A's out point and Clip B's in point move together, keeping total duration constant.
+/// A roll, slip or slide under way: what it means as an edit is the
+/// gesture's (U2); where the pointer began is the panel's.
 struct RollTrimState {
-    clip_a_id: ClipId,
-    clip_b_id: ClipId,
-    track_idx: usize,
+    gesture: crate::timeline::cut_gestures::RollGesture,
     start_x: f32,
-    /// Original boundary timecode (clip A's timeline_out == clip B's timeline_in)
-    original_boundary: Timecode,
-    /// Original source out of clip A
-    original_a_source_out: Timecode,
-    /// Original source in of clip B
-    original_b_source_in: Timecode,
-    /// Original timeline_out of clip A
-    original_a_timeline_out: Timecode,
-    /// Original timeline_in of clip B
-    original_b_timeline_in: Timecode,
-    /// The snap the roll holds from frame to frame (#3056).
-    hold: Option<crate::timeline::snap::SnapHold>,
-    /// The linked partners roll too: Linked on and Alt not held at its
-    /// start, as an edge trim takes it.
-    linked: bool,
-    /// The partners that roll with it, as they were at its start, so the
-    /// drag shows them moving and its release puts them back for the
-    /// command to edit.
-    partners: Vec<RollPartner>,
 }
 
-/// A linked partner of one side of a roll: its id, whether it follows
-/// clip A (its out moves) or clip B (its in moves), and its source and
-/// timeline time on that side at the start.
-struct RollPartner {
-    id: ClipId,
-    of_a: bool,
-    source: Timecode,
-    timeline: Timecode,
-}
-
-impl RollPartner {
-    /// The partners of a roll between `a` and `b`, as `AppState::roll_trim`
-    /// moves them.
-    fn of(seq: &klipp_timeline::Sequence, a: ClipId, b: ClipId) -> Vec<RollPartner> {
-        let partner = |id: ClipId| seq.all_clips().find(|c| c.id == id).and_then(|c| c.linked_clip_id);
-        let (linked_a, linked_b) = (partner(a), partner(b));
-        seq.all_clips().filter_map(|c| {
-            if Some(c.id) == linked_a && c.id != b {
-                Some(RollPartner { id: c.id, of_a: true, source: c.source_out, timeline: c.timeline_out })
-            } else if Some(c.id) == linked_b && c.id != a {
-                Some(RollPartner { id: c.id, of_a: false, source: c.source_in, timeline: c.timeline_in })
-            } else {
-                None
-            }
-        }).collect()
-    }
-
-    /// Each partner moved from its start by `d` (source, timeline): clip
-    /// A's moves for its side, clip B's for the other.
-    fn set(seq: &mut klipp_timeline::Sequence, partners: &[RollPartner], d_a: (Timecode, Timecode), d_b: (Timecode, Timecode)) {
-        for p in partners {
-            let Some(c) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(p.id)) else { continue };
-            if p.of_a {
-                c.source_out = p.source + d_a.0;
-                c.timeline_out = p.timeline + d_a.1;
-            } else {
-                c.source_in = p.source + d_b.0;
-                c.timeline_in = p.timeline + d_b.1;
-            }
-        }
-    }
-}
-
-#[allow(dead_code)]
 struct SlipState {
-    clip_id: ClipId,
-    track_idx: usize,
+    gesture: crate::timeline::cut_gestures::SlipGesture,
     start_x: f32,
-    original_source_in: Timecode,
-    original_source_out: Timecode,
-    /// Media duration for clamping (if known)
-    media_duration: Option<Timecode>,
-    /// Linked partner clip (for linked video+audio)
-    linked_clip_id: Option<ClipId>,
-    linked_original_source_in: Option<Timecode>,
-    linked_original_source_out: Option<Timecode>,
 }
 
 struct SlideState {
-    clip_id: ClipId,
-    track_idx: usize,
+    gesture: crate::timeline::cut_gestures::SlideGesture,
     start_x: f32,
-    original_timeline_in: Timecode,
-    original_timeline_out: Timecode,
-    left_clip_id: Option<ClipId>,
-    original_left_out: Option<Timecode>,
-    original_left_source_out: Option<Timecode>,
-    right_clip_id: Option<ClipId>,
-    original_right_in: Option<Timecode>,
-    original_right_source_in: Option<Timecode>,
-    /// Linked partner clip (for linked video+audio)
-    linked_clip_id: Option<ClipId>,
-    linked_original_in: Option<Timecode>,
-    linked_original_out: Option<Timecode>,
-    /// The snap the slide holds from frame to frame (#3056).
-    hold: Option<crate::timeline::snap::SnapHold>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -8227,22 +8138,10 @@ impl TimelinePanel {
                     let roll_hit: Option<RollTrimState> = {
                         let clips = &state.sequence().tracks[track_idx].clips;
                         let on_track = pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height;
-                        on_track.then(|| Self::roll_junction(clips, state.active_tool, pos.x, content_rect, track_rect, zoom, scroll, track_height)).flatten().map(|i| {
+                        on_track.then(|| Self::roll_junction(clips, state.active_tool, pos.x, content_rect, track_rect, zoom, scroll, track_height)).flatten().and_then(|i| {
                             tracing::debug!("drag_started ROLL TRIM: clip_a={:?}, clip_b={:?}", clips[i].id, clips[i + 1].id);
-                            RollTrimState {
-                                clip_a_id: clips[i].id,
-                                clip_b_id: clips[i + 1].id,
-                                track_idx,
-                                start_x: pos.x,
-                                original_boundary: clips[i].timeline_out,
-                                original_a_source_out: clips[i].source_out,
-                                original_b_source_in: clips[i + 1].source_in,
-                                original_a_timeline_out: clips[i].timeline_out,
-                                original_b_timeline_in: clips[i + 1].timeline_in,
-                                hold: None,
-                                linked,
-                                partners: if linked { RollPartner::of(state.sequence(), clips[i].id, clips[i + 1].id) } else { Vec::new() },
-                            }
+                            let gesture = crate::timeline::cut_gestures::RollGesture::begin(state.sequence(), &state.document.media_pool, track_idx, clips[i].id, clips[i + 1].id, linked)?;
+                            Some(RollTrimState { gesture, start_x: pos.x })
                         })
                     };
                     if let Some(rt) = roll_hit {
@@ -8287,38 +8186,14 @@ impl TimelinePanel {
                 }
                 // Second: check if pointer is inside a clip body (drag/move or slip/slide)
                 else {
-                    // Phase 1: collect everything the body branches need from the
-                    // hit clip and (if any) its left/right neighbours into one
-                    // owned struct. After this scope `state` is fully free.
-                    #[allow(clippy::type_complexity)]
-                    let body_hit: Option<(
-                        klipp_core::ClipId,
-                        klipp_core::RationalTime, // timeline_in
-                        klipp_core::RationalTime, // timeline_out
-                        klipp_core::RationalTime, // source_in
-                        klipp_core::RationalTime, // source_out
-                        Option<klipp_core::ClipId>, // linked_clip_id
-                        Option<klipp_core::MediaId>, // media_id
-                        Option<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime)>, // left: id, timeline_out, source_out
-                        Option<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime)>, // right: id, timeline_in, source_in
-                    )> = {
+                    // The hit clip's id, start and partner, so the clips borrow
+                    // ends before the state is read again.
+                    let body_hit: Option<(klipp_core::ClipId, klipp_core::RationalTime, Option<klipp_core::ClipId>)> = {
                         let clips = &state.sequence().tracks[track_idx].clips;
-                        self.hit_test_clip_body(clips, content_rect, track_rect, zoom, scroll, track_height, pos)
-                            .map(|(_, hc)| {
-                                let clip_idx = clips.iter().position(|c| c.id == hc.id);
-                                let left = clip_idx.and_then(|i| if i > 0 {
-                                    let lc = &clips[i - 1];
-                                    if !lc.kind.is_gap() { Some((lc.id, lc.timeline_out, lc.source_out)) } else { None }
-                                } else { None });
-                                let right = clip_idx.and_then(|i| if i + 1 < clips.len() {
-                                    let rc = &clips[i + 1];
-                                    if !rc.kind.is_gap() { Some((rc.id, rc.timeline_in, rc.source_in)) } else { None }
-                                } else { None });
-                                (hc.id, hc.timeline_in, hc.timeline_out, hc.source_in, hc.source_out, hc.linked_clip_id, hc.media_id(), left, right)
-                            })
+                        self.hit_test_clip_body(clips, content_rect, track_rect, zoom, scroll, track_height, pos).map(|(_, hc)| (hc.id, hc.timeline_in, hc.linked_clip_id))
                     };
 
-                    if let Some((hit_id, hit_tl_in, hit_tl_out, hit_src_in, hit_src_out, linked_id, media_id, left, right)) = body_hit {
+                    if let Some((hit_id, hit_tl_in, linked_id)) = body_hit {
                         // The Linked switch off: the clip moves alone (#916).
                         let linked_id = linked_id.filter(|_| state.linked_selection);
                         let alt_held = ui.input(|i| i.modifiers.alt);
@@ -8331,57 +8206,10 @@ impl TimelinePanel {
 
                             if matches!(gesture, BodyDragGesture::Slide) {
                                 tracing::debug!("drag_started SLIDE: clip={:?}", hit_id);
-                                let (linked_orig_in, linked_orig_out) = linked_id
-                                    .and_then(|lid| {
-                                        state.sequence().tracks.iter()
-                                            .flat_map(|t| t.clips.iter())
-                                            .find(|c| c.id == lid)
-                                            .map(|c| (c.timeline_in, c.timeline_out))
-                                    })
-                                    .map(|(a, b)| (Some(a), Some(b)))
-                                    .unwrap_or((None, None));
-                                self.sliding_clip = Some(SlideState {
-                                    clip_id: hit_id,
-                                    track_idx,
-                                    start_x: pos.x,
-                                    original_timeline_in: hit_tl_in,
-                                    original_timeline_out: hit_tl_out,
-                                    left_clip_id: left.map(|(id, _, _)| id),
-                                    original_left_out: left.map(|(_, tl_out, _)| tl_out),
-                                    original_left_source_out: left.map(|(_, _, src_out)| src_out),
-                                    right_clip_id: right.map(|(id, _, _)| id),
-                                    original_right_in: right.map(|(_, tl_in, _)| tl_in),
-                                    original_right_source_in: right.map(|(_, _, src_in)| src_in),
-                                    linked_clip_id: linked_id,
-                                    linked_original_in: linked_orig_in,
-                                    linked_original_out: linked_orig_out,
-                                    hold: None,
-                                });
+                                self.sliding_clip = crate::timeline::cut_gestures::SlideGesture::begin(state.sequence(), track_idx, hit_id, linked_id.is_some()).map(|gesture| SlideState { gesture, start_x: pos.x });
                             } else if matches!(gesture, BodyDragGesture::Slip) {
                                 tracing::debug!("drag_started SLIP: clip={:?}", hit_id);
-                                let media_dur = media_id.and_then(|mid| {
-                                    state.document.media_pool.get(&mid).map(|m| m.duration)
-                                });
-                                let (linked_src_in, linked_src_out) = linked_id
-                                    .and_then(|lid| {
-                                        state.sequence().tracks.iter()
-                                            .flat_map(|t| t.clips.iter())
-                                            .find(|c| c.id == lid)
-                                            .map(|c| (c.source_in, c.source_out))
-                                    })
-                                    .map(|(a, b)| (Some(a), Some(b)))
-                                    .unwrap_or((None, None));
-                                self.slipping_clip = Some(SlipState {
-                                    clip_id: hit_id,
-                                    track_idx,
-                                    start_x: pos.x,
-                                    original_source_in: hit_src_in,
-                                    original_source_out: hit_src_out,
-                                    media_duration: media_dur,
-                                    linked_clip_id: linked_id,
-                                    linked_original_source_in: linked_src_in,
-                                    linked_original_source_out: linked_src_out,
-                                });
+                                self.slipping_clip = crate::timeline::cut_gestures::SlipGesture::begin(state.sequence(), &state.document.media_pool, track_idx, hit_id, linked_id.is_some()).map(|gesture| SlipState { gesture, start_x: pos.x });
                             } else if matches!(gesture, BodyDragGesture::Move) {
                                 tracing::debug!("drag_started MOVE: clip={:?}", hit_id);
                                 let linked_orig = linked_id.and_then(|lid| {
@@ -10684,211 +10512,80 @@ impl TimelinePanel {
         pointer_down: bool,
         pointer_released: bool,
     ) {
-        // ── Slide drag processing ────────────────────────────────────────
-        let mut slide_hold = None;
-        if let Some(ref slide) = self.sliding_clip {
-            if slide.track_idx == track_idx {
-                if let Some(pos) = pointer_pos {
-                    if pointer_down {
-                        let dx = pos.x - slide.start_x;
-                        let dt_secs = dx as f64 / zoom as f64;
-                        let mut dt = RationalTime::from_secs_f64(dt_secs, slide.original_timeline_in.rate);
+        if self.sliding_clip.as_ref().is_none_or(|d| d.gesture.track_idx != track_idx) {
+            return;
+        }
+        if let (Some(pos), true) = (pointer_pos, pointer_down) {
+            // The slid clip's edges snap as every drag's do (#3056); it and
+            // its neighbours move, so none of them is a target. Shift
+            // starts a slide, so here Ctrl is what lets it go free.
+            let snapper = crate::timeline::snap::Snapper::of(state, zoom, ui.input(|i| i.modifiers.command));
+            let Some(slide) = self.sliding_clip.as_mut() else { return };
+            let dt_secs = f64::from(pos.x - slide.start_x) / f64::from(zoom);
+            let frame = slide.gesture.drag_to(dt_secs, |edges: &[RationalTime], movers: &[ClipId], hold: &mut _| snapper.snap(edges, movers, hold));
+            if let Some(snap) = frame.snapped {
+                self.frame_cache.snap_line_x = Some(snapper.line(&snap, content_rect.left()));
+            }
+            // Shown in place of the last frame's slide; the engine is told
+            // at release, as before.
+            if let Some(edit) = frame.live {
+                let _ = state.show_live(edit);
+            }
 
-                        // The slid clip's edges snap as every drag's do
-                        // (#3056); it and its neighbours move, so none of
-                        // them is a target. Shift starts a slide, so here
-                        // Ctrl is what lets it go free.
-                        let snapper = crate::timeline::snap::Snapper::of(state, zoom, ui.input(|i| i.modifiers.command));
-                        let mut hold = slide.hold;
-                        let edges = [slide.original_timeline_in + dt, slide.original_timeline_out + dt];
-                        let movers: Vec<ClipId> = [Some(slide.clip_id), slide.left_clip_id, slide.right_clip_id].into_iter().flatten().collect();
-                        let snap = snapper.snap(&edges, &movers, &mut hold);
-                        if let Some(snap) = snap {
-                            dt += snap.at - edges[snap.edge];
-                        }
-                        slide_hold = Some(hold);
+            // Visual: cursor + tooltip
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            let sign = if dt_secs >= 0.0 { "+" } else { "" };
+            let badge_text = format!("SLIDE  {sign}{dt_secs:.2}s");
+            let badge_rect = egui::Rect::from_min_size(egui::pos2(pos.x + 14.0, pos.y - 22.0), egui::vec2(108.0, 16.0));
+            let tt = theme();
+            let (bp, mi) = (tt.bg_panel, tt.marker_info);
+            painter.rect_filled(badge_rect, 4.0, crate::colour32::rgba(bp.r(), bp.g(), bp.b(), 220));
+            painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, mi), egui::StrokeKind::Outside);
+            painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, &badge_text, egui::FontId::monospace(10.0), mi);
 
-                        // Look up neighbour constraints from current state in
-                        // a tightly-scoped block. The left/right clamps need
-                        // the neighbour's CURRENT timeline_in/out to compute
-                        // minimum durations.
-                        let left_constraint = if let (Some(left_id), Some(orig_left_out)) = (slide.left_clip_id, slide.original_left_out) {
-                            state.sequence().tracks.get(track_idx)
-                                .and_then(|t| t.find_clip(left_id))
-                                .map(|c| (c.timeline_in, orig_left_out))
-                        } else {
-                            None
-                        };
-                        let right_constraint = if let (Some(right_id), Some(orig_right_in)) = (slide.right_clip_id, slide.original_right_in) {
-                            state.sequence().tracks.get(track_idx)
-                                .and_then(|t| t.find_clip(right_id))
-                                .map(|c| (c.timeline_out, orig_right_in))
-                        } else {
-                            None
-                        };
-
-                        let (new_tl_in, new_tl_out) = slide_clamped_window(
-                            slide.original_timeline_in,
-                            slide.original_timeline_out,
-                            dt,
-                            left_constraint,
-                            right_constraint,
-                        );
-
-                        let actual_dt = new_tl_in - slide.original_timeline_in;
-                        // The line only where the slide reached the snap.
-                        if let Some(snap) = snap.filter(|_| actual_dt == dt) {
-                            self.frame_cache.snap_line_x = Some(snapper.line(&snap, content_rect.left()));
-                        }
-
-                        // Apply slide to the clip
-                        if let Some(track) = state.sequence_mut().tracks.get_mut(track_idx) {
-                            if let Some(clip) = track.find_clip_mut(slide.clip_id) {
-                                clip.timeline_in = new_tl_in;
-                                clip.timeline_out = new_tl_out;
-                            }
-                            // Adjust left neighbor's out point (and source_out)
-                            if let (Some(left_id), Some(orig_left_out), Some(orig_left_src_out)) =
-                                (slide.left_clip_id, slide.original_left_out, slide.original_left_source_out)
-                            {
-                                if let Some(lc) = track.find_clip_mut(left_id) {
-                                    lc.timeline_out = orig_left_out + actual_dt;
-                                    lc.source_out = orig_left_src_out + actual_dt;
-                                }
-                            }
-                            // Adjust right neighbor's in point (and source_in)
-                            if let (Some(right_id), Some(orig_right_in), Some(orig_right_src_in)) =
-                                (slide.right_clip_id, slide.original_right_in, slide.original_right_source_in)
-                            {
-                                if let Some(rc) = track.find_clip_mut(right_id) {
-                                    rc.timeline_in = orig_right_in + actual_dt;
-                                    rc.source_in = orig_right_src_in + actual_dt;
-                                }
-                            }
-                        }
-
-                        // Apply slide to linked partner
-                        if let (Some(lid), Some(linked_in), Some(linked_out)) =
-                            (slide.linked_clip_id, slide.linked_original_in, slide.linked_original_out)
-                        {
-                            for track in &mut state.sequence_mut().tracks {
-                                if let Some(lclip) = track.find_clip_mut(lid) {
-                                    lclip.timeline_in = linked_in + actual_dt;
-                                    lclip.timeline_out = linked_out + actual_dt;
-                                    break;
-                                }
-                            }
-                        }
-
-                        // Visual: cursor + tooltip
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                        let delta_secs = dt_secs;
-                        let sign = if delta_secs >= 0.0 { "+" } else { "" };
-                        let badge_text = format!("SLIDE  {sign}{:.2}s", delta_secs);
-                        let badge_pos = egui::pos2(pos.x + 14.0, pos.y - 22.0);
-                        let badge_rect = egui::Rect::from_min_size(badge_pos, egui::vec2(108.0, 16.0));
-                        let tt = theme();
-                        let bp = tt.bg_panel;
-                        let mi = tt.marker_info;
-                        painter.rect_filled(badge_rect, 4.0, crate::colour32::rgba(bp.r(), bp.g(), bp.b(), 220));
-                        painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, mi), egui::StrokeKind::Outside);
-                        painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER,
-                            &badge_text, egui::FontId::monospace(10.0), mi);
-
-                        // Highlight all three involved clips. The mutations
-                        // above moved their timeline positions, so we look
-                        // them up via state.sequence() here — the highlight
-                        // tracks the clip in real time on this frame instead
-                        // of lagging by one (the original code used a pre-
-                        // mutation snapshot and lagged by one frame, which
-                        // was an incidental side-effect of the &[Clip]
-                        // parameter, not a deliberate visual choice).
-                        let highlight_color = crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 50);
-                        let highlight_border = crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 140);
-                        let cids = [Some(slide.clip_id), slide.left_clip_id, slide.right_clip_id];
-                        let highlight_rects: Vec<egui::Rect> = state.sequence().tracks.get(track_idx)
-                            .map(|t| {
-                                cids.iter().filter_map(|c| *c)
-                                    .filter_map(|cid| t.find_clip(cid))
-                                    .map(|clip| Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        for cr in highlight_rects {
-                            painter.rect_filled(cr, 2.0, highlight_color);
-                            painter.rect_stroke(cr, 2.0, egui::Stroke::new(1.5_f32, highlight_border), egui::StrokeKind::Outside);
-                        }
-                    }
-                }
-
-                if pointer_released {
-                    // Finalize slide: push undo entry and emit sync command
-                    // Extract all values before borrowing state.history
-                    let slide_vals = {
-                        let track = state.sequence().tracks.get(track_idx);
-                        track.and_then(|t| {
-                            let clip = t.find_clip(slide.clip_id)?;
-                            let nl_out = slide.left_clip_id.and_then(|lid| t.find_clip(lid).map(|c| c.timeline_out));
-                            let nr_in = slide.right_clip_id.and_then(|rid| t.find_clip(rid).map(|c| c.timeline_in));
-                            Some((clip.timeline_in, clip.timeline_out, nl_out, nr_in))
-                        })
-                    };
-                    if let Some((new_tl_in, new_tl_out, new_left_out, new_right_in)) = slide_vals {
-                        if new_tl_in != slide.original_timeline_in {
-                            let cid = slide.clip_id;
-                            let old_tl_in = slide.original_timeline_in;
-                            let old_tl_out = slide.original_timeline_out;
-                            let l_id = slide.left_clip_id;
-                            let old_l_out = slide.original_left_out;
-                            let r_id = slide.right_clip_id;
-                            let old_r_in = slide.original_right_in;
-                            let slid = crate::history::EditCommand::LegacySlideClip {
-                                clip_id: cid,
-                                old_timeline_in: old_tl_in,
-                                old_timeline_out: old_tl_out,
-                                new_timeline_in: new_tl_in,
-                                new_timeline_out: new_tl_out,
-                                left_clip_id: l_id,
-                                old_left_out: old_l_out,
-                                new_left_out,
-                                right_clip_id: r_id,
-                                old_right_in: old_r_in,
-                                new_right_in,
-                            };
-                            // The drag moved the clips live: put them back,
-                            // then make the step from where they were.
-                            let _ = state.document_view().apply_inverse(&slid);
-                            let _ = state.commit_worked_out(|s| {
-                                let _ = s.document_view().apply_forward(&slid);
-                                // The right neighbour's picture moved against its
-                                // start: its angle cuts stay on what they cut.
-                                let cuts = match (r_id, old_r_in, new_right_in) {
-                                    (Some(rid), Some(old), Some(new)) => klipp_document::ops::keep_angle_cuts(s.sequence_mut(), rid, (new - old).to_secs_f64()),
-                                    _ => None,
-                                };
-                                Some(match cuts {
-                                    Some(cuts) => crate::history::EditCommand::Batch(vec![slid, cuts]),
-                                    None => slid,
-                                })
-                            });
-                            cmds.push(AppCommand::SlideClip {
-                                clip_id: cid,
-                                new_timeline_in: new_tl_in,
-                                new_timeline_out: new_tl_out,
-                                left_clip_id: l_id,
-                                new_left_out,
-                                right_clip_id: r_id,
-                                new_right_in,
-                            });
-                        }
-                    }
-                    self.sliding_clip = None;
-                    self.press_origin = None;
-                }
+            // The three clips highlighted where the slide has them now.
+            let highlight_color = crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 50);
+            let highlight_border = crate::colour32::rgba(mi.r(), mi.g(), mi.b(), 140);
+            let highlight_rects: Vec<egui::Rect> = state.sequence().tracks.get(track_idx)
+                .map(|t| slide.gesture.movers().into_iter().filter_map(|cid| t.find_clip(cid)).map(|clip| Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height)).collect())
+                .unwrap_or_default();
+            for cr in highlight_rects {
+                painter.rect_filled(cr, 2.0, highlight_color);
+                painter.rect_stroke(cr, 2.0, egui::Stroke::new(1.5_f32, highlight_border), egui::StrokeKind::Outside);
             }
         }
-        if let (Some(slide), Some(hold)) = (self.sliding_clip.as_mut(), slide_hold) {
-            slide.hold = hold;
+
+        if pointer_released {
+            if let Some(slide) = self.sliding_clip.take() {
+                // The slide shown taken back, then made as one step: the
+                // edit shown, and the right neighbour's angle cuts kept on
+                // the picture they cut, its picture moved against its start.
+                let _ = state.cancel_live();
+                if let Some(slid) = slide.gesture.release() {
+                    let right = slide.gesture.right_moved();
+                    let _ = state.commit_worked_out(|s| {
+                        let _ = s.document_view().apply_forward(&slid);
+                        let cuts = right.and_then(|(rid, secs)| klipp_document::ops::keep_angle_cuts(s.sequence_mut(), rid, secs));
+                        Some(match cuts {
+                            Some(cuts) => crate::history::EditCommand::Batch(vec![slid, cuts]),
+                            None => slid,
+                        })
+                    });
+                    let g = &slide.gesture;
+                    let now = |id: ClipId| state.sequence().all_clips().find(|c| c.id == id).map(|c| (c.timeline_in, c.timeline_out));
+                    let (new_timeline_in, new_timeline_out) = now(g.clip_id).unwrap_or((g.was().timeline_in, g.was().timeline_out));
+                    cmds.push(AppCommand::SlideClip {
+                        clip_id: g.clip_id,
+                        new_timeline_in,
+                        new_timeline_out,
+                        left_clip_id: g.left_id(),
+                        new_left_out: g.left_id().and_then(now).map(|t| t.1),
+                        right_clip_id: g.right_id(),
+                        new_right_in: g.right_id().and_then(now).map(|t| t.0),
+                    });
+                }
+            }
+            self.press_origin = None;
         }
     }
 
@@ -10910,113 +10607,59 @@ impl TimelinePanel {
         pointer_down: bool,
         pointer_released: bool,
     ) {
-        // ── Slip drag processing ─────────────────────────────────────────
-        if let Some(ref slip) = self.slipping_clip {
-            if slip.track_idx == track_idx {
-                if let Some(pos) = pointer_pos {
-                    if pointer_down {
-                        let dx = pos.x - slip.start_x;
-                        let dt_secs = dx as f64 / zoom as f64;
-                        let dt = RationalTime::from_secs_f64(dt_secs, slip.original_source_in.rate);
+        if self.slipping_clip.as_ref().is_none_or(|d| d.gesture.track_idx != track_idx) {
+            return;
+        }
+        if let (Some(pos), true) = (pointer_pos, pointer_down) {
+            let Some(slip) = self.slipping_clip.as_mut() else { return };
+            let dt_secs = f64::from(pos.x - slip.start_x) / f64::from(zoom);
+            // Shown in place of the last frame's slip; the engine is told
+            // at release, as before.
+            if let Some(edit) = slip.gesture.drag_to(dt_secs) {
+                let _ = state.show_live(edit);
+            }
 
-                        let (new_src_in, new_src_out) = slip_clamped_source_range(
-                            slip.original_source_in,
-                            slip.original_source_out,
-                            dt,
-                            slip.media_duration,
-                        );
+            // Visual: cursor + tooltip
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            let sign = if dt_secs >= 0.0 { "+" } else { "" };
+            let badge_text = format!("SLIP  {sign}{dt_secs:.2}s");
+            let badge_rect = egui::Rect::from_min_size(egui::pos2(pos.x + 14.0, pos.y - 22.0), egui::vec2(100.0, 16.0));
+            let tt = theme();
+            let (bp, acc) = (tt.bg_panel, tt.accent);
+            painter.rect_filled(badge_rect, 4.0, crate::colour32::rgba(bp.r(), bp.g(), bp.b(), 220));
+            painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, acc), egui::StrokeKind::Outside);
+            painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, &badge_text, egui::FontId::monospace(10.0), acc);
 
-                        // Apply slip to clip
-                        if let Some(track) = state.sequence_mut().tracks.get_mut(track_idx) {
-                            if let Some(clip) = track.find_clip_mut(slip.clip_id) {
-                                clip.source_in = new_src_in;
-                                clip.source_out = new_src_out;
-                            }
-                        }
+            // A slip leaves the clip where it is: its tint over its place.
+            let overlay_rect = state.sequence().tracks.get(track_idx)
+                .and_then(|t| t.find_clip(slip.gesture.clip_id))
+                .map(|clip| Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height));
+            if let Some(cr) = overlay_rect {
+                painter.rect_filled(cr, 2.0, crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 40));
+            }
+        }
 
-                        // Apply to linked partner
-                        if let Some(lid) = slip.linked_clip_id {
-                            for track in &mut state.sequence_mut().tracks {
-                                if let Some(lclip) = track.find_clip_mut(lid) {
-                                    lclip.source_in = new_src_in;
-                                    lclip.source_out = new_src_out;
-                                    break;
-                                }
-                            }
-                        }
-
-                        // Visual: cursor + tooltip
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                        let delta_secs = dt_secs;
-                        let sign = if delta_secs >= 0.0 { "+" } else { "" };
-                        let badge_text = format!("SLIP  {sign}{:.2}s", delta_secs);
-                        let badge_pos = egui::pos2(pos.x + 14.0, pos.y - 22.0);
-                        let badge_rect = egui::Rect::from_min_size(badge_pos, egui::vec2(100.0, 16.0));
-                        let tt = theme();
-                        let bp = tt.bg_panel;
-                        let acc = tt.accent;
-                        painter.rect_filled(badge_rect, 4.0, crate::colour32::rgba(bp.r(), bp.g(), bp.b(), 220));
-                        painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, acc), egui::StrokeKind::Outside);
-                        painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER,
-                            &badge_text, egui::FontId::monospace(10.0), acc);
-
-                        // Draw semi-transparent directional arrow overlay on
-                        // the clip. Slip changes source_in/out only, so the
-                        // clip's screen rect (driven by timeline_in + duration)
-                        // is unchanged whether we look it up before or after
-                        // the mutation above.
-                        let overlay_rect = state.sequence().tracks.get(track_idx)
-                            .and_then(|t| t.find_clip(slip.clip_id))
-                            .map(|clip| Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height));
-                        if let Some(cr) = overlay_rect {
-                            let overlay_color = crate::colour32::rgba(acc.r(), acc.g(), acc.b(), 40);
-                            painter.rect_filled(cr, 2.0, overlay_color);
-                        }
-                    }
-                }
-
-                if pointer_released {
-                    // Finalize slip: push undo entry and emit sync command
-                    // Extract values before borrowing state.history
-                    let new_vals = state.sequence().tracks.get(track_idx)
-                        .and_then(|t| t.find_clip(slip.clip_id))
-                        .map(|c| (c.source_in, c.source_out));
-                    if let Some((new_src_in, new_src_out)) = new_vals {
-                        if new_src_in != slip.original_source_in || new_src_out != slip.original_source_out {
-                            let cid = slip.clip_id;
-                            let old_si = slip.original_source_in;
-                            let old_so = slip.original_source_out;
-                            let slipped = crate::history::EditCommand::LegacySlipClip {
-                                clip_id: cid,
-                                old_source_in: old_si,
-                                old_source_out: old_so,
-                                new_source_in: new_src_in,
-                                new_source_out: new_src_out,
-                            };
-                            // The drag slipped the clip live: put it back,
-                            // then make the step from where it was.
-                            let _ = state.document_view().apply_inverse(&slipped);
-                            let _ = state.commit_worked_out(|s| {
-                                let _ = s.document_view().apply_forward(&slipped);
-                                // The angle cuts follow the picture.
-                                let moved = s.sequence().find_clip(cid).map(|(ti, ci)| s.sequence().tracks[ti].clips[ci].picture_moved_by_slip((new_src_in - old_si).to_secs_f64()));
-                                let cuts = moved.and_then(|m| klipp_document::ops::keep_angle_cuts(s.sequence_mut(), cid, m));
-                                Some(match cuts {
-                                    Some(cuts) => crate::history::EditCommand::Batch(vec![slipped, cuts]),
-                                    None => slipped,
-                                })
-                            });
-                            cmds.push(AppCommand::SlipClip {
-                                clip_id: cid,
-                                new_source_in: new_src_in,
-                                new_source_out: new_src_out,
-                            });
-                        }
-                    }
-                    self.slipping_clip = None;
-                    self.press_origin = None;
+        if pointer_released {
+            if let Some(slip) = self.slipping_clip.take() {
+                // The slip shown taken back, then made as one step: the edit
+                // shown, and the angle cuts following the picture.
+                let _ = state.cancel_live();
+                if let (Some(slipped), Some(by)) = (slip.gesture.release(), slip.gesture.by()) {
+                    let cid = slip.gesture.clip_id;
+                    let _ = state.commit_worked_out(|s| {
+                        let _ = s.document_view().apply_forward(&slipped);
+                        let moved = s.sequence().find_clip(cid).map(|(ti, ci)| s.sequence().tracks[ti].clips[ci].picture_moved_by_slip(by.to_secs_f64()));
+                        let cuts = moved.and_then(|m| klipp_document::ops::keep_angle_cuts(s.sequence_mut(), cid, m));
+                        Some(match cuts {
+                            Some(cuts) => crate::history::EditCommand::Batch(vec![slipped, cuts]),
+                            None => slipped,
+                        })
+                    });
+                    let (new_source_in, new_source_out) = slip.gesture.window.unwrap_or((slip.gesture.was().source_in, slip.gesture.was().source_out));
+                    cmds.push(AppCommand::SlipClip { clip_id: cid, new_source_in, new_source_out });
                 }
             }
+            self.press_origin = None;
         }
     }
 
@@ -11038,163 +10681,35 @@ impl TimelinePanel {
         pointer_down: bool,
         pointer_released: bool,
     ) {
-        // Handle ongoing roll trim
-        let mut roll_hold = None;
-        if let Some(ref roll) = self.roll_trimming {
-            if roll.track_idx != track_idx {
-                // Skip — will be handled when we draw the correct track
-            } else if let Some(pos) = pointer_pos {
-                if pointer_down {
-                    let dx = pos.x - roll.start_x;
-                    let dt_secs = dx as f64 / zoom as f64;
-                    let dt_frames = RationalTime::from_secs_f64(dt_secs, fps.rate());
-
-                    // Get media durations for clamping
-                    let media_a_dur = state.sequence().tracks.get(roll.track_idx)
-                        .and_then(|t| t.find_clip(roll.clip_a_id))
-                        .and_then(|c| c.media_id())
-                        .and_then(|mid| state.document.media_pool.get(&mid))
-                        .map(|m| m.duration)
-                        .unwrap_or(RationalTime { value: i64::MAX, rate: fps.rate() });
-                    let _media_b_dur = state.sequence().tracks.get(roll.track_idx)
-                        .and_then(|t| t.find_clip(roll.clip_b_id))
-                        .and_then(|c| c.media_id())
-                        .and_then(|mid| state.document.media_pool.get(&mid))
-                        .map(|m| m.duration)
-                        .unwrap_or(RationalTime { value: i64::MAX, rate: fps.rate() });
-
-                    // Compute new boundary position
-                    let mut new_a_source_out = roll.original_a_source_out + dt_frames;
-                    let mut new_b_source_in = roll.original_b_source_in + dt_frames;
-
-                    // Get clip A's source_in (start of used range) for clamping
-                    let clip_a_source_in = state.sequence().tracks.get(roll.track_idx)
-                        .and_then(|t| t.find_clip(roll.clip_a_id))
-                        .map(|c| c.source_in)
-                        .unwrap_or(roll.original_a_source_out);
-                    // Get clip B's source_out for clamping
-                    let clip_b_source_out = state.sequence().tracks.get(roll.track_idx)
-                        .and_then(|t| t.find_clip(roll.clip_b_id))
-                        .map(|c| c.source_out)
-                        .unwrap_or(roll.original_b_source_in);
-
-                    // Clamp: clip A source_out must stay > clip A source_in (min 1 frame)
-                    let min_a_out = clip_a_source_in + RationalTime { value: 1, rate: clip_a_source_in.rate };
-                    // Clamp: clip A source_out must not exceed media duration
-                    if new_a_source_out < min_a_out { new_a_source_out = min_a_out; }
-                    if new_a_source_out > media_a_dur { new_a_source_out = media_a_dur; }
-                    // Clamp: clip B source_in must stay >= 0 and < clip B source_out
-                    let zero = RationalTime { value: 0, rate: new_b_source_in.rate };
-                    let max_b_in = clip_b_source_out - RationalTime { value: 1, rate: clip_b_source_out.rate };
-                    if new_b_source_in < zero { new_b_source_in = zero; }
-                    if new_b_source_in > max_b_in { new_b_source_in = max_b_in; }
-
-                    // Recompute consistent delta from the clamped values
-                    let actual_delta_a = new_a_source_out - roll.original_a_source_out;
-                    let actual_delta_b = new_b_source_in - roll.original_b_source_in;
-                    // Use the smaller magnitude delta to keep both clips valid
-                    let use_delta = if actual_delta_a.value.abs() <= actual_delta_b.value.abs() {
-                        actual_delta_a
-                    } else {
-                        actual_delta_b
-                    };
-
-                    let pre_snap_tl_out = roll.original_a_timeline_out + use_delta;
-
-                    // The edit point snaps as every drag does (#3056), to
-                    // a target both clips can reach; the two clips (they
-                    // move) are not targets.
-                    let mut snapped_boundary = pre_snap_tl_out;
-                    let snapper = crate::timeline::snap::Snapper::of(state, zoom, !snap_enabled);
-                    let mut hold = roll.hold;
-                    if let Some(snap) = snapper.snap(&[pre_snap_tl_out], &[roll.clip_a_id, roll.clip_b_id], &mut hold) {
-                        let d = snap.at - roll.original_a_timeline_out;
-                        let (a_out, b_in) = (roll.original_a_source_out + d, roll.original_b_source_in + d);
-                        if a_out >= min_a_out && a_out <= media_a_dur && b_in >= zero && b_in <= max_b_in {
-                            snapped_boundary = snap.at;
-                            self.frame_cache.snap_line_x = Some(snapper.line(&snap, content_rect.left()));
-                        }
-                    }
-                    roll_hold = Some(hold);
-
-                    let snap_delta = snapped_boundary - roll.original_a_timeline_out;
-                    let final_a_source_out = roll.original_a_source_out + snap_delta;
-                    let final_b_source_in = roll.original_b_source_in + snap_delta;
-                    let final_a_timeline_out = snapped_boundary;
-                    let final_b_timeline_in = snapped_boundary;
-
-                    // Apply to state
-                    if let Some(track) = state.sequence_mut().tracks.get_mut(roll.track_idx) {
-                        if let Some(c) = track.find_clip_mut(roll.clip_a_id) {
-                            c.source_out = final_a_source_out;
-                            c.timeline_out = final_a_timeline_out;
-                        }
-                        if let Some(c) = track.find_clip_mut(roll.clip_b_id) {
-                            c.source_in = final_b_source_in;
-                            c.timeline_in = final_b_timeline_in;
-                        }
-                    }
-                    // The linked partners move with it as they will at the
-                    // release, so the cut doesn't jump then.
-                    let d_a = (final_a_source_out - roll.original_a_source_out, final_a_timeline_out - roll.original_a_timeline_out);
-                    let d_b = (final_b_source_in - roll.original_b_source_in, final_b_timeline_in - roll.original_b_timeline_in);
-                    RollPartner::set(state.sequence_mut(), &roll.partners, d_a, d_b);
-
-                    // Rich overlay for roll trim
-                    let delta_frames = snapped_boundary - roll.original_boundary;
-                    let dur_a = final_a_timeline_out - state.sequence().tracks.get(roll.track_idx)
-                        .and_then(|t| t.find_clip(roll.clip_a_id))
-                        .map(|c| c.timeline_in)
-                        .unwrap_or(roll.original_a_timeline_out);
-                    Self::paint_trim_overlay(
-                        painter, content_rect, track_rect, zoom, scroll,
-                        snapped_boundary, delta_frames, dur_a,
-                        "Roll", state.timecode_display(),
-                    );
-                }
-            }
-
-            if pointer_released && roll.track_idx == track_idx {
-                // Read final values and emit command
-                let a_out = state.sequence().tracks.get(roll.track_idx)
-                    .and_then(|t| t.find_clip(roll.clip_a_id))
-                    .map(|c| (c.source_out, c.timeline_out));
-                let b_in = state.sequence().tracks.get(roll.track_idx)
-                    .and_then(|t| t.find_clip(roll.clip_b_id))
-                    .map(|c| (c.source_in, c.timeline_in));
-
-                if let (Some((a_src_out, a_tl_out)), Some((b_src_in, b_tl_in))) = (a_out, b_in) {
-                    // Restore to original before emitting command (command handler does the mutation)
-                    if let Some(track) = state.sequence_mut().tracks.get_mut(roll.track_idx) {
-                        if let Some(c) = track.find_clip_mut(roll.clip_a_id) {
-                            c.source_out = roll.original_a_source_out;
-                            c.timeline_out = roll.original_a_timeline_out;
-                        }
-                        if let Some(c) = track.find_clip_mut(roll.clip_b_id) {
-                            c.source_in = roll.original_b_source_in;
-                            c.timeline_in = roll.original_b_timeline_in;
-                        }
-                    }
-                    let zero = |t: Timecode| RationalTime { value: 0, rate: t.rate };
-                    let none_a = (zero(roll.original_a_source_out), zero(roll.original_a_timeline_out));
-                    let none_b = (zero(roll.original_b_source_in), zero(roll.original_b_timeline_in));
-                    RollPartner::set(state.sequence_mut(), &roll.partners, none_a, none_b);
-                    cmds.push(AppCommand::RollTrimClip {
-                        clip_a_id: roll.clip_a_id,
-                        clip_b_id: roll.clip_b_id,
-                        new_a_source_out: a_src_out,
-                        new_a_timeline_out: a_tl_out,
-                        new_b_source_in: b_src_in,
-                        new_b_timeline_in: b_tl_in,
-                        linked: roll.linked,
-                    });
-                }
-                self.roll_trimming = None;
-                self.press_origin = None;
-            }
+        if self.roll_trimming.as_ref().is_none_or(|r| r.gesture.track_idx != track_idx) {
+            return;
         }
-        if let (Some(roll), Some(hold)) = (self.roll_trimming.as_mut(), roll_hold) {
-            roll.hold = hold;
+        if let (Some(pos), true) = (pointer_pos, pointer_down) {
+            // The cut snaps as every drag does (#3056), to a target both
+            // clips can reach; the two clips (they move) are not targets.
+            let snapper = crate::timeline::snap::Snapper::of(state, zoom, !snap_enabled);
+            let Some(roll) = self.roll_trimming.as_mut() else { return };
+            let dt = RationalTime::from_secs_f64(f64::from(pos.x - roll.start_x) / f64::from(zoom), fps.rate());
+            let frame = roll.gesture.drag_to(dt, |edges: &[RationalTime], movers: &[ClipId], hold: &mut _| snapper.snap(edges, movers, hold));
+            if let Some(snap) = frame.snapped {
+                self.frame_cache.snap_line_x = Some(snapper.line(&snap, content_rect.left()));
+            }
+            // Shown in place of the last frame's roll, the linked partners
+            // with it, so the cut doesn't jump at release.
+            if let Some(edit) = frame.live {
+                let _ = state.show_live(edit);
+            }
+            Self::paint_trim_overlay(painter, content_rect, track_rect, zoom, scroll, frame.cut, frame.cut - roll.gesture.cut_was(), frame.a_length, "Roll", state.timecode_display());
+        }
+
+        if pointer_released {
+            if let Some(roll) = self.roll_trimming.take() {
+                // The roll shown taken back, and sent: the handler makes it,
+                // partners and angle cuts, as one step.
+                let _ = state.cancel_live();
+                cmds.extend(roll.gesture.release());
+            }
+            self.press_origin = None;
         }
     }
 
@@ -11633,7 +11148,7 @@ impl TimelinePanel {
         }
 
         // Active roll trim highlight — show both edges highlighted
-        if let Some(ref roll) = self.roll_trimming {
+        if let Some(roll) = self.roll_trimming.as_ref().map(|r| &r.gesture) {
             if roll.track_idx == track_idx {
                 let acc = tt.accent;
                 let roll_active_color = egui::Color32::from_rgba_premultiplied(acc.r(), acc.g(), acc.b(), 240);
