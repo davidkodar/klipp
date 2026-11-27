@@ -1566,9 +1566,9 @@ pub struct AppState {
     /// project-save path. Lives on AppState (not on CommandHistory)
     /// because autosave fires on total project mutations.
     pub history_ops_since_save: u64,
-    /// The last edit recorded by `tracks_undo` and when, so a dragged
-    /// value's changes fold into one undo step.
-    pub tracks_undo_gesture: Option<(&'static str, std::time::Instant)>,
+    /// The transition whose settings changed last, and when, so a
+    /// slider's changes fold into one undo step.
+    pub transition_settings_edit: Option<(klipp_core::TransitionId, std::time::Instant)>,
     /// The active sequence and its length before this frame's edits, so
     /// an edit that shortened it brings the marks in with it.
     pub sequence_length_seen: Option<(klipp_core::SequenceId, klipp_core::RationalTime)>,
@@ -4894,7 +4894,7 @@ impl Default for AppState {
             first_clip_format: None,
             grade_bypassed: Default::default(),
             history_ops_since_save: 0,
-            tracks_undo_gesture: None,
+            transition_settings_edit: None,
             sequence_length_seen: None,
             control_shared: std::sync::Arc::new(klipp_core::ControlShared::default()),
             control_others: Default::default(),
@@ -6460,7 +6460,7 @@ impl AppState {
         if scope == crate::history::Scope::Project {
             // A gesture of the sequence's under way ends here: typing,
             // a title colour being picked go on as new steps (#1986).
-            self.tracks_undo_gesture = None;
+            self.transition_settings_edit = None;
             self.title_colour_edit = None;
         }
         self.history_ops_since_save = self.history_ops_since_save.saturating_add(1);

@@ -228,20 +228,15 @@ impl KlippApp {
                     }
                     let group_id = klipp_core::GroupId::new();
                     // One undo step: it changed the clips with no step at all.
-                    let before = crate::tracks_undo::before_labelled(&self.state, "Create Multicam");
-                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                    for (angle_idx, (ti, cid)) in angle_clips.iter().enumerate() {
-                        if let Some(clip) = seq.tracks[*ti].clips.iter_mut().find(|c| c.id == *cid) {
-                            clip.multicam_group = Some(group_id);
-                            clip.multicam_angle = angle_idx as u8;
+                    self.commit_tracks("Create Multicam", |seq| {
+                        for (angle_idx, (ti, cid)) in angle_clips.iter().enumerate() {
+                            if let Some(clip) = seq.tracks[*ti].clips.iter_mut().find(|c| c.id == *cid) {
+                                clip.multicam_group = Some(group_id);
+                                clip.multicam_angle = angle_idx as u8;
+                            }
                         }
-                    }
-                    if let Some(before) = before {
-                        crate::tracks_undo::record(&mut self.state, before);
-                    }
+                    });
                     self.state.toast.show(format!("Created multicam group with {} angles", angle_clips.len()));
-                    self.state.dirty = true;
-                    self.sync_sequence_to_engine();
                     true
                 }
                 AppCommand::CreateSyncedMulticam { media_ids, method } => {

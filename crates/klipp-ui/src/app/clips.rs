@@ -1504,9 +1504,6 @@ impl KlippApp {
                 return false;
             }
         };
-        // The new media's In mark, when it has one, is where the clip
-        // now starts in it (#919); the step is recorded whole.
-        let undo_before = new_media_in.and_then(|_| crate::tracks_undo::before_labelled(&self.state, "Replace From Bin"));
         let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
         let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else {
             self.state.toast.show("Replace: clip not found");
@@ -1525,17 +1522,21 @@ impl KlippApp {
         if old_media_id == new_media_id {
             return false; // no-op, no toast
         }
-        if let (Some(src_in), Some(before)) = (new_media_in, undo_before) {
-            let len = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
-            let out = (src_in.to_secs_f64() + len).min(new_media_dur.to_secs_f64());
-            let lost = len - (out - src_in.to_secs_f64());
-            clip.kind = klipp_timeline::ClipKind::Media { media_id: new_media_id };
-            clip.source_in = src_in;
-            clip.source_out = klipp_core::RationalTime::from_secs_f64(out, src_in.rate);
-            if lost > 0.0 {
-                clip.timeline_out = clip.timeline_out - klipp_core::RationalTime::from_secs_f64(lost / clip.speed.abs().max(0.1), clip.timeline_out.rate);
-            }
-            crate::tracks_undo::record(&mut self.state, before);
+        // The new media's In mark, when it has one, is where the clip
+        // now starts in it (#919), one step.
+        if let Some(src_in) = new_media_in {
+            self.commit_tracks("Replace From Bin", |seq| {
+                let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else { return };
+                let len = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
+                let out = (src_in.to_secs_f64() + len).min(new_media_dur.to_secs_f64());
+                let lost = len - (out - src_in.to_secs_f64());
+                clip.kind = klipp_timeline::ClipKind::Media { media_id: new_media_id };
+                clip.source_in = src_in;
+                clip.source_out = klipp_core::RationalTime::from_secs_f64(out, src_in.rate);
+                if lost > 0.0 {
+                    clip.timeline_out = clip.timeline_out - klipp_core::RationalTime::from_secs_f64(lost / clip.speed.abs().max(0.1), clip.timeline_out.rate);
+                }
+            });
             return true;
         }
 

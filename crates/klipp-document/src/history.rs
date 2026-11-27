@@ -3630,3 +3630,40 @@ mod scope_tests {
         assert!(!b.can_redo() && b.redo_stamp().is_none());
     }
 }
+
+#[cfg(test)]
+mod tracks_changed_tests {
+    use super::EditCommand;
+    use klipp_timeline::{Clip, Track, TrackKind};
+
+    fn two_tracks() -> Vec<Track> {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips.push(Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0)));
+        vec![v1, Track::new("A1", TrackKind::Audio)]
+    }
+
+    /// Each change is recorded as only what it changed (#907): a clip,
+    /// that track's clips, so undoing it leaves the track's mute or
+    /// height, changed since, alone; a track's lock, that track; a track
+    /// added, the list; nothing, no step; two tracks, one named batch.
+    #[test]
+    fn each_change_is_recorded_as_only_what_it_changed() {
+        let old = two_tracks();
+        let mut clip = old.clone();
+        clip[0].clips[0].enabled = false;
+        assert!(matches!(EditCommand::tracks_changed("Disable Clip", &old, &clip), Some(EditCommand::SetTrackContents { track_index: 0, .. })));
+        let mut locked = old.clone();
+        locked[1].locked = true;
+        assert!(matches!(EditCommand::tracks_changed("Lock Track", &old, &locked), Some(EditCommand::SetTrack { track_index: 1, .. })));
+        let mut added = old.clone();
+        added.push(Track::new("V2", TrackKind::Video));
+        assert!(matches!(EditCommand::tracks_changed("Add Track", &old, &added), Some(EditCommand::SetTracks { .. })));
+        assert!(EditCommand::tracks_changed("Nothing", &old, &old).is_none());
+        let mut both = clip.clone();
+        both[1].locked = true;
+        let Some(EditCommand::Named { label, edit }) = EditCommand::tracks_changed("Both", &old, &both) else { panic!("a named batch") };
+        assert_eq!(label, "Both");
+        assert!(matches!(*edit, EditCommand::Batch(ref edits) if edits.len() == 2));
+    }
+}

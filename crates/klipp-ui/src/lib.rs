@@ -134,7 +134,8 @@ pub mod theme;
 pub mod trash;
 pub mod transcript;
 pub mod timeline;
-pub mod tracks_undo;
+#[cfg(test)]
+mod marks_follow_tests;
 pub mod edit_point;
 pub mod soc_info;
 pub mod hardware;

@@ -250,9 +250,6 @@ impl KlippApp {
             // Several clips selected and the Inspector's clip edited: the
             // others take the change too (#843).
             let multi = self.multi_edit_pre(&cmd);
-            // Edits whose handlers change the tracks in place without
-            // recording it: the tracks either side, one undo step (#907).
-            let tracks_before = crate::tracks_undo::before(&self.state, &cmd);
             'dispatch: {
                 if matches!(&cmd, AppCommand::SetNodeParam { .. }) {
                     node_param_scrub = true;
@@ -292,15 +289,6 @@ impl KlippApp {
                     self.state.awaiting_seek_frame = true;
                 }
                 let _ = self.cmd_tx.send(cmd);
-            }
-            if let Some(before) = tracks_before {
-                let marks = |s: &crate::state::AppState| (s.sequence().in_point, s.sequence().out_point);
-                let was = marks(&self.state);
-                crate::tracks_undo::record(&mut self.state, before);
-                // The step can move the marks, after the handler's sync.
-                if marks(&self.state) != was {
-                    self.sync_sequence_to_engine();
-                }
             }
             if let Some(post) = multi {
                 self.multi_edit_post(post);

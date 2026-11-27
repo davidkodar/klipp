@@ -4167,193 +4167,191 @@ impl KlippApp {
                 });
                 // One undo step, however it was asked for: from the socket it
                 // added a track of captions with none.
-                let undo_before = crate::tracks_undo::before_labelled(&self.state, "Import Subtitles");
-                match read {
-                    Ok((content, bytes)) => {
-                        // Detect format by extension (case-insensitive). Unknown
-                        // extensions fall back to the SRT/VTT parser; TTML,
-                        // DFXP, IMSC and iTT read as TTML, SCC as CEA-608 and
-                        // STL as EBU Tech 3264 (#1516).
-                        let ext = path
-                            .extension()
-                            .and_then(|s| s.to_str())
-                            .map(|s| s.to_ascii_lowercase())
-                            .unwrap_or_default();
-                        let is_ass = ext == "ass" || ext == "ssa";
-                        let is_ttml = matches!(ext.as_str(), "ttml" | "dfxp" | "xml" | "itt");
-                        let mut unreadable = None;
+                self.commit_made_in_place("Import Subtitles", |app| {
+                    match read {
+                        Ok((content, bytes)) => {
+                            // Detect format by extension (case-insensitive). Unknown
+                            // extensions fall back to the SRT/VTT parser; TTML,
+                            // DFXP, IMSC and iTT read as TTML, SCC as CEA-608 and
+                            // STL as EBU Tech 3264 (#1516).
+                            let ext = path
+                                .extension()
+                                .and_then(|s| s.to_str())
+                                .map(|s| s.to_ascii_lowercase())
+                                .unwrap_or_default();
+                            let is_ass = ext == "ass" || ext == "ssa";
+                            let is_ttml = matches!(ext.as_str(), "ttml" | "dfxp" | "xml" | "itt");
+                            let mut unreadable = None;
 
-                        let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                        let fps_rate = seq.fps.rate();
-                        // One new track per imported file, named after the file stem.
-                        let track_name = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("Subtitles")
-                            .to_string();
-                        let new_track_id = seq.add_subtitle_track(track_name);
-                        let sub_track_idx = seq
-                            .tracks
-                            .iter()
-                            .position(|t| t.id == new_track_id)
-                            .unwrap();
-                        let track = &mut seq.tracks[sub_track_idx];
-                        track.source_file = Some(path.clone());
-                        // The language the file names, where its format
-                        // says one (#2223).
-                        track.language = klipp_captions::file_language(&path, if is_stl { &bytes } else { content.as_bytes() });
+                            let seq = &mut app.state.document.sequences[app.state.active_sequence_idx];
+                            let fps_rate = seq.fps.rate();
+                            // One new track per imported file, named after the file stem.
+                            let track_name = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("Subtitles")
+                                .to_string();
+                            let new_track_id = seq.add_subtitle_track(track_name);
+                            let sub_track_idx = seq
+                                .tracks
+                                .iter()
+                                .position(|t| t.id == new_track_id)
+                                .unwrap();
+                            let track = &mut seq.tracks[sub_track_idx];
+                            track.source_file = Some(path.clone());
+                            // The language the file names, where its format
+                            // says one (#2223).
+                            track.language = klipp_captions::file_language(&path, if is_stl { &bytes } else { content.as_bytes() });
 
-                        let imported_count;
-                        if is_ass {
-                            let (entries, styles) = parse_ass(&content);
-                            imported_count = entries.len();
-                            for entry in &entries {
-                                let timeline_in = klipp_core::RationalTime::from_secs_f64(entry.start_secs, fps_rate);
-                                let timeline_out = klipp_core::RationalTime::from_secs_f64(entry.end_secs, fps_rate);
-                                let dur = timeline_out - timeline_in;
-                                let style = styles.get(&entry.style_name);
+                            let imported_count;
+                            if is_ass {
+                                let (entries, styles) = parse_ass(&content);
+                                imported_count = entries.len();
+                                for entry in &entries {
+                                    let timeline_in = klipp_core::RationalTime::from_secs_f64(entry.start_secs, fps_rate);
+                                    let timeline_out = klipp_core::RationalTime::from_secs_f64(entry.end_secs, fps_rate);
+                                    let dur = timeline_out - timeline_in;
+                                    let style = styles.get(&entry.style_name);
 
-                                let (font_name, font_size, color, outline, shadow, font_style) = match style {
-                                    Some(s) => {
-                                        let fs = match (s.bold, s.italic) {
-                                            (false, false) => klipp_timeline::FontStyle::Regular,
-                                            (true, false) => klipp_timeline::FontStyle::Bold,
-                                            (false, true) => klipp_timeline::FontStyle::Italic,
-                                            (true, true) => klipp_timeline::FontStyle::BoldItalic,
-                                        };
-                                        let outline = if s.outline > 0.0 {
-                                            Some(klipp_timeline::TextOutline { color: [0, 0, 0, 255], width: s.outline, enabled: true, width_keyframes: Vec::new() })
-                                        } else { None };
-                                        let shadow = if s.shadow > 0.0 {
-                                            Some(klipp_timeline::TitleShadow {
-                                                color: [0, 0, 0, 180],
-                                                offset_x: s.shadow,
-                                                offset_y: s.shadow,
-                                                blur: s.shadow,
-                                                enabled: true,
-                                                offset_x_keyframes: Vec::new(),
-                                                offset_y_keyframes: Vec::new(),
-                                                blur_keyframes: Vec::new(),
-                                            })
-                                        } else { None };
-                                        (
-                                            if s.font_name.is_empty() { String::new() } else { s.font_name.clone() },
-                                            if s.font_size > 0.0 { s.font_size } else { 32.0 },
-                                            s.primary_color,
-                                            outline,
-                                            shadow,
-                                            fs,
-                                        )
-                                    }
-                                    None => (
-                                        String::new(),
-                                        32.0,
-                                        [255, 255, 255, 255],
-                                        Some(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() }),
-                                        None,
-                                        klipp_timeline::FontStyle::Regular,
-                                    ),
+                                    let (font_name, font_size, color, outline, shadow, font_style) = match style {
+                                        Some(s) => {
+                                            let fs = match (s.bold, s.italic) {
+                                                (false, false) => klipp_timeline::FontStyle::Regular,
+                                                (true, false) => klipp_timeline::FontStyle::Bold,
+                                                (false, true) => klipp_timeline::FontStyle::Italic,
+                                                (true, true) => klipp_timeline::FontStyle::BoldItalic,
+                                            };
+                                            let outline = if s.outline > 0.0 {
+                                                Some(klipp_timeline::TextOutline { color: [0, 0, 0, 255], width: s.outline, enabled: true, width_keyframes: Vec::new() })
+                                            } else { None };
+                                            let shadow = if s.shadow > 0.0 {
+                                                Some(klipp_timeline::TitleShadow {
+                                                    color: [0, 0, 0, 180],
+                                                    offset_x: s.shadow,
+                                                    offset_y: s.shadow,
+                                                    blur: s.shadow,
+                                                    enabled: true,
+                                                    offset_x_keyframes: Vec::new(),
+                                                    offset_y_keyframes: Vec::new(),
+                                                    blur_keyframes: Vec::new(),
+                                                })
+                                            } else { None };
+                                            (
+                                                if s.font_name.is_empty() { String::new() } else { s.font_name.clone() },
+                                                if s.font_size > 0.0 { s.font_size } else { 32.0 },
+                                                s.primary_color,
+                                                outline,
+                                                shadow,
+                                                fs,
+                                            )
+                                        }
+                                        None => (
+                                            String::new(),
+                                            32.0,
+                                            [255, 255, 255, 255],
+                                            Some(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() }),
+                                            None,
+                                            klipp_timeline::FontStyle::Regular,
+                                        ),
+                                    };
+
+                                    let mut tb = klipp_timeline::TextBox {
+                                        text: entry.text.clone(),
+                                        font_size,
+                                        font_name,
+                                        font_style,
+                                        color,
+                                        alignment: klipp_timeline::TextAlignment::Center,
+                                        ..Default::default()
+                                    };
+                                    let mut fx = klipp_timeline::LayerFx::default();
+                                    if let Some(o) = outline { fx.outlines.push(o); }
+                                    if let Some(s) = shadow { fx.shadows.push(s); }
+                                    tb.ass_style_name = if entry.style_name.is_empty() { None } else { Some(entry.style_name.clone()) };
+                                    // Its override tags' styling and placement (#1515).
+                                    cue_style_runs(&mut tb, &entry.spans);
+                                    let mut title_data = klipp_timeline::TitleData::single_text_fx(tb, fx);
+                                    place_cue(&mut title_data, entry.placement);
+                                    let clip = klipp_timeline::Clip {
+                                        id: klipp_core::ClipId::new(),
+                                        kind: klipp_timeline::ClipKind::Title(title_data),
+                                        timeline_in,
+                                        timeline_out,
+                                        source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
+                                        source_out: dur,
+                                        ..klipp_timeline::Clip::gap(timeline_in, timeline_out)
+                                    };
+                                    track.clips.push(clip);
+                                }
+                            } else {
+                                let read = if is_ttml {
+                                    Some(klipp_captions::ttml::parse_ttml(&content))
+                                } else if ext == "scc" {
+                                    Some(klipp_captions::scc::parse_scc(&content))
+                                } else if is_stl {
+                                    Some(klipp_captions::stl::parse_stl(&bytes))
+                                } else {
+                                    None
                                 };
-
-                                let mut tb = klipp_timeline::TextBox {
-                                    text: entry.text.clone(),
-                                    font_size,
-                                    font_name,
-                                    font_style,
-                                    color,
-                                    alignment: klipp_timeline::TextAlignment::Center,
-                                    ..Default::default()
+                                let subs = if let Some(read) = read {
+                                    read.unwrap_or_else(|e| {
+                                        unreadable = Some(e);
+                                        Vec::new()
+                                    })
+                                } else {
+                                    parse_srt_vtt(&content)
                                 };
-                                let mut fx = klipp_timeline::LayerFx::default();
-                                if let Some(o) = outline { fx.outlines.push(o); }
-                                if let Some(s) = shadow { fx.shadows.push(s); }
-                                tb.ass_style_name = if entry.style_name.is_empty() { None } else { Some(entry.style_name.clone()) };
-                                // Its override tags' styling and placement (#1515).
-                                cue_style_runs(&mut tb, &entry.spans);
-                                let mut title_data = klipp_timeline::TitleData::single_text_fx(tb, fx);
-                                place_cue(&mut title_data, entry.placement);
-                                let clip = klipp_timeline::Clip {
-                                    id: klipp_core::ClipId::new(),
-                                    kind: klipp_timeline::ClipKind::Title(title_data),
-                                    timeline_in,
-                                    timeline_out,
-                                    source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
-                                    source_out: dur,
-                                    ..klipp_timeline::Clip::gap(timeline_in, timeline_out)
-                                };
-                                track.clips.push(clip);
+                                imported_count = subs.len();
+                                for sub in &subs {
+                                    let timeline_in = klipp_core::RationalTime::from_secs_f64(sub.start_secs, fps_rate);
+                                    let timeline_out = klipp_core::RationalTime::from_secs_f64(sub.end_secs, fps_rate);
+                                    let dur = timeline_out - timeline_in;
+                                    let mut tb = klipp_timeline::TextBox {
+                                        text: sub.text.clone(),
+                                        font_size: 32.0,
+                                        font_name: String::new(),
+                                        alignment: klipp_timeline::TextAlignment::Center,
+                                        ..Default::default()
+                                    };
+                                    // Its tags' italics, bold, underline and colour (#1515).
+                                    cue_style_runs(&mut tb, &sub.spans);
+                                    let mut fx = klipp_timeline::LayerFx::default();
+                                    fx.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() });
+                                    let mut title_data = klipp_timeline::TitleData::single_text_fx(tb, fx);
+                                    place_cue(&mut title_data, sub.placement);
+                                    let clip = klipp_timeline::Clip {
+                                        id: klipp_core::ClipId::new(),
+                                        kind: klipp_timeline::ClipKind::Title(title_data),
+                                        timeline_in,
+                                        timeline_out,
+                                        source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
+                                        source_out: dur,
+                                        ..klipp_timeline::Clip::gap(timeline_in, timeline_out)
+                                    };
+                                    track.clips.push(clip);
+                                }
                             }
-                        } else {
-                            let read = if is_ttml {
-                                Some(klipp_captions::ttml::parse_ttml(&content))
-                            } else if ext == "scc" {
-                                Some(klipp_captions::scc::parse_scc(&content))
-                            } else if is_stl {
-                                Some(klipp_captions::stl::parse_stl(&bytes))
+
+                            if imported_count == 0 {
+                                // Remove the newly-created empty track and warn.
+                                let tid = track.id;
+                                let _ = seq.remove_track(tid);
+                                app.state.toast.show(unreadable.unwrap_or_else(|| "No subtitles found in file".to_string()));
                             } else {
-                                None
-                            };
-                            let subs = if let Some(read) = read {
-                                read.unwrap_or_else(|e| {
-                                    unreadable = Some(e);
-                                    Vec::new()
-                                })
-                            } else {
-                                parse_srt_vtt(&content)
-                            };
-                            imported_count = subs.len();
-                            for sub in &subs {
-                                let timeline_in = klipp_core::RationalTime::from_secs_f64(sub.start_secs, fps_rate);
-                                let timeline_out = klipp_core::RationalTime::from_secs_f64(sub.end_secs, fps_rate);
-                                let dur = timeline_out - timeline_in;
-                                let mut tb = klipp_timeline::TextBox {
-                                    text: sub.text.clone(),
-                                    font_size: 32.0,
-                                    font_name: String::new(),
-                                    alignment: klipp_timeline::TextAlignment::Center,
-                                    ..Default::default()
-                                };
-                                // Its tags' italics, bold, underline and colour (#1515).
-                                cue_style_runs(&mut tb, &sub.spans);
-                                let mut fx = klipp_timeline::LayerFx::default();
-                                fx.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() });
-                                let mut title_data = klipp_timeline::TitleData::single_text_fx(tb, fx);
-                                place_cue(&mut title_data, sub.placement);
-                                let clip = klipp_timeline::Clip {
-                                    id: klipp_core::ClipId::new(),
-                                    kind: klipp_timeline::ClipKind::Title(title_data),
-                                    timeline_in,
-                                    timeline_out,
-                                    source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
-                                    source_out: dur,
-                                    ..klipp_timeline::Clip::gap(timeline_in, timeline_out)
-                                };
-                                track.clips.push(clip);
+                                track.sort_clips();
+                                app.state.toast.show(format!(
+                                    "Imported {} subtitle(s) into \"{}\"",
+                                    imported_count,
+                                    seq.tracks[sub_track_idx].name,
+                                ));
+                                app.state.dirty = true;
                             }
                         }
-
-                        if imported_count == 0 {
-                            // Remove the newly-created empty track and warn.
-                            let tid = track.id;
-                            let _ = seq.remove_track(tid);
-                            self.state.toast.show(unreadable.unwrap_or_else(|| "No subtitles found in file".to_string()));
-                        } else {
-                            track.sort_clips();
-                            self.state.toast.show(format!(
-                                "Imported {} subtitle(s) into \"{}\"",
-                                imported_count,
-                                seq.tracks[sub_track_idx].name,
-                            ));
-                            self.state.dirty = true;
+                        Err(e) => {
+                            app.state.toast.show(format!("Failed to read file: {e}"));
                         }
                     }
-                    Err(e) => {
-                        self.state.toast.show(format!("Failed to read file: {e}"));
-                    }
-                }
-                if let Some(before) = undo_before {
-                    crate::tracks_undo::record(&mut self.state, before);
-                }
+                });
                 self.sync_sequence_to_engine();
                 true
             }
@@ -4394,7 +4392,8 @@ impl KlippApp {
                 true
             }
             AppCommand::AddSubtitleAtPlayhead { timeline_in, duration_frames } => {
-                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
+                let mut new_clip_id = None;
+                self.commit_tracks("Add Caption", |seq| {
                 let fps_rate = seq.fps.rate();
                 let timeline_in = timeline_in.rescale_to(fps_rate);
                 let duration = klipp_core::RationalTime::from_frames(
@@ -4444,40 +4443,40 @@ impl KlippApp {
                     source_out: duration,
                     ..klipp_timeline::Clip::gap(timeline_in, timeline_out)
                 };
-                let new_clip_id = new_clip.id;
+                new_clip_id = Some(new_clip.id);
                 seq.tracks[track_idx].clips.push(new_clip);
                 seq.tracks[track_idx].sort_clips();
-                self.state.selected_clip = Some(new_clip_id);
-                self.state.dirty = true;
-                self.sync_sequence_to_engine();
+                });
+                if let Some(id) = new_clip_id {
+                    self.state.selected_clip = Some(id);
+                }
                 true
             }
             AppCommand::SaveCaptionStyle { track_id, apply_to_all } => {
                 // The draft the subtitle editor holds for this track (#70);
                 // saving it, and restyling the captions with it, is one
-                // undo step (tracks_undo).
+                // undo step.
                 let Some((_, style)) = self.state.subtitle_editor.style_draft.take().filter(|(id, _)| id == track_id) else { return true };
-                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
-                    if *apply_to_all {
-                        for clip in &mut track.clips {
-                            if let klipp_timeline::ClipKind::Title(td) = &mut clip.kind {
-                                *td = klipp_document::ops::apply_caption_style(td, &style);
+                self.commit_tracks(if *apply_to_all { "Restyle Captions" } else { "Caption Style" }, |seq| {
+                    if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        if *apply_to_all {
+                            for clip in &mut track.clips {
+                                if let klipp_timeline::ClipKind::Title(td) = &mut clip.kind {
+                                    *td = klipp_document::ops::apply_caption_style(td, &style);
+                                }
                             }
                         }
+                        track.caption_style = Some(style);
                     }
-                    track.caption_style = Some(style);
-                    self.state.dirty = true;
-                    self.sync_sequence_to_engine();
-                }
+                });
                 true
             }
             AppCommand::ClearCaptionStyle { track_id } => {
-                let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
-                    track.caption_style = None;
-                    self.state.dirty = true;
-                }
+                self.commit_tracks("Caption Style", |seq| {
+                    if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        track.caption_style = None;
+                    }
+                });
                 self.state.subtitle_editor.style_draft = None;
                 true
             }
