@@ -1,6 +1,6 @@
 //! Source edits beyond insert and overwrite (#919): fit to fill, place on
 //! top and replace, and the three-point placement every source edit
-//! shares. Each is one undo step, recorded by `tracks_undo`.
+//! shares. Each is one undo step, recorded by `commit_made_in_place`.
 
 use super::*;
 use crate::source_edit::{Marks, Placement};
@@ -51,10 +51,10 @@ impl KlippApp {
     /// The source-edit commands of #919: `false` for any other.
     pub(super) fn handle_source_edit_commands(&mut self, cmd: &AppCommand) -> bool {
         match cmd {
-            AppCommand::FitToFillEdit => self.fit_to_fill_edit(),
-            AppCommand::PlaceOnTopEdit => self.place_on_top_edit(),
-            AppCommand::ReplaceEdit => self.replace_edit(),
-            AppCommand::RippleOverwriteEdit => self.ripple_overwrite_edit(),
+            AppCommand::FitToFillEdit => self.commit_made_in_place("Fit to Fill", Self::fit_to_fill_edit),
+            AppCommand::PlaceOnTopEdit => self.commit_made_in_place("Place on Top", Self::place_on_top_edit),
+            AppCommand::ReplaceEdit => self.commit_made_in_place("Replace", Self::replace_edit),
+            AppCommand::RippleOverwriteEdit => self.commit_made_in_place("Ripple Overwrite", Self::ripple_overwrite_edit),
             _ => return false,
         }
         true

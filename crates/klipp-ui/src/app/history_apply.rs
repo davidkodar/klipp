@@ -82,6 +82,25 @@ impl KlippApp {
         true
     }
 
+    /// A handler's edit that `work` makes in place on the active
+    /// sequence's tracks, recorded as one step named `label`: the tracks
+    /// are put back and the change between them committed, so the step is
+    /// what is made, now and on redo. No step when the tracks did not
+    /// change, or when `work` recorded its own (a source edit onto the
+    /// storyline takes the magnetic editor's). For handlers too tangled
+    /// with the app to work on a copy; [`Self::commit_tracks`] otherwise.
+    pub(super) fn commit_made_in_place(&mut self, label: &'static str, work: impl FnOnce(&mut Self)) {
+        let sequence = self.state.active_sequence_id();
+        let (before, recorded) = (self.state.sequence().tracks.clone(), self.state.history_mark());
+        work(self);
+        if self.state.active_sequence_id() != sequence || self.state.history_mark() != recorded {
+            return;
+        }
+        let Some(edit) = EditCommand::tracks_changed(label, &before, &self.state.sequence().tracks) else { return };
+        self.state.sequence_mut().tracks = before;
+        self.commit(edit);
+    }
+
     /// Clip `clip_id`'s keys, and those of `partner` with it, changed by
     /// `f` on copies of the two and committed as one keyframe step named
     /// `description`; nothing when the clip is gone or `f` changes no key.
