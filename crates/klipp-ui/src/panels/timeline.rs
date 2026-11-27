@@ -3710,16 +3710,8 @@ impl TimelinePanel {
         let track_id = state.sequence().tracks[track_idx].id;
 
         if handle_resp.double_clicked() {
-            let new_h = {
-                let track = &mut state.document.sequences[state.active_sequence_idx].tracks[track_idx];
-                if track.custom_height.is_some_and(|h| h <= MIN_TRACK_HEIGHT + 1.0) {
-                    track.pre_collapse_height.take()
-                } else {
-                    track.pre_collapse_height = track.custom_height.or(Some(track_height));
-                    Some(MIN_TRACK_HEIGHT)
-                }
-            };
-            cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: new_h });
+            let height = state.fold_track(track_idx, track_height, MIN_TRACK_HEIGHT);
+            cmds.push(AppCommand::SetTrackCustomHeight { track_id, height });
         }
 
         handle_resp.context_menu_rows(|ui| {
@@ -3760,15 +3752,7 @@ impl TimelinePanel {
                     if let Some(pos) = ui.ctx().pointer_latest_pos() {
                         let delta = pos.y - start_y;
                         let new_h = resized_track_height(orig_h, delta, &state.timeline_prefs);
-                        let ctrl = ui.input(|i| i.modifiers.ctrl);
-                        if ctrl {
-                            for t in &mut state.document.sequences[state.active_sequence_idx].tracks {
-                                t.custom_height = Some(new_h);
-                            }
-                        } else {
-                            state.document.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = Some(new_h);
-                        }
-                        state.dirty = true;
+                        state.show_track_height(track_idx, new_h, ui.input(|i| i.modifiers.ctrl));
                     }
                 }
             }
@@ -3864,13 +3848,9 @@ impl TimelinePanel {
                             MIN_AUTOMATION_LANE_HEIGHT,
                             MAX_AUTOMATION_LANE_HEIGHT,
                         );
-                        // Live mutation during the drag (no
-                        // command-per-frame); the final value lands
-                        // through SetTrackAutomationLaneHeight on
-                        // drag_stopped so undo gets a single entry.
-                        state.document.sequences[state.active_sequence_idx].tracks[track_idx]
-                            .automation_lane_height = Some(new_h);
-                        state.dirty = true;
+                        // Shown during the drag; the final value lands
+                        // through SetTrackAutomationLaneHeight at its end.
+                        state.show_lane_height(track_idx, new_h);
                     }
                 }
             }
@@ -10867,16 +10847,20 @@ impl TimelinePanel {
                 None => raw,
             };
             drag.hold = hold;
-            let at = state.active_sequence_idx;
-            drag.preview(&mut state.document.sequences[at], &state.document.media_pool, to);
+            // Shown in place of the last frame's stretch; the engine is
+            // told when the stretch is sent, as before.
+            if let Some(edit) = drag.preview(&state.document.media_pool, to) {
+                let _ = state.show_live(edit);
+            }
             let lines = drag.readout(state.sequence(), &state.document.media_pool, &state.timecode_display());
             Self::paint_stretch_readout(painter, content_rect, track_rect, pos, &lines);
         }
         if pointer_released {
             if let Some(drag) = self.stretching.take() {
-                if let Some(command) = drag.finish(state.sequence_mut()) {
-                    cmds.push(command);
-                }
+                // The stretch shown taken back, and sent: the handler plans
+                // it on the timeline as the drag found it.
+                let _ = state.cancel_live();
+                cmds.extend(drag.finish());
             }
             self.press_origin = None;
         }
