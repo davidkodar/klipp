@@ -922,11 +922,11 @@ pub fn show(
 
         // Drag start — snapshot original height
         if handle_resp.drag_started() {
-            state.timeline_resizing_track = Some((
-                track_idx,
-                handle_resp.interact_pointer_pos().map_or(0.0, |p| p.y),
-                authored_h,
-            ));
+            // From where the press began: the drag starts only once the
+            // pointer has moved past egui's threshold, and the height
+            // lagged the pointer by that much.
+            let from = ui.input(|i| i.pointer.press_origin()).or(handle_resp.interact_pointer_pos());
+            state.timeline_resizing_track = Some((track_idx, from.map_or(0.0, |p| p.y), authored_h));
         }
 
         // Dragging — the height shown each frame for smooth feedback.
@@ -937,7 +937,7 @@ pub fn show(
                     if let Some(pos) = handle_resp.interact_pointer_pos() {
                         // On screen a squeezed row moves less than its height.
                         let delta = (pos.y - start_y) / scale.clamp(0.1, 1.0);
-                        let new_h = (orig_h + delta).clamp(32.0, 300.0);
+                        let new_h = dragged_track_height(orig_h, delta, &state.timeline_prefs);
                         state.show_track_height(track_idx, new_h, false);
                     }
                 }
@@ -1000,11 +1000,13 @@ pub fn show(
             }
         });
 
-        // The automation lane's part of the row, under the header.
+        // The automation lane's part of the row, under the header, and
+        // its height handle along its bottom edge.
         if row_h > track_h + 0.5 {
             let lane = egui::Rect::from_min_max(egui::pos2(header_rect.min.x, y + track_h), egui::pos2(header_rect.max.x, y + row_h));
             ui.painter().rect_filled(lane, 0.0, theme.bg_deep);
             ui.painter().hline(lane.x_range(), lane.max.y, egui::Stroke::new(1.0_f32, theme.border));
+            lane_height_handle(ui, state, theme, track_idx, lane, scale, &mut cmds);
         }
         y += row_h;
     }
@@ -1177,6 +1179,67 @@ fn insert_new_track(seq: &mut klipp_timeline::Sequence, at: usize, kind: TrackKi
     let at = at.min(seq.tracks.len());
     seq.tracks.insert(at, klipp_timeline::Track::new(&name, kind));
     seq.renumber_tracks();
+}
+
+/// The height a track header's handle dragged by `delta` (in authored
+/// pixels) from `orig` shows: no shorter than the smallest track, no taller
+/// than the timeline preferences' max track height (#1816). The drag
+/// stopped at a fixed 300 px, past a lower cap, and snapped to the cap
+/// only when let go.
+pub(crate) fn dragged_track_height(orig: f32, delta: f32, prefs: &crate::prefs::TimelinePrefs) -> f32 {
+    (orig + delta).clamp(32.0, crate::panels::timeline::track_height_cap(prefs))
+}
+
+/// The height an automation lane's handle dragged by `delta` from `orig`
+/// shows, within the lane's own bounds.
+pub(crate) fn dragged_lane_height(orig: f32, delta: f32) -> f32 {
+    (orig + delta).clamp(crate::panels::timeline::MIN_AUTOMATION_LANE_HEIGHT, crate::panels::timeline::MAX_AUTOMATION_LANE_HEIGHT)
+}
+
+/// An automation lane's height handle, along the bottom edge of its cell
+/// in the header column: dragged, the lane's height is shown each frame
+/// and sent once at the end; double-clicked, back to the default; its menu
+/// offers sizes. The handle was the old panel's only, which the app never
+/// drew, so a lane could not be resized by hand.
+fn lane_height_handle(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, track_idx: usize, lane: egui::Rect, scale: f32, cmds: &mut Vec<AppCommand>) {
+    let handle_rect = egui::Rect::from_min_size(egui::pos2(lane.left(), lane.max.y - 3.0), egui::vec2(lane.width(), 6.0));
+    let resp = ui.interact(handle_rect, egui::Id::new(("lane_resize", track_idx)), egui::Sense::click_and_drag());
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        ui.painter().hline(lane.x_range(), lane.max.y - 1.0, egui::Stroke::new(1.0_f32, theme.border_light));
+    }
+    let track_id = state.sequence().tracks[track_idx].id;
+    if resp.double_clicked() {
+        cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: None });
+    }
+    resp.context_menu_rows(|ui| {
+        for (label, height) in [("Compact (60px)", Some(60.0)), ("Default (120px)", None), ("Tall (200px)", Some(200.0)), ("Maximum (400px)", Some(400.0))] {
+            if ui.button(label).clicked() {
+                cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height });
+                ui.close_kind(egui::UiKind::Menu);
+            }
+        }
+    });
+    if resp.drag_started() {
+        let authored = crate::panels::timeline::automation_lane_height(&state.sequence().tracks[track_idx]);
+        // From where the press began, as a track's handle goes.
+        let from = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos());
+        state.timeline_resizing_lane = Some((track_idx, from.map_or(0.0, |p| p.y), authored));
+    }
+    if resp.dragged() {
+        if let (Some((ridx, start_y, orig_h)), Some(pos)) = (state.timeline_resizing_lane, resp.interact_pointer_pos()) {
+            if ridx == track_idx {
+                // On screen a squeezed lane moves less than its height.
+                let delta = (pos.y - start_y) / scale.clamp(0.1, 1.0);
+                state.show_lane_height(track_idx, dragged_lane_height(orig_h, delta));
+            }
+        }
+    }
+    if resp.drag_stopped() {
+        state.timeline_resizing_lane = None;
+        let height = state.sequence().tracks[track_idx].automation_lane_height;
+        cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height });
+    }
 }
 
 #[cfg(test)]
