@@ -392,6 +392,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::AttachLinkedAudio { .. }
         | AppCommand::MoveClip { .. }
         | AppCommand::DropClip { .. }
+        | AppCommand::DropOnNewTrack { .. }
         | AppCommand::MoveClipToTrack { .. }
         | AppCommand::SwapAdjacentClips { .. }
         | AppCommand::TrimClip { .. }

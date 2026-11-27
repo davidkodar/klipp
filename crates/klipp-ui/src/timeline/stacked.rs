@@ -105,7 +105,7 @@ pub(super) fn draw_parked(view: &mut TimelineView, state: &mut AppState, take: b
 /// the switch queued ahead of anything else.
 pub(crate) fn focus(view: &mut TimelineView, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
     let to = view.active_sequence_idx;
-    state.document.sequences[to].last_playhead = Some(view.playhead);
+    state.keep_playhead(to, view.playhead);
     let (from, playhead, smooth, anchor) = (state.active_sequence_idx, state.playhead, state.playhead_smooth_secs, state.playhead_anchor);
     view.swap(state);
     // Until the switch runs the state still shows the one left, so the

@@ -892,9 +892,6 @@ pub struct TimelinePanel {
     stretching: Option<crate::timeline::stretch_drag::StretchState>,
     roll_trimming: Option<RollTrimState>,
     slipping_clip: Option<SlipState>,
-    /// The active sequence's tracks as they were when the drag under way
-    /// began (#3060): what Escape puts back.
-    cancel_tracks: Option<(usize, Vec<klipp_timeline::Track>)>,
     sliding_clip: Option<SlideState>,
     /// Stores the pointer position at initial mouse-down, before egui's drag threshold kicks in.
     /// Used so trim/move detection uses the click position, not the drifted drag_started position.
@@ -3890,15 +3887,8 @@ impl TimelinePanel {
                 if !on_any_track && content_rect.contains(cursor_pos) {
                     if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, list_key }) = state.drag_drop.end() {
                                 crate::browser::library_card::push_recent(&mut state.library_recent.titles, &list_key);
-                        // Create a new text track and place the title there
-                        let track_num = state.sequence().tracks.iter()
-                            .filter(|t| t.kind == TrackKind::Text).count() + 1;
-                        let track = klipp_timeline::Track::new(
-                            &format!("Text {track_num}"),
-                            TrackKind::Text,
-                        );
-                        state.document.sequences[state.active_sequence_idx].tracks.insert(0, track);
-                        let track_idx = 0;
+                        // A new text track made for it, the title placed
+                        // there, one step.
                         let rel_x = cursor_pos.x - content_rect.left();
                         let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
                         let fps_rate = state.document.sequences[state.active_sequence_idx].fps.rate();
@@ -3906,13 +3896,10 @@ impl TimelinePanel {
                         let timeline_in = Self::media_drop_time(state, time_secs as f64, state.timeline_zoom, ui.input(|i| i.modifiers.shift));
                         let duration_frames = fps_rate * 5;
                         state.pending_title_data = Some(title_data);
-                        cmds.push(AppCommand::CreateTitleClip {
-                            track_index: track_idx,
-                            timeline_in,
-                            duration_frames,
+                        cmds.push(AppCommand::DropOnNewTrack {
+                            kind: klipp_core::NewTrack::Text,
+                            then: Box::new(AppCommand::CreateTitleClip { track_index: 0, timeline_in, duration_frames }),
                         });
-                        state.dirty = true;
-                        cmds.push(AppCommand::SequenceUpdated);
                         state.toast.show(format!("\"{}\" title added to new track", template_name));
                     }
                 } else if !on_any_track {
@@ -3957,7 +3944,6 @@ impl TimelinePanel {
         // Media drag released outside any track — auto-create track if enabled
         if let Some(drag_media_id) = state.dragging_media {
             if !ui.input(|i| i.pointer.any_down()) {
-                let mut handled = false;
                 // The dragged item decides which kind of track to make;
                 // the whole group then goes on it (what does not fit is
                 // skipped with a toast).
@@ -3998,45 +3984,16 @@ impl TimelinePanel {
                         let below_all = last_rect_bottom.is_some_and(|bot| cursor_pos.y > bot);
 
                         // A new video track goes on top of the others (it is
-                        // the highest V number) wherever the drop was; the
-                        // clip goes on it, found by its id (#2662).
-                        let new_video_track = |state: &mut AppState| {
-                            let name = state.sequence().next_track_name(TrackKind::Video);
-                            let id = state.sequence_mut().add_video_track(name);
-                            state.sequence().tracks.iter().position(|t| t.id == id).unwrap_or(0)
-                        };
-                        if above_all && !is_audio_only {
-                            let track_idx = new_video_track(state);
-                            cmds.push(append_group(track_idx));
-                            handled = true;
-                            tracing::info!("Auto-created video track for media drop above timeline");
-                        } else if below_all && is_audio_only {
-                            // Create new audio track at bottom
-                            let name = state.sequence().next_track_name(TrackKind::Audio);
-                            state.sequence_mut().add_audio_track(name);
-                            let track_idx = state.sequence().tracks.len() - 1;
-                            cmds.push(append_group(track_idx));
-                            handled = true;
-                            tracing::info!("Auto-created audio track for media drop below timeline");
-                        } else if below_all && !is_audio_only {
-                            let track_idx = new_video_track(state);
-                            cmds.push(append_group(track_idx));
-                            handled = true;
-                            tracing::info!("Auto-created video track for media drop below timeline");
-                        } else if above_all && is_audio_only {
-                            // Audio media above all tracks — create audio track at bottom
-                            let name = state.sequence().next_track_name(TrackKind::Audio);
-                            state.sequence_mut().add_audio_track(name);
-                            let track_idx = state.sequence().tracks.len() - 1;
-                            cmds.push(append_group(track_idx));
-                            handled = true;
-                            tracing::info!("Auto-created audio track for media drop above timeline");
+                        // the highest V number) wherever the drop was, an
+                        // audio track at the bottom; the drop goes on it,
+                        // the track in its step (#2662).
+                        let kind = if is_audio_only { klipp_core::NewTrack::Audio } else { klipp_core::NewTrack::Video };
+                        if above_all || below_all {
+                            // The track index is the new track's, set when it is made.
+                            cmds.push(AppCommand::DropOnNewTrack { kind, then: Box::new(append_group(0)) });
+                            tracing::info!("Auto-created a {kind:?} track for a media drop off the tracks");
                         }
                     }
-                }
-                if handled {
-                    state.dirty = true;
-                    cmds.push(AppCommand::SequenceUpdated);
                 }
                 state.dragging_media = None;
                 state.dragging_media_group.clear();
@@ -7966,10 +7923,6 @@ impl TimelinePanel {
             let _ = state.cancel_live();
             cmds.push(AppCommand::SequenceUpdated);
         }
-        if let Some((at, tracks)) = self.cancel_tracks.take().filter(|(at, _)| *at == state.active_sequence_idx) {
-            state.document.sequences[at].tracks = tracks;
-            cmds.push(AppCommand::SequenceUpdated);
-        }
         self.dragging_clip = None;
         self.trimming_clip = None;
         self.roll_trimming = None;
@@ -11805,12 +11758,7 @@ impl TimelinePanel {
         if self.any_drag() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.cancel_drag(state, cmds);
         }
-        let starting = !self.any_drag();
-        let before = starting.then(|| track_response.drag_started()).filter(|s| *s).map(|_| (state.active_sequence_idx, state.sequence().tracks.clone()));
         self.detect_drag_start(ui, &track_response, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, track_kind, pointer_pos);
-        if let Some(b) = before.filter(|_| self.any_drag()) {
-            self.cancel_tracks = Some(b);
-        }
 
         self.process_fade_drag(state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
 

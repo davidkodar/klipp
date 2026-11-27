@@ -123,6 +123,15 @@ impl KlippApp {
                     self.state.dirty = true;
                     true
                 }
+                AppCommand::DropOnNewTrack { kind, then } => {
+                    match then.onto_track(self.state.make_drop_track(*kind)) {
+                        Some(then) => self.send_commands(vec![then]),
+                        None => tracing::warn!("a drop onto a new track of {then:?}, which isn't a drop"),
+                    }
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    true
+                }
                 AppCommand::MoveClipToTrack { clip_id, new_timeline_in, from_track, to_track } => {
                     if self.refused_by_lock(clip_id) { return true; }
                     if let Some(name) = self.state.document.sequences[self.state.active_sequence_idx].tracks.get(*to_track).filter(|t| t.locked).map(|t| t.name.clone()) {
