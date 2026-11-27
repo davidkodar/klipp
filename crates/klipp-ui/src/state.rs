@@ -6314,6 +6314,42 @@ impl AppState {
         self.document.live.cancel(&mut view)
     }
 
+    /// Track `track_idx`'s drawn height, or every track's with `every`,
+    /// while a height handle is dragged: a display setting the track keeps
+    /// and the project saves, not an edit, so no undo step. The drag's end
+    /// sends `SetTrackCustomHeight`.
+    pub(crate) fn show_track_height(&mut self, track_idx: usize, height: f32, every: bool) {
+        let tracks = &mut self.document.sequences[self.active_sequence_idx].tracks;
+        for (i, t) in tracks.iter_mut().enumerate() {
+            if every || i == track_idx {
+                t.custom_height = Some(height);
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Track `track_idx`'s automation lane height while its handle is
+    /// dragged, as [`Self::show_track_height`] shows a track's.
+    pub(crate) fn show_lane_height(&mut self, track_idx: usize, height: f32) {
+        if let Some(t) = self.document.sequences[self.active_sequence_idx].tracks.get_mut(track_idx) {
+            t.automation_lane_height = Some(height);
+            self.dirty = true;
+        }
+    }
+
+    /// Track `track_idx` folded to `min` from `height`, the height it
+    /// unfolds to kept on the track, or unfolded when it is folded: the
+    /// height it takes now, for the caller to send.
+    pub(crate) fn fold_track(&mut self, track_idx: usize, height: f32, min: f32) -> Option<f32> {
+        let track = self.document.sequences[self.active_sequence_idx].tracks.get_mut(track_idx)?;
+        if track.custom_height.is_some_and(|h| h <= min + 1.0) {
+            track.pre_collapse_height.take()
+        } else {
+            track.pre_collapse_height = track.custom_height.or(Some(height));
+            Some(min)
+        }
+    }
+
     /// Whether a gesture's edit is shown, not yet recorded.
     pub fn is_live(&self) -> bool {
         self.document.live.is_live()

@@ -945,7 +945,7 @@ pub fn show(
             ));
         }
 
-        // Dragging — update custom_height directly for smooth per-frame feedback.
+        // Dragging — the height shown each frame for smooth feedback.
         // The committed value is routed through SetTrackCustomHeight on drag_stopped.
         if handle_resp.dragged() {
             if let Some((ridx, start_y, orig_h)) = state.timeline_resizing_track {
@@ -954,8 +954,7 @@ pub fn show(
                         // On screen a squeezed row moves less than its height.
                         let delta = (pos.y - start_y) / scale.clamp(0.1, 1.0);
                         let new_h = (orig_h + delta).clamp(32.0, 300.0);
-                        state.sequence_mut().tracks[track_idx].custom_height = Some(new_h);
-                        state.dirty = true;
+                        state.show_track_height(track_idx, new_h, false);
                     }
                 }
             }

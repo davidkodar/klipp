@@ -136,6 +136,7 @@ fn the_top_corner_stretches_and_snaps_to_another_tracks_edge() {
     assert!((s[0].2 - 8.0).abs() < 1e-9, "snapped to the other track's end exactly: {}", s[0].2);
     let c = tl.state.sequence().all_clips().find(|c| c.id == clip).unwrap();
     assert_eq!(c.timeline_out, t(4.0), "the preview put back for the commit");
+    assert!(!tl.state.is_live(), "the live stretch taken back for the one sent");
 }
 
 /// The edge below the grip trims, as it always has.

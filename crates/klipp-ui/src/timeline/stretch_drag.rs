@@ -86,8 +86,7 @@ pub struct StretchState {
     pub start_x: f32,
     /// The dragged edge where the drag began.
     pub edge_was: Timecode,
-    /// The sequence as it was: what each frame plans against, and what
-    /// is put back on release.
+    /// The sequence as it was: what each frame plans against.
     original: Sequence,
     /// Where the edge last landed with a plan, and that plan's ripple.
     pub to: Option<Timecode>,
@@ -146,38 +145,32 @@ impl StretchState {
         }
     }
 
-    /// The drag at `to`: `seq` drawn as the stretch would leave it, or as
-    /// its last place that planned, with why it stopped there.
-    pub fn preview(&mut self, seq: &mut Sequence, pool: &klipp_media::MediaPool, to: Timecode) {
+    /// The drag at `to`: the stretch to show as the project's live edit,
+    /// in place of the last one; none where it is refused, and the last
+    /// place that planned stays shown, with why it stopped there.
+    pub fn preview(&mut self, pool: &klipp_media::MediaPool, to: Timecode) -> Option<klipp_document::history::EditCommand> {
         let (to, limit) = self.within_limits(pool, to);
         match self.plan(pool, to) {
             Ok(edit) => {
-                self.show(seq, pool, &edit);
                 self.to = Some(to);
                 self.note = limit.map(str::to_owned);
+                Some(edit)
             }
             Err(r) => {
-                // Short of the clip it would run into, or the limit, the
-                // last place that planned stays drawn.
+                // Short of the clip it would run into, or the limit.
                 self.note = Some(match r.code {
                     Some(RefusalCode::WouldOverlap) => format!("Stops here: {}", r.why),
                     _ => r.why,
                 });
+                None
             }
         }
     }
 
-    fn show(&self, seq: &mut Sequence, pool: &klipp_media::MediaPool, edit: &klipp_document::history::EditCommand) {
-        let mut seqs = vec![self.original.clone()];
-        let (mut pool, mut fps) = (pool.clone(), self.original.fps);
-        klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_forward(edit);
-        seq.tracks = seqs.remove(0).tracks;
-    }
-
-    /// The drag let go: the sequence put back as it was, and the stretch
-    /// to commit, when the edge moved.
-    pub fn finish(&self, seq: &mut Sequence) -> Option<klipp_core::AppCommand> {
-        seq.tracks = self.original.tracks.clone();
+    /// The drag let go: the stretch to commit, when the edge moved. The
+    /// stretch shown is taken back first, for the handler to plan on the
+    /// timeline as the drag found it.
+    pub fn finish(&self) -> Option<klipp_core::AppCommand> {
         let to = self.to.filter(|t| t.to_secs_f64() != self.edge_was.to_secs_f64())?;
         Some(klipp_core::AppCommand::StretchClip { clip_ids: self.clip_ids.clone(), at_end: self.at_end, to, ripple: self.ripple, keep_pitch: self.keep_pitch })
     }
@@ -275,34 +268,58 @@ mod tests {
         assert!(readout_rect(narrow, track, egui::pos2(200.0, 80.0), size).left() >= 100.0);
     }
 
-    /// The drag previews the planner's stretch, stops at the next clip
-    /// without ripple and says so, holds at the speed limit, and puts the
-    /// sequence back on release with the stretch to commit.
+    /// `edit` shown on `seq` as the live edit, in place of the last.
+    fn show(live: &mut klipp_document::live::LiveEdit, seq: &mut Sequence, pool: &mut klipp_media::MediaPool, edit: Option<klipp_document::history::EditCommand>) {
+        let Some(edit) = edit else { return };
+        let mut seqs = vec![std::mem::replace(seq, Sequence::new_default())];
+        let mut fps = seqs[0].fps;
+        live.show(&mut klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: pool, fps: &mut fps }, edit);
+        *seq = seqs.remove(0);
+    }
+
+    /// The drag shows the planner's stretch, stops at the next clip
+    /// without ripple and says so, holds at the speed limit, and on
+    /// release gives the stretch to commit; cancelled, the sequence is as
+    /// it began.
     #[test]
     fn the_drag_previews_what_lands_and_stops_where_it_must() {
-        let (mut seq, pool, id) = fixture();
+        let (mut seq, mut pool, id) = fixture();
+        let before = serde_json::to_value(&seq).unwrap();
         let clip = seq.all_clips().find(|c| c.id == id).unwrap().clone();
         let mut drag = StretchState::begin(&seq, &clip, 0, true, 0.0, &[]);
-        drag.preview(&mut seq, &pool, tc(5.0));
+        let mut live = klipp_document::live::LiveEdit::default();
+        let edit = drag.preview(&pool, tc(5.0));
+        show(&mut live, &mut seq, &mut pool, edit);
         let shown = seq.all_clips().find(|c| c.id == id).unwrap();
         assert!((shown.timeline_out.to_secs_f64() - 5.0).abs() < 1e-9 && (shown.speed - 0.8).abs() < 1e-9);
         let tc_display = klipp_core::TimecodeDisplay::plain(seq.fps);
         let lines = drag.readout(&seq, &pool, &tc_display);
         assert_eq!((lines[0].as_str(), lines.last().map(String::as_str)), ("Speed 80.0%", Some("No ripple · Alt to ripple")), "says it doesn't ripple");
         // Into the next clip: the last place stays, and why is said.
-        drag.preview(&mut seq, &pool, tc(8.0));
+        let edit = drag.preview(&pool, tc(8.0));
+        show(&mut live, &mut seq, &mut pool, edit);
         assert!((seq.all_clips().find(|c| c.id == id).unwrap().timeline_out.to_secs_f64() - 5.0).abs() < 1e-9);
         assert!(drag.note.as_deref().unwrap_or_default().starts_with("Stops here"), "{:?}", drag.note);
         // With ripple, past the slowest speed: held at 10%, 40 s long.
         drag.ripple = true;
-        drag.preview(&mut seq, &pool, tc(100.0));
+        let edit = drag.preview(&pool, tc(100.0));
+        show(&mut live, &mut seq, &mut pool, edit);
         let shown = seq.all_clips().find(|c| c.id == id).unwrap();
         assert!((shown.timeline_out.to_secs_f64() - 40.0).abs() < 1e-9 && (shown.speed - 0.1).abs() < 1e-9, "{} s at {}", shown.timeline_out.to_secs_f64(), shown.speed);
         assert_eq!(drag.note.as_deref(), Some("at the 10% limit"));
         drag.note = None;
         assert_eq!(drag.readout(&seq, &pool, &tc_display).last().map(String::as_str), Some("Ripple: later clips move"), "says it ripples");
-        let cmd = drag.finish(&mut seq);
+        let cmd = drag.finish();
         assert!(matches!(cmd, Some(klipp_core::AppCommand::StretchClip { at_end: true, ripple: true, .. })), "{cmd:?}");
-        assert_eq!(seq.all_clips().find(|c| c.id == id).unwrap().timeline_out, tc(4.0), "put back for the commit");
+        // 200 frames back and forth, ripple on and off, then cancelled.
+        for k in 0..200 {
+            drag.ripple = k % 7 < 3;
+            let edit = drag.preview(&pool, tc(4.0 + 3.0 * (k as f64 * 0.37).sin()));
+            show(&mut live, &mut seq, &mut pool, edit);
+        }
+        let mut seqs = vec![seq];
+        let mut fps = seqs[0].fps;
+        live.cancel(&mut klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps });
+        assert_eq!(serde_json::to_value(&seqs[0]).unwrap(), before, "cancelled, the sequence as it began");
     }
 }

@@ -1198,3 +1198,27 @@ fn a_live_edit_shown_cancels_to_the_start_and_ends_as_one_step() {
         assert!(contents(&app) == shown, "redo makes it as it was shown");
     }
 }
+
+/// A height handle dragged shows the track's height (every track's with
+/// Ctrl) and its lane's, marked unsaved with no undo step; a double-click
+/// folds the track, keeping the height it unfolds to, and unfolds it.
+#[test]
+fn track_heights_shown_while_dragged_and_a_track_folded_and_unfolded() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let depth = app.state.undo_depth();
+    let n = app.state.sequence().tracks.len();
+    assert!(n >= 2);
+    app.state.show_track_height(1, 90.0, false);
+    let heights = |app: &KlippApp| app.state.sequence().tracks.iter().map(|t| t.custom_height).collect::<Vec<_>>();
+    assert_eq!(heights(&app)[1], Some(90.0));
+    assert!(heights(&app).iter().enumerate().all(|(i, h)| i == 1 || h.is_none()), "the one track");
+    app.state.show_track_height(0, 70.0, true);
+    assert!(heights(&app).iter().all(|h| *h == Some(70.0)), "every track, with Ctrl");
+    app.state.show_lane_height(0, 150.0);
+    assert_eq!(app.state.sequence().tracks[0].automation_lane_height, Some(150.0));
+    assert!(app.state.dirty);
+    assert_eq!(app.state.undo_depth(), depth, "a height is no edit");
+    assert_eq!(app.state.fold_track(0, 70.0, 32.0), Some(32.0), "folded");
+    app.send_commands(vec![AppCommand::SetTrackCustomHeight { track_id: app.state.sequence().tracks[0].id, height: Some(32.0) }]);
+    assert_eq!(app.state.fold_track(0, 32.0, 32.0), Some(70.0), "unfolded to where it was");
+}
