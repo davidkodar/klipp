@@ -5957,7 +5957,7 @@ impl AppState {
     }
 
     /// The sequence the timeline shows, whose history ctrl+z works in.
-    fn active_sequence_id(&self) -> SequenceId {
+    pub(crate) fn active_sequence_id(&self) -> SequenceId {
         self.document.sequences[self.active_sequence_idx].id
     }
     /// The active sequence's undo/redo stack ([`klipp_document::Document::history_for`]).
@@ -6436,6 +6436,13 @@ impl AppState {
         change(&mut seq);
         let edit = EditCommand::tracks_changed(label, &self.sequence().tracks, &seq.tracks)?;
         Some(self.commit(edit))
+    }
+
+    /// How many steps the history has taken: pushes counted for autosave,
+    /// and the undo stack's depth. A handler that recorded a step changed
+    /// it.
+    pub fn history_mark(&self) -> (u64, usize) {
+        (self.history_ops_since_save, self.active_history().undo_count())
     }
 
     pub fn push_history(&mut self, command: EditCommand) {

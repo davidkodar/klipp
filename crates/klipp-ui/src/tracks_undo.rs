@@ -1,9 +1,7 @@
 //! Undo for the timeline edits whose handlers change the active
-//! sequence's tracks in place without recording it (#907): lift and
-//! extract, close and insert gap, a clip enabled or soloed, a transition
-//! changed. A track's own settings, a track added, moved or removed, and
-//! clips linked or grouped record their own steps now
-//! (`KlippApp::commit_tracks`). Each became an edit Ctrl+Z skipped, so the next
+//! sequence's tracks in place without recording it (#907): a caption
+//! added or restyled, a transition changed. The rest record their own
+//! steps now (`KlippApp::commit_tracks`, `commit_made_in_place`). Each became an edit Ctrl+Z skipped, so the next
 //! undo took back something older, out of order. Their tracks are kept
 //! before the edit, and what changed is recorded as one named step: the
 //! clips and transitions of the tracks whose clips changed, the one track
@@ -23,23 +21,6 @@ const GESTURE_GAP: std::time::Duration = std::time::Duration::from_millis(700);
 /// tracks without recording it, or `None` for one that records itself.
 pub fn label(cmd: &AppCommand) -> Option<&'static str> {
     Some(match cmd {
-        AppCommand::LiftEdit => "Lift",
-        AppCommand::OverwriteEdit | AppCommand::InsertSourceAtPlayhead => "Overwrite",
-        AppCommand::FitToFillEdit => "Fit to Fill",
-        AppCommand::PlaceOnTopEdit => "Place on Top",
-        AppCommand::ReplaceEdit => "Replace",
-        AppCommand::RippleOverwriteEdit => "Ripple Overwrite",
-        AppCommand::ExtractEdit => "Extract",
-        AppCommand::CloseGap { .. } => "Close Gap",
-        AppCommand::CloseAllGaps { .. } => "Close All Gaps",
-        AppCommand::SetClipKeepPitch { .. } => "Keep Pitch",
-        AppCommand::InsertGapOnTrack { .. } => "Insert Gap",
-        // A generator added was no undo step.
-        AppCommand::CreateGeneratorClip { .. } => "Add Generator",
-        AppCommand::CreateAdjustmentLayer => "Add Adjustment Layer",
-        AppCommand::SetClipEnabled { enabled: true, .. } => "Enable Clip",
-        AppCommand::SetClipEnabled { .. } => "Disable Clip",
-        AppCommand::SetClipSolo { .. } => "Solo Clip",
         // Captions (#70): adding one was not undoable; a caption style,
         // with the captions it restyles, is one step.
         AppCommand::AddSubtitleAtPlayhead { .. } => "Add Caption",
@@ -114,7 +95,6 @@ pub fn record(state: &mut AppState, before: Before) {
         None => edit_between(before.label, &before.tracks, &seq.tracks),
     };
     let Some(edit) = edit else { return };
-    let edit = with_marks_used_up(state, before.label, edit);
     let now = std::time::Instant::now();
     let continues = is_gesture(before.label)
         && state
@@ -137,18 +117,6 @@ pub fn record(state: &mut AppState, before: Before) {
     }
     // Already made in place; the step sets it again.
     let _ = state.commit(edit);
-}
-
-/// `edit` with the In and Out points cleared in the same step, for Lift and
-/// Extract, which use them up. Left set after a cut in the middle, they
-/// marked whatever now followed it, and the export defaulted to that.
-fn with_marks_used_up(state: &mut AppState, label: &'static str, edit: EditCommand) -> EditCommand {
-    let seq = &mut state.document.sequences[state.active_sequence_idx];
-    if !matches!(label, "Lift" | "Extract") || (seq.in_point.is_none() && seq.out_point.is_none()) {
-        return edit;
-    }
-    let (old_in, old_out) = (seq.in_point.take(), seq.out_point.take());
-    EditCommand::Named { label: label.into(), edit: Box::new(EditCommand::Batch(vec![edit, EditCommand::SetRange { old_in, old_out, new_in: None, new_out: None }])) }
 }
 
 /// The undo record taking `old` to `new`; see
@@ -192,9 +160,7 @@ mod tests {
     #[test]
     fn an_edit_made_in_place_is_one_named_undo_step() {
         let mut state = state_with_a_clip();
-        let clip = state.document.sequences[0].all_clips().next().unwrap().id;
-        let cmd = AppCommand::SetClipEnabled { clip_id: clip, enabled: false };
-        let before = before(&state, &cmd).expect("recorded here");
+        let before = before_labelled(&state, "Disable Clip").expect("recorded here");
         state.document.sequences[0].all_clips_mut().next().unwrap().enabled = false;
         record(&mut state, before);
         assert_eq!(top_label(&mut state).as_deref(), Some("Disable Clip"));
@@ -205,9 +171,9 @@ mod tests {
     #[test]
     fn an_edit_that_changed_nothing_records_nothing() {
         let mut state = state_with_a_clip();
-        let before = before(&state, &AppCommand::LiftEdit).unwrap();
+        let before = before_labelled(&state, "Lift").unwrap();
         record(&mut state, before);
-        assert_eq!(state.active_history_mut().undo_count(), 0, "a refused lift is no step");
+        assert_eq!(state.active_history_mut().undo_count(), 0, "a refused edit is no step");
     }
 
     #[test]
@@ -373,46 +339,11 @@ mod tests {
         assert_eq!(marks(&s), (Some(8.0), Some(12.0)));
     }
 
-    /// Lift and Extract use the marks up, and clear them in their own undo
-    /// step. Left set after a cut in the middle, they marked whatever now
-    /// followed it, and the export defaulted to those few seconds.
-    #[test]
-    fn lift_and_extract_clear_the_marks_they_used() {
-        for (cmd, name) in [(AppCommand::ExtractEdit, "Extract"), (AppCommand::LiftEdit, "Lift")] {
-            let mut s = marked_state();
-            let steps = s.active_history().undo_count();
-            let was = before(&s, &cmd).expect("recorded");
-            let idx = s.active_sequence_idx;
-            let p = s.sequence().primary_track_index().unwrap();
-            s.document.sequences[idx].tracks[p].clips.remove(1);
-            record(&mut s, was);
-            assert_eq!(marks(&s), (None, None), "{name}");
-            assert_eq!(s.active_history().undo_count(), steps + 1, "{name}: one step");
-            assert_eq!(s.undo_label().as_deref(), Some(name));
-            apply(&mut s, true);
-            assert_eq!(marks(&s), (Some(8.0), Some(18.0)), "{name} undone");
-            assert_eq!(s.sequence().tracks[p].clips.len(), 2, "{name} undone");
-            apply(&mut s, false);
-            assert_eq!(marks(&s), (None, None), "{name} redone");
-        }
-    }
-
-    /// One that changed nothing (every track locked, say) used nothing up.
-    #[test]
-    fn a_lift_that_changed_nothing_keeps_the_marks() {
-        let mut s = marked_state();
-        let was = before(&s, &AppCommand::LiftEdit).expect("recorded");
-        record(&mut s, was);
-        assert_eq!(marks(&s), (Some(8.0), Some(18.0)));
-    }
-
     #[test]
     fn every_edit_named_here_has_a_label() {
-        let id = klipp_core::ClipId::new();
         for cmd in [
-            AppCommand::LiftEdit,
-            AppCommand::ExtractEdit,
-            AppCommand::SetClipEnabled { clip_id: id, enabled: false },
+            AppCommand::AddSubtitleAtPlayhead { timeline_in: klipp_core::RationalTime::from_secs_f64(0.0, 24), duration_frames: 24 },
+            AppCommand::SetTransitionKind { track_index: 0, transition_id: klipp_core::TransitionId::new(), kind_id: 0 },
         ] {
             assert!(label(&cmd).is_some(), "{cmd:?}");
         }

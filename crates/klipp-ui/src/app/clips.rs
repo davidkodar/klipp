@@ -711,25 +711,19 @@ impl KlippApp {
                 }
                 // Toggle clip enabled/disabled
                 AppCommand::SetClipEnabled { clip_id, enabled } => {
-                    let cid = *clip_id;
-                    let en = *enabled;
-                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
-                        clip.enabled = en;
-                    }
-                    self.state.dirty = true;
-                    self.sync_sequence_to_engine();
+                    self.commit_tracks(if *enabled { "Enable Clip" } else { "Disable Clip" }, |seq| {
+                        if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                            clip.enabled = *enabled;
+                        }
+                    });
                     true
                 }
                 AppCommand::SetClipSolo { clip_id, solo } => {
-                    let cid = *clip_id;
-                    let s = *solo;
-                    let seq = &mut self.state.document.sequences[self.state.active_sequence_idx];
-                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
-                        clip.solo = s;
-                    }
-                    self.state.dirty = true;
-                    self.sync_sequence_to_engine();
+                    self.commit_tracks("Solo Clip", |seq| {
+                        if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                            clip.solo = *solo;
+                        }
+                    });
                     true
                 }
 
@@ -1296,16 +1290,16 @@ impl KlippApp {
                     let ti = *track_index;
                     let gaps = self.state.sequence().tracks.get(ti).filter(|t| !t.locked).map(crate::selection::gaps).unwrap_or_default();
                     let (mut closed, mut left) = (0, None);
-                    for (start, end) in gaps.into_iter().rev() {
-                        match self.state.sequence_mut().close_gap(ti, start, end) {
-                            Ok(_) => closed += 1,
-                            Err(why) => left = left.or(Some(why)),
+                    self.commit_tracks("Close All Gaps", |seq| {
+                        for (start, end) in gaps.into_iter().rev() {
+                            match seq.close_gap(ti, start, end) {
+                                Ok(_) => closed += 1,
+                                Err(why) => {
+                                    left.get_or_insert(why);
+                                }
+                            }
                         }
-                    }
-                    if closed > 0 {
-                        self.state.dirty = true;
-                        self.sync_sequence_to_engine();
-                    }
+                    });
                     let done = match closed {
                         0 => "No gaps closed on that track".to_string(),
                         1 => "Closed 1 gap".to_string(),

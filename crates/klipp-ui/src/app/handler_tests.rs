@@ -1353,3 +1353,75 @@ fn first(app: &KlippApp, kind: klipp_timeline::TrackKind) -> (usize, klipp_core:
     let i = app.state.sequence().tracks.iter().position(|t| t.kind == kind).unwrap();
     (i, app.state.sequence().tracks[i].id)
 }
+
+/// A clip enabled, disabled or soloed, a gap closed or put in, a range
+/// lifted or extracted, a generator or adjustment layer added, and the
+/// source edits are each one step under their own name, recorded by
+/// their handlers: undo gives the timeline back, redo makes it again.
+#[test]
+fn clip_and_timeline_edits_are_each_their_own_named_step() {
+    use klipp_timeline::TrackKind;
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    type Make = fn(&mut KlippApp, klipp_core::ClipId) -> AppCommand;
+    let cases: Vec<(&str, Make)> = vec![
+        ("Disable Clip", |_, picture| AppCommand::SetClipEnabled { clip_id: picture, enabled: false }),
+        ("Solo Clip", |_, picture| AppCommand::SetClipSolo { clip_id: picture, solo: true }),
+        ("Close Gap", |_, _| AppCommand::CloseGap { track_index: 0, gap_start: klipp_core::RationalTime::from_secs_f64(4.0, 24), gap_end: klipp_core::RationalTime::from_secs_f64(6.0, 24) }),
+        ("Close All Gaps", |_, _| AppCommand::CloseAllGaps { track_index: 0 }),
+        ("Insert Gap", |_, _| AppCommand::InsertGapOnTrack { track_idx: 0, duration_secs: 1.0 }),
+        ("Add Generator", |_, _| AppCommand::CreateGeneratorClip { track_index: None, at: None, data: klipp_core::GeneratorData::ColorBars }),
+        ("Add Adjustment Layer", |_, _| AppCommand::CreateAdjustmentLayer),
+        ("Overwrite", |a, _| {
+            a.state.source_media_id = Some(a_file(a));
+            AppCommand::OverwriteEdit
+        }),
+        // Patched to the free track on top: laid there in place, not
+        // through the storyline's own step.
+        ("Overwrite", |a, _| {
+            a.state.source_media_id = Some(a_file(a));
+            a.state.sequence_mut().patch_source_to(0);
+            AppCommand::OverwriteEdit
+        }),
+        ("Place on Top", |a, _| {
+            a.state.source_media_id = Some(a_file(a));
+            AppCommand::PlaceOnTopEdit
+        }),
+    ];
+    for (label, make) in cases {
+        let (mut app, _engine) = KlippApp::for_test();
+        let (picture, _) = linked_pair(&mut app);
+        // A track of its own on top, clips at 0 and 6 s with a gap
+        // between: the storyline under it has none.
+        let mut v2 = klipp_timeline::Track::new("Video 2", TrackKind::Video);
+        let m = klipp_core::MediaId::new();
+        v2.clips = vec![klipp_timeline::Clip::media(m, at(0.0), at(4.0), at(0.0), at(4.0)), klipp_timeline::Clip::media(m, at(6.0), at(8.0), at(0.0), at(2.0))];
+        app.state.sequence_mut().tracks.insert(0, v2);
+        app.state.playhead = at(1.0);
+        let cmd = make(&mut app, picture);
+        redoes_as_made(&mut app, vec![cmd.clone()]);
+        assert_eq!(app.state.undo_label().as_deref(), Some(label), "{cmd:?}");
+    }
+
+    // Lift and Extract use up the marks in the same step; undone, the
+    // marks and the clips are back together. One that changed nothing
+    // (every track locked) used nothing up and is no step.
+    for (cmd, label) in [(AppCommand::LiftEdit, "Lift"), (AppCommand::ExtractEdit, "Extract")] {
+        let (mut app, _engine) = KlippApp::for_test();
+        linked_pair(&mut app);
+        let marks = |app: &KlippApp| (app.state.sequence().in_point, app.state.sequence().out_point);
+        (app.state.sequence_mut().in_point, app.state.sequence_mut().out_point) = (Some(at(1.0)), Some(at(2.0)));
+        redoes_as_made(&mut app, vec![cmd.clone()]);
+        assert_eq!(app.state.undo_label().as_deref(), Some(label));
+        assert_eq!(marks(&app), (None, None), "{label}: the marks used up");
+        app.send_commands(vec![AppCommand::Undo]);
+        assert_eq!(marks(&app), (Some(at(1.0)), Some(at(2.0))), "{label} undone: the marks back");
+
+        for t in &mut app.state.sequence_mut().tracks {
+            t.locked = true;
+        }
+        let depth = app.state.undo_depth();
+        app.send_commands(vec![cmd]);
+        assert_eq!(app.state.undo_depth(), depth, "{label}: every track locked, no step");
+        assert_eq!(marks(&app), (Some(at(1.0)), Some(at(2.0))), "{label}: nothing used up");
+    }
+}
