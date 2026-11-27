@@ -26,8 +26,7 @@ struct Timeline {
 
 impl Timeline {
     fn new(state: AppState) -> Self {
-        let mut old = crate::panels::timeline::TimelinePanel::default();
-        old.embedded = true;
+        let old = crate::panels::timeline::TimelinePanel::default();
         let mut t = Timeline { ctx: egui::Context::default(), state, panel: Default::default(), old, time: 0.0, sent: Vec::new(), last: Default::default() };
         t.state.timeline_zoom = ZOOM;
         t.state.timeline_scroll_x = 0.0;

@@ -70,8 +70,7 @@ fn timeline() -> (Timeline, ClipId) {
     clip.volume = 0.25;
     let id = clip.id;
     seq.tracks[a1].clips.push(clip);
-    let mut old = crate::panels::timeline::TimelinePanel::default();
-    old.embedded = true;
+    let old = crate::panels::timeline::TimelinePanel::default();
     let mut tl = Timeline { ctx: egui::Context::default(), state, panel: Default::default(), old, time: 0.0, sent: Vec::new() };
     tl.frame(Vec::new());
     tl.frame(Vec::new());

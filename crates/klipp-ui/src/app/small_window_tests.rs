@@ -148,7 +148,6 @@ fn the_timeline_shows_v1_a1_and_a2() {
         let kb = crate::keybindings::KeyBindings::defaults();
         let mut panel = crate::timeline::NewTimelinePanel::default();
         let mut old = crate::panels::timeline::TimelinePanel::default();
-        old.embedded = true;
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, rect.size());
         let mut shown = Vec::new();
         for frame in 0..3 {

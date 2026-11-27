@@ -6328,28 +6328,6 @@ impl AppState {
         self.dirty = true;
     }
 
-    /// Track `track_idx`'s automation lane height while its handle is
-    /// dragged, as [`Self::show_track_height`] shows a track's.
-    pub(crate) fn show_lane_height(&mut self, track_idx: usize, height: f32) {
-        if let Some(t) = self.document.sequences[self.active_sequence_idx].tracks.get_mut(track_idx) {
-            t.automation_lane_height = Some(height);
-            self.dirty = true;
-        }
-    }
-
-    /// Track `track_idx` folded to `min` from `height`, the height it
-    /// unfolds to kept on the track, or unfolded when it is folded: the
-    /// height it takes now, for the caller to send.
-    pub(crate) fn fold_track(&mut self, track_idx: usize, height: f32, min: f32) -> Option<f32> {
-        let track = self.document.sequences[self.active_sequence_idx].tracks.get_mut(track_idx)?;
-        if track.custom_height.is_some_and(|h| h <= min + 1.0) {
-            track.pre_collapse_height.take()
-        } else {
-            track.pre_collapse_height = track.custom_height.or(Some(height));
-            Some(min)
-        }
-    }
-
     /// The track a drop let go off the tracks makes for itself, and its
     /// index: a video track on top, an audio track at the bottom, a text
     /// track at the top. Made in place: the step the drop then makes

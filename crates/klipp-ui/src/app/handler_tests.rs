@@ -1200,10 +1200,9 @@ fn a_live_edit_shown_cancels_to_the_start_and_ends_as_one_step() {
 }
 
 /// A height handle dragged shows the track's height (every track's with
-/// Ctrl) and its lane's, marked unsaved with no undo step; a double-click
-/// folds the track, keeping the height it unfolds to, and unfolds it.
+/// Ctrl), marked unsaved with no undo step.
 #[test]
-fn track_heights_shown_while_dragged_and_a_track_folded_and_unfolded() {
+fn track_heights_shown_while_dragged() {
     let (mut app, _engine) = KlippApp::for_test();
     let depth = app.state.undo_depth();
     let n = app.state.sequence().tracks.len();
@@ -1214,13 +1213,8 @@ fn track_heights_shown_while_dragged_and_a_track_folded_and_unfolded() {
     assert!(heights(&app).iter().enumerate().all(|(i, h)| i == 1 || h.is_none()), "the one track");
     app.state.show_track_height(0, 70.0, true);
     assert!(heights(&app).iter().all(|h| *h == Some(70.0)), "every track, with Ctrl");
-    app.state.show_lane_height(0, 150.0);
-    assert_eq!(app.state.sequence().tracks[0].automation_lane_height, Some(150.0));
     assert!(app.state.dirty);
     assert_eq!(app.state.undo_depth(), depth, "a height is no edit");
-    assert_eq!(app.state.fold_track(0, 70.0, 32.0), Some(32.0), "folded");
-    app.send_commands(vec![AppCommand::SetTrackCustomHeight { track_id: app.state.sequence().tracks[0].id, height: Some(32.0) }]);
-    assert_eq!(app.state.fold_track(0, 32.0, 32.0), Some(70.0), "unfolded to where it was");
 }
 
 /// A clip let go near the storyline is moved and connected in one step,
@@ -1498,4 +1492,19 @@ fn captions_transitions_and_the_rest_are_each_their_own_named_step() {
     redoes_as_made(&mut app, vec![AppCommand::ImportSubtitles { path: path.clone() }]);
     let _ = std::fs::remove_file(&path);
     assert_eq!(app.state.undo_label().as_deref(), Some("Import Subtitles"));
+}
+
+/// #1816: a track's height as a header drag commits it stops at the
+/// timeline preferences' max track height (250 stops it at 250, 400
+/// lets it reach 400) and never goes below the smallest track.
+#[test]
+fn a_committed_track_height_stops_at_the_preferences_cap() {
+    let (mut app, _engine) = KlippApp::for_test();
+    let track_id = app.state.sequence().tracks[0].id;
+    for (max, asked, got) in [(250.0, 400.0, 250.0), (400.0, 400.0, 400.0), (250.0, 150.0, 150.0), (250.0, 5.0, 32.0)] {
+        app.state.timeline_prefs.max_track_height = max;
+        app.send_commands(vec![AppCommand::SetTrackCustomHeight { track_id, height: Some(asked) }]);
+        assert_eq!(app.state.sequence().tracks[0].custom_height, Some(got), "max {max}, asked {asked}");
+    }
+    assert_eq!(crate::panels::timeline::track_height_cap(&crate::prefs::TimelinePrefs::default()), 300.0, "the default is the old fixed cap");
 }

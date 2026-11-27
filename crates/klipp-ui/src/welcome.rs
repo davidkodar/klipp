@@ -465,7 +465,6 @@ mod tests {
         let mut state = AppState::default();
         let mut panel = crate::timeline::NewTimelinePanel::default();
         let mut old = crate::panels::timeline::TimelinePanel::default();
-        old.embedded = true;
         let mut drawn = |state: &mut AppState| -> bool {
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 600.0))), ..Default::default() };
             let out = ctx.run(input, |ctx| {
