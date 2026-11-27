@@ -125,6 +125,47 @@ fn commit_move(state: &mut AppState, before: klipp_timeline::Sequence, edit: Edi
 /// over what is there; its linked partner and its group by the same
 /// amount.
 pub(super) fn move_clip(state: &mut AppState, clip_id: ClipId, new_timeline_in: Timecode) {
+    move_clip_then(state, clip_id, new_timeline_in, |_| None);
+}
+
+/// `clip_id` let go on its own track at `new_timeline_in` and connected
+/// to the storyline or disconnected from it there, one undo step: the
+/// move as [`move_clip`] makes it, then `magnet` on the clip where it
+/// landed. Connected, it takes the storyline clip under its start, or the
+/// nearest. Made as two steps, undo took back the move and left the
+/// connection, and the anchor was chosen where the clip had been.
+pub(super) fn drop_clip(state: &mut AppState, clip_id: ClipId, new_timeline_in: Timecode, magnet: klipp_core::Magnet) {
+    let moved = state.sequence().all_clips().find(|c| c.id == clip_id).is_some_and(|c| c.timeline_in != new_timeline_in);
+    if moved {
+        move_clip_then(state, clip_id, new_timeline_in, |s| magnet_edit(s, clip_id, magnet));
+    } else {
+        let _ = state.commit_worked_out(|s| magnet_edit(s, clip_id, magnet));
+    }
+}
+
+/// `magnet` made on `clip_id` in place, and its step; none when there is
+/// nothing to do (connected already, or not connected to let go).
+fn magnet_edit(state: &mut AppState, clip_id: ClipId, magnet: klipp_core::Magnet) -> Option<EditCommand> {
+    use klipp_timeline::magnetic::MagneticEditor;
+    let seq = state.sequence();
+    let clip = seq.all_clips().find(|c| c.id == clip_id)?;
+    let (start, connected) = (clip.timeline_in, clip.magnetic_anchor.is_some());
+    let command = match magnet {
+        klipp_core::Magnet::Connect if !connected => {
+            let primary = &seq.tracks[seq.primary_track_index()?];
+            let distance = |c: &klipp_timeline::Clip| if start < c.timeline_in { (c.timeline_in - start).value } else if start >= c.timeline_out { (start - c.timeline_out).value + 1 } else { 0 };
+            let anchor = primary.clips.iter().filter(|c| !c.kind.is_gap() && c.id != clip_id).min_by_key(|c| distance(c))?.id;
+            MagneticEditor::connect_clip(state.sequence_mut(), clip_id, anchor, klipp_timeline::AnchorAlignment::StartAligned).command
+        }
+        klipp_core::Magnet::Disconnect if connected => MagneticEditor::disconnect_clip(state.sequence_mut(), clip_id).command,
+        _ => return None,
+    };
+    Some(EditCommand::Magnetic(command))
+}
+
+/// [`move_clip`], with `then` made on the moved clip in place before the
+/// step is recorded, its edit in the same step.
+fn move_clip_then(state: &mut AppState, clip_id: ClipId, new_timeline_in: Timecode, then: impl FnOnce(&mut AppState) -> Option<EditCommand>) {
     // Snapshot the link/group info and compute the delta before
     // we start mutating. The linked partner (set up by
     // ImportMediaLinked for A/V pairs) must follow the primary
@@ -188,7 +229,8 @@ pub(super) fn move_clip(state: &mut AppState, clip_id: ClipId, new_timeline_in: 
     match primary_history {
         Some((old_in, old_out, new_in, new_out)) => {
             let move_clip = EditCommand::LegacyMoveClip { clip_id, old_timeline_in: old_in, old_timeline_out: old_out, new_timeline_in: new_in, new_timeline_out: new_out, linked_partner: None };
-            commit_move(state, before, move_clip, cover.into_iter().chain(partner_edits.into_iter().flatten()).chain(group_moves).collect());
+            let then = then(state);
+            commit_move(state, before, move_clip, cover.into_iter().chain(partner_edits.into_iter().flatten()).chain(group_moves).chain(then).collect());
         }
         None => *state.sequence_mut() = before,
     }

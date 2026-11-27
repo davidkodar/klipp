@@ -391,6 +391,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::MovePrimaryBlock { .. }
         | AppCommand::AttachLinkedAudio { .. }
         | AppCommand::MoveClip { .. }
+        | AppCommand::DropClip { .. }
         | AppCommand::MoveClipToTrack { .. }
         | AppCommand::SwapAdjacentClips { .. }
         | AppCommand::TrimClip { .. }
