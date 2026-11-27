@@ -1571,8 +1571,13 @@ mod menu_smoke_tests {
             timeline.frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
             sent.append(&mut timeline.sent);
             let want = f64::from((x - rect.left() + timeline.state.timeline_scroll_x) / timeline.state.timeline_zoom);
+            assert_eq!(videos(&timeline), before, "{above} px above: the timeline makes no track itself");
+            // The app makes the track and sends the drop onto it.
             let placed = sent.iter().find_map(|c| match c {
-                AppCommand::PlaceMedia { media_id, drop: klipp_core::events::ClipDrop::OnTrackAt { track_index, at, .. } } if *media_id == media => Some((*track_index, at.to_secs_f64())),
+                AppCommand::DropOnNewTrack { kind: klipp_core::NewTrack::Video, then } => Some(then.clone()),
+                _ => None,
+            }).and_then(|then| then.onto_track(timeline.state.make_drop_track(klipp_core::NewTrack::Video))).and_then(|c| match c {
+                AppCommand::PlaceMedia { media_id, drop: klipp_core::events::ClipDrop::OnTrackAt { track_index, at, .. } } if media_id == media => Some((track_index, at.to_secs_f64())),
                 _ => None,
             });
             let made = placed.is_some_and(|(ti, _)| timeline.state.document.sequences[0].tracks[ti].kind == TrackKind::Video && timeline.state.document.sequences[0].tracks[ti].clips.is_empty());
@@ -2057,12 +2062,17 @@ mod menu_smoke_tests {
         let last = timeline.old.frame_cache.track_rects.last().expect("tracks drawn").2;
         let below = egui::pos2(500.0, last.bottom() + 40.0);
         timeline.frame(vec![egui::Event::PointerMoved(below), egui::Event::PointerButton { pos: below, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+        assert_eq!(timeline.state.document.sequences[0].tracks.len(), tracks, "the timeline makes no track itself");
+        // The app makes the track and sends the drop onto it.
+        let Some(AppCommand::DropOnNewTrack { kind, then }) = timeline.sent.iter().find(|c| matches!(c, AppCommand::DropOnNewTrack { .. })).cloned() else { panic!("no drop onto a new track: {:?}", timeline.sent) };
+        assert_eq!(kind, klipp_core::NewTrack::Video);
+        let made = timeline.state.make_drop_track(kind);
         let seq = &timeline.state.document.sequences[0];
         assert_eq!(seq.tracks.len(), tracks + 1, "one track made");
-        let placed = timeline.sent.iter().find_map(|c| match c {
-            AppCommand::PlaceMedia { drop: klipp_core::events::ClipDrop::OnTrackAt { track_index, at, .. }, .. } => Some((*track_index, *at)),
+        let placed = match then.onto_track(made) {
+            Some(AppCommand::PlaceMedia { drop: klipp_core::events::ClipDrop::OnTrackAt { track_index, at, .. }, .. }) => Some((track_index, at)),
             _ => None,
-        });
+        };
         let (target, at) = placed.unwrap_or_else(|| panic!("nothing placed: {:?}", timeline.sent));
         let track = &seq.tracks[target];
         assert!(matches!(track.kind, TrackKind::Video) && track.clips.is_empty(), "the clip goes on the new track, not {}", track.name);

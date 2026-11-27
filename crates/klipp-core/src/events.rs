@@ -1371,6 +1371,30 @@ pub enum Magnet {
     Disconnect,
 }
 
+impl AppCommand {
+    /// This drop sent onto track `track_index` in place of the track it
+    /// named: a placement, an append or a title. None for any other
+    /// command.
+    pub fn onto_track(&self, track_index: usize) -> Option<AppCommand> {
+        Some(match self {
+            AppCommand::AppendClipToTrack { media_id, .. } => AppCommand::AppendClipToTrack { media_id: *media_id, track_index },
+            AppCommand::AppendMediaBatchToTrack { media_ids, .. } => AppCommand::AppendMediaBatchToTrack { media_ids: media_ids.clone(), track_index },
+            AppCommand::PlaceMedia { media_id, drop: ClipDrop::OnTrackAt { at, overwrite, .. } } => AppCommand::PlaceMedia { media_id: *media_id, drop: ClipDrop::OnTrackAt { track_index, at: *at, overwrite: *overwrite } },
+            AppCommand::CreateTitleClip { timeline_in, duration_frames, .. } => AppCommand::CreateTitleClip { track_index, timeline_in: *timeline_in, duration_frames: *duration_frames },
+            _ => return None,
+        })
+    }
+}
+
+/// The track a drop let go off the tracks makes for itself: a video
+/// track on top, an audio track at the bottom, a text track at the top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewTrack {
+    Video,
+    Audio,
+    Text,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     /// A batch of graph ops on one picture, applied as one undo step named
@@ -1559,6 +1583,10 @@ pub enum AppCommand {
     /// A clip let go on its own track at `new_timeline_in` and connected
     /// or disconnected there, as `magnet` says: one undo step for both.
     DropClip { clip_id: ClipId, new_timeline_in: Timecode, magnet: Magnet },
+    /// A track of `kind` made and `then` sent onto it, its track index
+    /// that of the new track: media or a title let go above or below the
+    /// tracks. The track goes in the step `then` makes.
+    DropOnNewTrack { kind: NewTrack, then: Box<AppCommand> },
     MoveClipToTrack { clip_id: ClipId, new_timeline_in: Timecode, from_track: usize, to_track: usize },
     /// Several clips moved by one drag, as one undo step (#3060): each to
     /// its new start, and to another track when `to_track` says so; their

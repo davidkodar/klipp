@@ -1250,3 +1250,34 @@ fn a_drop_moves_and_connects_or_disconnects_as_one_step() {
     redoes_as_made(&mut app, vec![AppCommand::DropClip { clip_id: id, new_timeline_in: at(3.0), magnet: klipp_core::Magnet::Connect }]);
     assert_eq!(anchor(&app), Some(ids[1]));
 }
+
+/// Media or a title let go off the tracks makes its track and goes on it
+/// as one step: undo takes away the clip and the track, redo makes both.
+/// The timeline made the track itself before sending the drop.
+#[test]
+fn a_drop_off_the_tracks_makes_its_track_in_the_same_step() {
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    for kind in [klipp_core::NewTrack::Video, klipp_core::NewTrack::Audio, klipp_core::NewTrack::Text] {
+        let (mut app, _engine) = KlippApp::for_test();
+        linked_pair(&mut app);
+        app.state.note_recorded_tracks();
+        let media_id = a_file(&mut app);
+        let tracks = app.state.sequence().tracks.len();
+        let then = match kind {
+            klipp_core::NewTrack::Text => AppCommand::CreateTitleClip { track_index: 0, timeline_in: at(2.0), duration_frames: 48 },
+            _ => AppCommand::PlaceMedia { media_id, drop: klipp_core::events::ClipDrop::OnTrackAt { track_index: 0, at: at(2.0), overwrite: true } },
+        };
+        redoes_as_made(&mut app, vec![AppCommand::DropOnNewTrack { kind, then: Box::new(then) }]);
+        let seq = app.state.sequence();
+        assert!(seq.tracks.len() > tracks, "{kind:?}: a track made (and one for its sound, a picture with sound)");
+        let made = seq.tracks.iter().find(|t| !t.clips.is_empty() && t.clips.iter().any(|c| c.timeline_in == at(2.0))).unwrap_or_else(|| panic!("{kind:?}: the clip placed"));
+        let want = match kind {
+            klipp_core::NewTrack::Video => klipp_timeline::TrackKind::Video,
+            klipp_core::NewTrack::Audio => klipp_timeline::TrackKind::Audio,
+            klipp_core::NewTrack::Text => klipp_timeline::TrackKind::Text,
+        };
+        assert_eq!(made.kind, want, "{kind:?}: on the new track");
+        app.send_commands(vec![AppCommand::Undo]);
+        assert_eq!(app.state.sequence().tracks.len(), tracks, "{kind:?}: undo takes the track away too");
+    }
+}

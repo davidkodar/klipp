@@ -6350,6 +6350,38 @@ impl AppState {
         }
     }
 
+    /// The track a drop let go off the tracks makes for itself, and its
+    /// index: a video track on top, an audio track at the bottom, a text
+    /// track at the top. Made in place: the step the drop then makes
+    /// takes it in (`with_made_tracks`), and undo takes it away.
+    pub(crate) fn make_drop_track(&mut self, kind: klipp_core::NewTrack) -> usize {
+        use klipp_timeline::TrackKind;
+        let seq = &mut self.document.sequences[self.active_sequence_idx];
+        match kind {
+            klipp_core::NewTrack::Video => {
+                let id = seq.add_video_track(seq.next_track_name(TrackKind::Video));
+                seq.tracks.iter().position(|t| t.id == id).unwrap_or(0)
+            }
+            klipp_core::NewTrack::Audio => {
+                seq.add_audio_track(seq.next_track_name(TrackKind::Audio));
+                seq.tracks.len() - 1
+            }
+            klipp_core::NewTrack::Text => {
+                let n = seq.tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1;
+                seq.tracks.insert(0, klipp_timeline::Track::new(&format!("Text {n}"), TrackKind::Text));
+                0
+            }
+        }
+    }
+
+    /// The playhead a sequence opens at next: view state the sequence
+    /// keeps, not an edit.
+    pub(crate) fn keep_playhead(&mut self, sequence_idx: usize, at: klipp_core::Timecode) {
+        if let Some(seq) = self.document.sequences.get_mut(sequence_idx) {
+            seq.last_playhead = Some(at);
+        }
+    }
+
     /// Whether a gesture's edit is shown, not yet recorded.
     pub fn is_live(&self) -> bool {
         self.document.live.is_live()
