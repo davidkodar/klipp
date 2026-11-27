@@ -672,6 +672,7 @@ timeline_view! {
     timeline_scroll_x: f32 = 0.0,
     timeline_scroll_y: f32 = 0.0,
     timeline_resizing_track: Option<(usize, f32, f32)> = None,
+    timeline_resizing_lane: Option<(usize, f32, f32)> = None,
     timeline_track_pre_collapse: std::collections::HashMap<usize, f32> = Default::default(),
     ruler_press_origin: Option<egui::Pos2> = None,
     last_timeline_tracks_height: f32 = 0.0,
@@ -1599,6 +1600,9 @@ pub struct AppState {
     pub last_timeline_tracks_height: f32,
     /// (track_idx, pointer_y_at_drag_start, original_height) — set while a track resize is in progress.
     pub timeline_resizing_track: Option<(usize, f32, f32)>,
+    /// (track_idx, pointer_y_at_drag_start, original_height) — set while an
+    /// automation lane's height is dragged.
+    pub timeline_resizing_lane: Option<(usize, f32, f32)>,
     /// Per-track pre-collapse height memory for double-click collapse/expand toggle.
     pub timeline_track_pre_collapse: std::collections::HashMap<usize, f32>,
     pub playhead_follow: PlayheadFollow,
@@ -4908,6 +4912,7 @@ impl Default for AppState {
             timeline_track_scale: 1.0,
             last_timeline_tracks_height: 600.0,
             timeline_resizing_track: None,
+            timeline_resizing_lane: None,
             timeline_track_pre_collapse: std::collections::HashMap::new(),
             playhead_follow: PlayheadFollow::default(),
             playhead_follow_chosen: false,
@@ -6326,6 +6331,16 @@ impl AppState {
             }
         }
         self.dirty = true;
+    }
+
+
+    /// Track `track_idx`'s automation lane height while its handle is
+    /// dragged, as [`Self::show_track_height`] shows a track's.
+    pub(crate) fn show_lane_height(&mut self, track_idx: usize, height: f32) {
+        if let Some(t) = self.document.sequences[self.active_sequence_idx].tracks.get_mut(track_idx) {
+            t.automation_lane_height = Some(height);
+            self.dirty = true;
+        }
     }
 
     /// The track a drop let go off the tracks makes for itself, and its

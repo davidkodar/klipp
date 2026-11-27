@@ -774,6 +774,8 @@ mod menu_smoke_tests {
         height: f32,
         /// The keys held down through each frame.
         modifiers: egui::Modifiers,
+        /// The pointer's shape the last frame asked for.
+        cursor: egui::CursorIcon,
     }
 
     impl Timeline {
@@ -787,7 +789,7 @@ mod menu_smoke_tests {
             let media: MediaId = state.document.media_pool.add(item);
             state.document.sequences[0].tracks[v1].clips.push(Clip::media(media, zero, long, zero, long));
             let old = crate::panels::timeline::TimelinePanel::default();
-            Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), shapes: Vec::new(), height: 600.0, modifiers: egui::Modifiers::NONE }
+            Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), shapes: Vec::new(), height: 600.0, modifiers: egui::Modifiers::NONE, cursor: egui::CursorIcon::Default }
         }
 
         /// One frame with `events`: the text drawn, with where.
@@ -818,6 +820,7 @@ mod menu_smoke_tests {
             }
             self.sent = cmds;
             self.shapes = out.shapes.clone();
+            self.cursor = out.platform_output.cursor_icon;
             out.shapes
                 .iter()
                 .filter_map(|s| match &s.shape {
@@ -2260,5 +2263,95 @@ mod menu_smoke_tests {
         let first = labels.first().expect("the first label").1;
         let second = labels.iter().map(|l| l.0).fold(f32::MIN, f32::max);
         assert!(first <= second - 1.0, "the first label is seen to {first}, the second starts at {second}: {labels:?}");
+    }
+
+    impl Timeline {
+        /// The resize handles down the header column at `x`, top to
+        /// bottom: the middle of each band where the pointer is told it
+        /// can resize.
+        fn resize_handles(&mut self, x: f32) -> Vec<f32> {
+            let (mut handles, mut from) = (Vec::new(), None);
+            for y in 0..self.height as i32 {
+                let y = y as f32;
+                self.frame(vec![egui::Event::PointerMoved(egui::pos2(x, y))]);
+                match (self.cursor == egui::CursorIcon::ResizeVertical, from) {
+                    (true, None) => from = Some(y),
+                    (false, Some(top)) => {
+                        handles.push((top + y - 1.0) / 2.0);
+                        from = None;
+                    }
+                    _ => {}
+                }
+            }
+            handles
+        }
+
+        /// A press at `from`, dragged by `dy` in steps, let go: what the
+        /// app was asked to do, and `during(self)` read just before the
+        /// release.
+        fn drag_by<R>(&mut self, from: egui::Pos2, dy: f32, during: impl FnOnce(&Self) -> R) -> (Vec<AppCommand>, R) {
+            let button = |at, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            let mut sent = Vec::new();
+            self.frame(vec![egui::Event::PointerMoved(from)]);
+            self.frame(vec![button(from, true)]);
+            sent.append(&mut self.sent);
+            let to = from + egui::vec2(0.0, dy);
+            for k in 1..=10 {
+                self.frame(vec![egui::Event::PointerMoved(from + egui::vec2(0.0, dy * k as f32 / 10.0))]);
+                sent.append(&mut self.sent);
+            }
+            let seen = during(self);
+            self.frame(vec![button(to, false)]);
+            sent.append(&mut self.sent);
+            (sent, seen)
+        }
+    }
+
+    /// An automation lane's height is dragged by its handle along the
+    /// bottom of its header cell, shown as it moves and sent once at the
+    /// end, within the lane's bounds. Only the old panel had a handle, and
+    /// the app never drew it: a lane could not be resized by hand.
+    #[test]
+    fn an_automation_lane_is_resized_by_its_header_handle() {
+        let mut t = Timeline::new();
+        let a1 = t.state.sequence().tracks.iter().position(|t| matches!(t.kind, TrackKind::Audio)).expect("an audio track");
+        t.state.sequence_mut().tracks[a1].automation_lane_visible = Some(klipp_core::AudioParam::Volume);
+        let lane = |t: &Timeline| crate::panels::timeline::automation_lane_height(&t.state.sequence().tracks[a1]);
+        let was = lane(&t);
+        let handles = t.resize_handles(20.0);
+        let mut found = false;
+        // From the bottom up: a drag moves every handle under it.
+        for y in handles.into_iter().rev() {
+            let (sent, shown) = t.drag_by(egui::pos2(20.0, y), 40.0, lane);
+            if let Some(height) = sent.iter().find_map(|c| match c {
+                AppCommand::SetTrackAutomationLaneHeight { height, .. } => Some(*height),
+                _ => None,
+            }) {
+                assert!((shown - (was + 40.0)).abs() < 2.0, "shown as it moved: {shown}, was {was}");
+                assert_eq!(height, Some(shown), "sent once, as shown at the end");
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "a lane handle in the header column");
+        assert_eq!(super::track_headers::dragged_lane_height(120.0, 900.0), crate::panels::timeline::MAX_AUTOMATION_LANE_HEIGHT);
+        assert_eq!(super::track_headers::dragged_lane_height(120.0, -900.0), crate::panels::timeline::MIN_AUTOMATION_LANE_HEIGHT);
+    }
+
+    /// A track's height dragged stops at the timeline preferences' max
+    /// track height while it is dragged, not only when let go (#1816): the
+    /// drag showed up to 300 px past a lower cap and snapped back.
+    #[test]
+    fn a_dragged_track_stops_at_the_height_cap_as_it_moves() {
+        let mut t = Timeline::new();
+        t.state.timeline_prefs.max_track_height = 100.0;
+        let first = *t.resize_handles(20.0).first().expect("a track handle");
+        let (sent, shown) = t.drag_by(egui::pos2(20.0, first), 300.0, |t| t.state.sequence().tracks.iter().filter_map(|t| t.custom_height).fold(0.0_f32, f32::max));
+        assert!(shown > 90.0 && shown <= 100.0, "held at the cap while dragged: {shown}");
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackCustomHeight { height: Some(h), .. } if *h <= 100.0)), "{sent:?}");
+        let prefs = |max| crate::prefs::TimelinePrefs { max_track_height: max, ..Default::default() };
+        assert_eq!(super::track_headers::dragged_track_height(100.0, 400.0, &prefs(250.0)), 250.0);
+        assert_eq!(super::track_headers::dragged_track_height(100.0, 400.0, &prefs(400.0)), 400.0);
+        assert_eq!(super::track_headers::dragged_track_height(100.0, -500.0, &prefs(250.0)), 32.0);
     }
 }
