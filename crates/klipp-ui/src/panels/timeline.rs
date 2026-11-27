@@ -10343,16 +10343,9 @@ impl TimelinePanel {
                                 from_track,
                                 to_track,
                             });
-                        } else {
-                            // Incompatible track type — revert position
-                            if let Some(track) = state.sequence_mut().tracks.get_mut(from_track) {
-                                if let Some(clip) = track.find_clip_mut(clip_id) {
-                                    let dur = clip.duration();
-                                    clip.timeline_in = drag.original_timeline_in;
-                                    clip.timeline_out = drag.original_timeline_in + dur;
-                                }
-                            }
                         }
+                        // On a track of another kind: nothing, the drag
+                        // having moved only its ghost.
                     } else {
                         // Same track move
                         let is_primary = state.sequence().tracks.get(from_track)
@@ -10361,9 +10354,6 @@ impl TimelinePanel {
                             // Magnetic: route by edit mode (Insert = ripple move, Overwrite = replace)
                             let target_time = drag.shown_in;
                             if let Some(target_time) = target_time {
-                                if let Some(track) = state.sequence_mut().tracks.get_mut(from_track) {
-                                    track.sort_clips();
-                                }
                                 // Alt override: temporarily treat as Overwrite when Alt is held
                                 let alt_held = ui.input(|i| i.modifiers.alt);
                                 let effective_mode = if alt_held {
@@ -10384,71 +10374,47 @@ impl TimelinePanel {
                                     // sound stayed whole, 93 frames out.
                                     cmds.push(AppCommand::MoveClip { clip_id, new_timeline_in: target_time });
                                 } else {
-                                    // Where every clip was, for its linked
-                                    // sound to follow (#2967).
-                                    let before = state.sequence().clone();
-                                    // Into the slot the insert line showed.
-                                    let slot = state.sequence().tracks.get(from_track)
-                                        .map_or(target_time, |t| primary_insert_time(t, &[clip_id], target_time));
-                                    let result = klipp_timeline::magnetic::MagneticEditor::move_primary(
-                                        state.sequence_mut(), clip_id, slot);
-                                    record_primary_drag(state, &before, result.command);
-                                    state.dirty = true;
+                                    // Into the slot the insert line showed,
+                                    // its linked sound following, made as
+                                    // one commit.
+                                    let _ = state.commit_worked_out(|s| {
+                                        // Where every clip was, for its
+                                        // linked sound to follow (#2967).
+                                        let before = s.sequence().clone();
+                                        let slot = s.sequence().tracks.get(from_track)
+                                            .map_or(target_time, |t| primary_insert_time(t, &[clip_id], target_time));
+                                        let result = klipp_timeline::magnetic::MagneticEditor::move_primary(s.sequence_mut(), clip_id, slot);
+                                        Some(primary_drag_edit(s, &before, result.command))
+                                    });
                                     cmds.push(AppCommand::SequenceUpdated);
                                 }
                             }
                         } else {
                             let target_in = shown_in;
-                            if target_in != original_in {
-                                cmds.push(AppCommand::MoveClip {
-                                    clip_id,
-                                    new_timeline_in: target_in,
-                                });
-                            }
-
-                            // Auto-connect/disconnect on drop for non-primary tracks
+                            // Let go near the primary storyline it connects
+                            // there, dragged away from it it lets go, in the
+                            // same step as the move.
                             let primary_rect = self.frame_cache.track_rects.iter()
                                 .find(|(idx, _, _)| state.sequence().tracks.get(*idx)
                                     .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary))
-                                .map(|(pi, _, r)| (*pi, *r));
-                            if let (Some(pos), Some((primary_ti, primary_r))) = (pointer_pos, primary_rect) {
-                                let dist_px = (pos.y - primary_r.center().y).abs();
-                                let track_h = track_rect.height().max(1.0);
-                                let dist_tracks = dist_px / track_h;
-
-                                let clip_is_connected = state.sequence().tracks.get(from_track)
+                                .map(|(_, _, r)| *r);
+                            let magnet = pointer_pos.zip(primary_rect).and_then(|(pos, primary_r)| {
+                                let dist_tracks = (pos.y - primary_r.center().y).abs() / track_rect.height().max(1.0);
+                                let connected = state.sequence().tracks.get(from_track)
                                     .and_then(|t| t.find_clip(clip_id))
                                     .is_some_and(|c| c.magnetic_anchor.is_some());
-
-                                if dist_tracks < klipp_timeline::magnetic::AUTO_CONNECT_TRACK_DISTANCE && !clip_is_connected {
-                                    // Auto-connect: find nearest primary clip
-                                    let clip_in = state.sequence().tracks.get(from_track)
-                                        .and_then(|t| t.find_clip(clip_id))
-                                        .map(|c| c.timeline_in);
-                                    if let Some(clip_in) = clip_in {
-                                        let anchor_id = state.sequence().tracks[primary_ti].clips.iter()
-                                            .min_by_key(|c| {
-                                                let mid = c.timeline_in + (c.timeline_out - c.timeline_in);
-                                                let diff = mid - clip_in;
-                                                diff.value.unsigned_abs()
-                                            })
-                                            .map(|c| c.id);
-                                        if let Some(anchor_id) = anchor_id {
-                                            let _ = state.commit_worked_out(|s| Some(crate::history::EditCommand::Magnetic(
-                                                klipp_timeline::magnetic::MagneticEditor::connect_clip(
-                                                    s.sequence_mut(), clip_id, anchor_id,
-                                                    klipp_timeline::AnchorAlignment::StartAligned).command,
-                                            )));
-                                            cmds.push(AppCommand::SequenceUpdated);
-                                        }
-                                    }
-                                } else if dist_tracks > klipp_timeline::magnetic::AUTO_DISCONNECT_TRACK_DISTANCE && clip_is_connected {
-                                    // Auto-disconnect
-                                    let _ = state.commit_worked_out(|s| Some(crate::history::EditCommand::Magnetic(
-                                        klipp_timeline::magnetic::MagneticEditor::disconnect_clip(s.sequence_mut(), clip_id).command,
-                                    )));
-                                    cmds.push(AppCommand::SequenceUpdated);
+                                if dist_tracks < klipp_timeline::magnetic::AUTO_CONNECT_TRACK_DISTANCE && !connected {
+                                    Some(klipp_core::Magnet::Connect)
+                                } else if dist_tracks > klipp_timeline::magnetic::AUTO_DISCONNECT_TRACK_DISTANCE && connected {
+                                    Some(klipp_core::Magnet::Disconnect)
+                                } else {
+                                    None
                                 }
+                            });
+                            match magnet {
+                                Some(magnet) => cmds.push(AppCommand::DropClip { clip_id, new_timeline_in: target_in, magnet }),
+                                None if target_in != original_in => cmds.push(AppCommand::MoveClip { clip_id, new_timeline_in: target_in }),
+                                None => {}
                             }
                         }
                     }
@@ -16918,14 +16884,11 @@ fn hover_timeline_time(state: &AppState, track_idx: usize, clip_index: usize, fr
 /// A drag on the primary track done (#2967): with Linked on, the sound
 /// linked to each picture it moved follows by the same amount, the move
 /// and the sound one undo step; with Linked off, the picture alone.
-fn record_primary_drag(state: &mut AppState, before: &klipp_timeline::Sequence, command: klipp_timeline::magnetic_commands::MagneticEditCommand) {
+fn primary_drag_edit(state: &mut AppState, before: &klipp_timeline::Sequence, command: klipp_timeline::magnetic_commands::MagneticEditCommand) -> crate::history::EditCommand {
     let partners = if state.linked_selection { klipp_timeline::magnetic::MagneticEditor::follow_linked_partners(before, state.sequence_mut()) } else { Vec::new() };
-    // The drag moved the clips live; the step records what it did, with
-    // the follow-ups every edit gets.
     let moved = crate::history::EditCommand::Magnetic(command);
     if partners.is_empty() {
-        state.push_history(moved);
-        return;
+        return moved;
     }
     let sounds = partners.into_iter().map(|p| crate::history::EditCommand::LegacyMoveClip {
         clip_id: p.clip_id,
@@ -16935,12 +16898,11 @@ fn record_primary_drag(state: &mut AppState, before: &klipp_timeline::Sequence, 
         new_timeline_out: p.new_out,
         linked_partner: None,
     });
-    state.push_history(crate::history::EditCommand::Named {
+    crate::history::EditCommand::Named {
         label: "Move Clip".into(),
         edit: Box::new(crate::history::EditCommand::Batch(std::iter::once(moved).chain(sounds).collect())),
-    });
+    }
 }
-
 
 #[cfg(test)]
 mod linked_drag_tests {
@@ -16980,11 +16942,13 @@ mod linked_drag_tests {
             state.linked_selection = linked;
             let sounds: Vec<_> = ids.iter().map(|&id| sound_of(&state, id)).collect();
             let before_spans: Vec<_> = sounds.iter().map(|&s| span(&state, s)).collect();
-            let before = state.sequence().clone();
             let to = RationalTime::from_secs_f64(4.0, state.sequence().fps.rate());
-            let result = klipp_timeline::magnetic::MagneticEditor::move_primary(state.sequence_mut(), ids[0], to);
             let counted = state.history_ops_since_save;
-            record_primary_drag(&mut state, &before, result.command);
+            let _ = state.commit_worked_out(|s| {
+                let before = s.sequence().clone();
+                let result = klipp_timeline::magnetic::MagneticEditor::move_primary(s.sequence_mut(), ids[0], to);
+                Some(primary_drag_edit(s, &before, result.command))
+            });
             assert_eq!(state.history_ops_since_save, counted + 1, "one step, counted toward autosave");
             assert_ne!(span(&state, ids[0]), before_spans[0], "the picture moved");
             for (&id, &sound) in ids.iter().zip(&sounds) {

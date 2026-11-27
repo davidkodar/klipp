@@ -1362,6 +1362,15 @@ pub enum CompositionClipAction {
     FromClips,
 }
 
+/// What a clip let go near the primary storyline does with it: connects
+/// to the storyline clip it lands over, or lets go of the one it was
+/// connected to, dragged away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Magnet {
+    Connect,
+    Disconnect,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     /// A batch of graph ops on one picture, applied as one undo step named
@@ -1547,6 +1556,9 @@ pub enum AppCommand {
     /// linked, spanning exactly what the clip spans.
     AttachLinkedAudio { clip_id: ClipId },
     MoveClip { clip_id: ClipId, new_timeline_in: Timecode },
+    /// A clip let go on its own track at `new_timeline_in` and connected
+    /// or disconnected there, as `magnet` says: one undo step for both.
+    DropClip { clip_id: ClipId, new_timeline_in: Timecode, magnet: Magnet },
     MoveClipToTrack { clip_id: ClipId, new_timeline_in: Timecode, from_track: usize, to_track: usize },
     /// Several clips moved by one drag, as one undo step (#3060): each to
     /// its new start, and to another track when `to_track` says so; their

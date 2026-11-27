@@ -1222,3 +1222,31 @@ fn track_heights_shown_while_dragged_and_a_track_folded_and_unfolded() {
     app.send_commands(vec![AppCommand::SetTrackCustomHeight { track_id: app.state.sequence().tracks[0].id, height: Some(32.0) }]);
     assert_eq!(app.state.fold_track(0, 32.0, 32.0), Some(70.0), "unfolded to where it was");
 }
+
+/// A clip let go near the storyline is moved and connected in one step,
+/// to the storyline clip under where it landed; dragged away from the
+/// storyline a connected clip is moved and let go in one step. One undo
+/// takes back both and redo makes both. The connection was its own step
+/// before the move, made where the clip had been: it took the storyline
+/// clip nearest the clip's old place, and undo left it connected.
+#[test]
+fn a_drop_moves_and_connects_or_disconnects_as_one_step() {
+    let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let (mut app, _engine) = KlippApp::for_test();
+    let ids = on_the_storyline(&mut app);
+    app.state.sequence_mut().add_video_track("Video 2".into());
+    let v2 = app.state.sequence().tracks.iter().position(|t| t.name == "Video 2").unwrap();
+    let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), at(0.5), at(1.5), at(0.0), at(1.0));
+    let id = clip.id;
+    app.state.sequence_mut().tracks[v2].clips.push(clip);
+    app.state.note_recorded_tracks();
+    let anchor = |app: &KlippApp| app.state.sequence().all_clips().find(|c| c.id == id).unwrap().magnetic_anchor.as_ref().map(|a| a.anchor_clip_id);
+    redoes_as_made(&mut app, vec![AppCommand::DropClip { clip_id: id, new_timeline_in: at(4.5), magnet: klipp_core::Magnet::Connect }]);
+    assert_eq!(app.state.sequence().all_clips().find(|c| c.id == id).unwrap().timeline_in, at(4.5));
+    assert_eq!(anchor(&app), Some(ids[2]), "connected to the storyline clip it landed over");
+    redoes_as_made(&mut app, vec![AppCommand::DropClip { clip_id: id, new_timeline_in: at(3.0), magnet: klipp_core::Magnet::Disconnect }]);
+    assert_eq!(anchor(&app), None, "let go");
+    // Dropped where it was, near the storyline: the connection alone.
+    redoes_as_made(&mut app, vec![AppCommand::DropClip { clip_id: id, new_timeline_in: at(3.0), magnet: klipp_core::Magnet::Connect }]);
+    assert_eq!(anchor(&app), Some(ids[1]));
+}

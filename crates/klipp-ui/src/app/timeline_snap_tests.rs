@@ -103,7 +103,7 @@ fn three_tracks() -> (AppState, ClipId, ClipId) {
 fn moved_to(sent: &[AppCommand]) -> Vec<(RationalTime, Option<usize>)> {
     sent.iter()
         .filter_map(|c| match c {
-            AppCommand::MoveClip { new_timeline_in, .. } => Some((*new_timeline_in, None)),
+            AppCommand::MoveClip { new_timeline_in, .. } | AppCommand::DropClip { new_timeline_in, .. } => Some((*new_timeline_in, None)),
             AppCommand::MoveClipToTrack { new_timeline_in, to_track, .. } => Some((*new_timeline_in, Some(*to_track))),
             _ => None,
         })
@@ -623,7 +623,7 @@ fn escape_cancels_a_trim_and_a_move() {
         let _ = ids;
         assert!(serde_json::to_value(&tl.state.sequence().tracks).unwrap() == before, "{case}: the tracks exactly as they were");
         assert!(!tl.state.is_live(), "{case}: no live edit left");
-        assert!(!tl.sent.iter().any(|c| matches!(c, AppCommand::MoveClip { .. } | AppCommand::MoveClips { .. } | AppCommand::MoveClipToTrack { .. } | AppCommand::TrimClip { .. } | AppCommand::MovePrimaryBlock { .. })), "{case}: nothing sent: {:?}", tl.sent);
+        assert!(!tl.sent.iter().any(|c| matches!(c, AppCommand::MoveClip { .. } | AppCommand::DropClip { .. } | AppCommand::MoveClips { .. } | AppCommand::MoveClipToTrack { .. } | AppCommand::TrimClip { .. } | AppCommand::MovePrimaryBlock { .. })), "{case}: nothing sent: {:?}", tl.sent);
         assert!(tl.state.active_history_mut().undo().is_none(), "{case}: no history entry");
     }
 }
