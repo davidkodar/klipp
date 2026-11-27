@@ -715,7 +715,6 @@ mod colour_strip_tests {
         let kb = crate::keybindings::KeyBindings::default();
         let mut panel = NewTimelinePanel::default();
         let mut old = crate::panels::timeline::TimelinePanel::default();
-        old.embedded = true;
         let mut all = Vec::new();
         let mut time = 0.0;
         let mut frame = |events: Vec<egui::Event>, state: &mut AppState, all: &mut Vec<AppCommand>| {
@@ -787,8 +786,7 @@ mod menu_smoke_tests {
             item.duration = long;
             let media: MediaId = state.document.media_pool.add(item);
             state.document.sequences[0].tracks[v1].clips.push(Clip::media(media, zero, long, zero, long));
-            let mut old = crate::panels::timeline::TimelinePanel::default();
-            old.embedded = true;
+            let old = crate::panels::timeline::TimelinePanel::default();
             Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), shapes: Vec::new(), height: 600.0, modifiers: egui::Modifiers::NONE }
         }
 

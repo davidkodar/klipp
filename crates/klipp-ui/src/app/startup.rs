@@ -109,14 +109,7 @@ impl KlippApp {
             narrate: Default::default(),
             preferences_panel: PreferencesPanel::default(),
             transport: TransportBar::default(),
-            timeline: {
-                // Field assignment rather than a struct literal with
-                // `..Default::default()`: TimelinePanel has private
-                // fields, so the literal form is not available here.
-                let mut tl = TimelinePanel::default();
-                tl.embedded = true;
-                tl
-            },
+            timeline: TimelinePanel::default(),
             thumb_tx,
             thumb_rx,
             source_frame_tx,

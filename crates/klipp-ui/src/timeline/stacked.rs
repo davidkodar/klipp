@@ -60,8 +60,7 @@ impl Stacked {
         let parked = if state.active_sequence_idx == top_idx { (0..state.document.sequences.len()).find(|i| *i != top_idx).unwrap_or(top_idx) } else { top_idx };
         let rate = state.document.sequences[parked].fps.rate();
         let playhead = state.document.sequences[parked].last_playhead.unwrap_or(klipp_core::RationalTime::from_frames(0, rate));
-        let mut old = crate::panels::timeline::TimelinePanel::default();
-        old.embedded = true;
+        let old = crate::panels::timeline::TimelinePanel::default();
         Stacked { panel: NewTimelinePanel::default(), old, view: TimelineView::fresh(parked, state.document.sequences[parked].fps, playhead, state.timeline_zoom), top_idx }
     }
 
@@ -338,8 +337,7 @@ mod tests {
             state.selects_edit = true;
             state.selects_height = 220.0;
             state.timeline_zoom = 40.0;
-            let mut old = crate::panels::timeline::TimelinePanel::default();
-            old.embedded = true;
+            let old = crate::panels::timeline::TimelinePanel::default();
             let mut s = Stack { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), mods: egui::Modifiers::NONE, shapes: Vec::new() };
             s.frame(Vec::new());
             s
