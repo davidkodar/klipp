@@ -652,8 +652,15 @@ impl super::KlippApp {
         if action == A::FromClips {
             return self.composition_of_clips(clips);
         }
+        let pool = &self.state.document.media_pool;
+        if let Some(why) = klipp_veylvik::actions::refusal(action, seq, &self.state.compositions, self.state.composition_clipboard.is_some(), |m| pool.get(&m).is_some()) {
+            return Err(why);
+        }
         if action == A::Copy {
-            let id = first.composition.ok_or("the clip has no composition")?;
+            if let Some(why) = klipp_veylvik::actions::passes_over(action, first, &self.state.compositions) {
+                return Err(why.into());
+            }
+            let id = first.composition.ok_or(klipp_veylvik::actions::NO_COMPOSITION)?;
             let bytes = self.state.compositions.get(&id).cloned().ok_or("the project doesn't hold the clip's composition")?;
             self.state.composition_clipboard = Some((id, bytes));
             return Ok("Copied the clip's composition; Paste Composition gives a clip a copy".into());
@@ -662,8 +669,10 @@ impl super::KlippApp {
         let home = self.compositions_home();
         let mut edits = Vec::new();
         let mut changed = 0;
+        let mut passed = None;
         for old in &found {
-            if old.media_id().is_none() {
+            if let Some(why) = klipp_veylvik::actions::passes_over(action, old, &self.state.compositions) {
+                passed.get_or_insert(why);
                 continue;
             }
             let mut new = old.clone();
@@ -690,9 +699,6 @@ impl super::KlippApp {
                     continue;
                 }
                 A::Remove => {
-                    if old.composition.is_none() {
-                        continue;
-                    }
                     new.composition = None;
                     new.composition_versions.clear();
                 }
@@ -707,7 +713,6 @@ impl super::KlippApp {
                             let item = self.state.document.media_pool.get(&media).ok_or("the media is no longer in the pool")?;
                             (klipp_veylvik::pool::with_media(&bytes, media, &item.filename, &item.path)?, format!("Veylvik: Add {}", item.filename))
                         }
-                        _ if klipp_veylvik::bytes_read_below(&bytes) => continue,
                         _ => (klipp_veylvik::below::over_below(&bytes)?, "Veylvik: Over the layers below".to_string()),
                     };
                     let made = before.is_none();
@@ -723,7 +728,12 @@ impl super::KlippApp {
             changed += 1;
         }
         if changed == 0 {
-            return Err(if action == A::OverBelow { "each clip's composition reads the layers below it already".into() } else { "none of the clips has a composition to change".into() });
+            // One clip: why it was passed over; several: why the first was.
+            return Err(match (found.len(), passed) {
+                (1, Some(why)) => why.into(),
+                (_, Some(why)) => format!("none of the clips was changed: {why}"),
+                _ => "none of the clips has a composition to change".into(),
+            });
         }
         let (label, did) = match action {
             A::Paste => ("Veylvik: Paste Composition", "Pasted the composition on"),

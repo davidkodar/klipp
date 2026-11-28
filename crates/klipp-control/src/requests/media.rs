@@ -270,7 +270,7 @@ pub(crate) fn respond(
             };
             let (had, has_media) = named(ctx)?;
             if (make || open) && !has_media {
-                return Err("the clip has no media to compose with: a video or still clip has".into());
+                return Err(klipp_veylvik::actions::NO_MEDIA.into());
             }
             if open || (make && had.is_none()) {
                 send_envelope(ctx, vec![AppCommand::VeylvikComposition { clip_id: id, open }], false)?;
@@ -278,46 +278,32 @@ pub(crate) fn respond(
             if [reset, remove, copy_from.is_some(), below, add_media.is_some()].iter().filter(|b| **b).count() > 1 {
                 return Err("reset, remove, copy_from, below and add_media are one at a time".into());
             }
-            let comp_of = |ctx: &ControlContext, clip: klipp_core::ClipId| -> Result<Option<klipp_timeline::CompositionId>, String> {
-                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let (t, c) = seq.find_clip(clip).ok_or_else(|| format!("no clip {} in the open sequence", clip.0))?;
-                Ok(seq.tracks[t].clips[c].composition)
-            };
-            if let Some(from) = copy_from.as_deref() {
-                use klipp_core::CompositionClipAction as A;
-                let from = klipp_core::ClipId(parse_uuid(from, "copy_from")?);
-                if comp_of(ctx, from)?.is_none() {
-                    return Err("the clip copy_from names has no Veylvik composition".into());
+            // Each change through the clip menu's own checks, refused here
+            // with its reason as the app would refuse it.
+            let changes = [
+                copy_from.as_deref().map(|from| parse_uuid(from, "copy_from").map(|u| klipp_core::CompositionClipAction::CopyFrom(klipp_core::ClipId(u)))),
+                (reset).then_some(Ok(klipp_core::CompositionClipAction::Reset)),
+                (remove).then_some(Ok(klipp_core::CompositionClipAction::Remove)),
+                add_media.as_deref().map(|m| parse_uuid(m, "add_media").map(|u| klipp_core::CompositionClipAction::AddMedia(klipp_core::MediaId(u)))),
+                (below).then_some(Ok(klipp_core::CompositionClipAction::OverBelow)),
+            ];
+            for change in changes.into_iter().flatten() {
+                let action = change?;
+                {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    let compositions = klipp_veylvik::project_compositions();
+                    let pool = ctx.media_pool.read().recovered();
+                    // Copy From goes straight from that clip: the person's
+                    // own copied composition stays, so nothing need be copied.
+                    if let Some(why) = klipp_veylvik::actions::refusal(action, &seq, &compositions, true, |m| pool.get(&m).is_some()) {
+                        return Err(why);
+                    }
+                    let (t, c) = seq.find_clip(id).ok_or_else(|| format!("no clip {} in the open sequence", id.0))?;
+                    if let Some(why) = klipp_veylvik::actions::passes_over(action, &seq.tracks[t].clips[c], &compositions) {
+                        return Err(why.into());
+                    }
                 }
-                if !has_media {
-                    return Err("the clip has no media to compose with: a video or still clip has".into());
-                }
-                // Straight from that clip: the person's own copied composition stays.
-                send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![id], action: A::CopyFrom(from) }], false)?;
-            }
-            if reset || remove {
-                use klipp_core::CompositionClipAction as A;
-                if comp_of(ctx, id)?.is_none() {
-                    return Err("the clip has no Veylvik composition".into());
-                }
-                send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![id], action: if reset { A::Reset } else { A::Remove } }], false)?;
-            }
-            if let Some(media) = add_media.as_deref() {
-                let media = klipp_core::MediaId(parse_uuid(media, "add_media")?);
-                if !has_media {
-                    return Err("the clip has no media to compose with: a video or still clip has".into());
-                }
-                let known = ctx.media_pool.read().recovered().get(&media).is_some();
-                if !known {
-                    return Err(format!("no media {} in the pool", media.0));
-                }
-                send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![id], action: klipp_core::CompositionClipAction::AddMedia(media) }], false)?;
-            }
-            if below {
-                if !has_media {
-                    return Err("the clip has no media to compose with: a video or still clip has".into());
-                }
-                send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![id], action: klipp_core::CompositionClipAction::OverBelow }], false)?;
+                send_envelope(ctx, vec![AppCommand::CompositionClips { clip_ids: vec![id], action }], false)?;
             }
             if let Some(what) = version_action.as_deref() {
                 use klipp_core::VersionAction as A;
