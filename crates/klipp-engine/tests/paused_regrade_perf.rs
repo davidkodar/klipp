@@ -21,7 +21,7 @@ fn paused_4k_pq_regrade() {
     // The viewer at full 4K ("Max playback resolution" 2160), or at the
     // height given in KLIPP_PROBE_HEIGHT.
     let height = std::env::var("KLIPP_PROBE_HEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(2160);
-    klipp_engine::video_decoder::set_max_playback_height(height);
+    common::decode_with(klipp_core::DecodeSettings { max_height: height, ..Default::default() });
     let Some(src) = common::source("pq", 3840, 2160, common::PQ_TAGS) else {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -75,7 +75,7 @@ fn paused_4k_pq_regrade() {
 #[ignore = "perf probe: run explicitly"]
 fn paused_4k_regrade_below_heavy_nodes() {
     let height = std::env::var("KLIPP_PROBE_HEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(2160);
-    klipp_engine::video_decoder::set_max_playback_height(height);
+    common::decode_with(klipp_core::DecodeSettings { max_height: height, ..Default::default() });
     let Some(src) = common::source("pq", 3840, 2160, common::PQ_TAGS) else {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -183,7 +183,7 @@ fn split_temporal_nr(src: &std::path::Path) {
 #[test]
 #[ignore = "perf probe: run explicitly"]
 fn paused_4k_regrade_under_a_title() {
-    klipp_engine::video_decoder::set_max_playback_height(2160);
+    common::decode_with(klipp_core::DecodeSettings { max_height: 2160, ..Default::default() });
     let title = || klipp_timeline::TitleData::single_text_fx(
         klipp_timeline::TextBox { text: "Over the grade".into(), font_size: 90.0, color: [240, 220, 120, 255], ..Default::default() },
         klipp_timeline::LayerFx { glows: vec![klipp_timeline::TextGlow { enabled: true, color: [80, 150, 255, 220], radius: 10.0, radius_keyframes: vec![], intensity: 0.8, intensity_keyframes: vec![] }], ..Default::default() },

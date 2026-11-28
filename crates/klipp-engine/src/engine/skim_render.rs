@@ -59,6 +59,8 @@ pub(crate) struct SkimPool {
     /// Why the last position's source wasn't there (no skim file, or its
     /// decoder didn't open), for the skim's note.
     failed_open: Option<String>,
+    /// How its decoders decode: the engine's.
+    pub(crate) decode: klipp_core::DecodeSettings,
 }
 
 impl SkimPool {
@@ -83,7 +85,7 @@ impl SkimPool {
             while self.open.len() >= SKIM_DECODERS {
                 self.open.remove(0);
             }
-            let decoder = VideoDecoder::open(path, 0)
+            let decoder = VideoDecoder::open(path, 0, self.decode)
                 .map_err(|e| {
                     tracing::debug!("skim: cannot open {}: {e}", path.display());
                     self.failed_open = Some(format!("{} didn't open: {e}", path.file_name().unwrap_or_default().to_string_lossy()));

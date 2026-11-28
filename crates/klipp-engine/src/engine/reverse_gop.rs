@@ -386,8 +386,8 @@ mod tests {
             eprintln!("skipping: no ffmpeg");
             return;
         };
-        let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow);
-        let decoder = VideoDecoder::open_with_queue(&path, 0, lease, 8).expect("the source opens");
+        let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow, true);
+        let decoder = VideoDecoder::open_with_queue(&path, 0, klipp_core::DecodeSettings::default(), lease, 8).expect("the source opens");
         let mut gop = ReverseGop::new(decoder, 120, 0.0);
         settle(&mut gop, 4.16);
         // In the first half of what is held: the window before it, from
@@ -428,8 +428,8 @@ mod tests {
         // Every frame a keyframe: the decode starts at the one before the
         // window, as for an intra-coded camera file.
         for frame in [68, 30, 99] {
-            let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow);
-            let decoder = VideoDecoder::open_with_queue(&path, 0, lease, 8).expect("the source opens");
+            let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow, true);
+            let decoder = VideoDecoder::open_with_queue(&path, 0, klipp_core::DecodeSettings::default(), lease, 8).expect("the source opens");
             let mut gop = ReverseGop::new(decoder, 120, 0.0);
             // 0.45 of the way on: no frame in the window at 30 fps.
             let secs = (frame as f64 + 0.45) / 25.0;
@@ -453,8 +453,8 @@ mod tests {
             eprintln!("skipping: no ffmpeg with libx264");
             return;
         };
-        let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow);
-        let decoder = VideoDecoder::open_with_queue(&path, 0, lease, 8).expect("the source opens");
+        let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow, true);
+        let decoder = VideoDecoder::open_with_queue(&path, 0, klipp_core::DecodeSettings::default(), lease, 8).expect("the source opens");
         let mut gop = ReverseGop::new(decoder, 120, 0.0);
         for i in (0..150).rev() {
             let secs = i as f64 / 25.0;
@@ -479,8 +479,8 @@ mod tests {
             eprintln!("skipping: no ffmpeg");
             return;
         };
-        let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow);
-        let decoder = VideoDecoder::open_with_queue(&path, 0, lease, 8).expect("the source opens");
+        let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow, true);
+        let decoder = VideoDecoder::open_with_queue(&path, 0, klipp_core::DecodeSettings::default(), lease, 8).expect("the source opens");
         let mut gop = ReverseGop::for_memory(decoder, 1000.0, None, 0.0);
         assert_eq!(gop.capacity, 32, "the guess");
         gop.learn_free(None);
@@ -489,8 +489,8 @@ mod tests {
         assert_eq!(gop.capacity, 100, "a quarter of 400 kB in frames of 1 kB");
         gop.learn_free(Some(40_000.0));
         assert_eq!(gop.capacity, 100, "made once");
-        let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow);
-        let decoder = VideoDecoder::open_with_queue(&path, 0, lease, 8).expect("the source opens");
+        let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow, true);
+        let decoder = VideoDecoder::open_with_queue(&path, 0, klipp_core::DecodeSettings::default(), lease, 8).expect("the source opens");
         let mut known = ReverseGop::for_memory(decoder, 1000.0, Some(200_000.0), 0.0);
         known.learn_free(Some(400_000.0));
         assert_eq!(known.capacity, 50, "known from the start: kept");

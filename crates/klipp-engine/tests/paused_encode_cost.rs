@@ -17,7 +17,7 @@ use klipp_core::{AppCommand, RationalTime};
 #[test]
 #[ignore = "perf probe: run explicitly"]
 fn paused_4k_stage_costs() {
-    klipp_engine::video_decoder::set_max_playback_height(2160);
+    common::decode_with(klipp_core::DecodeSettings { max_height: 2160, ..Default::default() });
     let Some(src) = common::hevc_source("pq-hevc", 3840, 2160, common::PQ_TAGS) else {
         eprintln!("skipping: no ffmpeg");
         return;

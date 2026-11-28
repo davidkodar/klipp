@@ -64,8 +64,6 @@ fn a_parked_stand_in_frame_is_redrawn_and_said_to_be() {
         eprintln!("skipping: no ffmpeg");
         return;
     };
-    // Every clip from its stand-in, as heavy footage plays.
-    klipp_engine::video_decoder::set_optimised_playback_mode(2);
     let fps = Fps::new(common::FPS, 1);
     let mut pool = MediaPool::default();
     let id = MediaId::new();
@@ -93,6 +91,8 @@ fn a_parked_stand_in_frame_is_redrawn_and_said_to_be() {
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
     let _thread = engine.spawn();
+    // Every clip from its stand-in, as heavy footage plays.
+    cmd.send(AppCommand::SetDecodeSettings(klipp_core::DecodeSettings { optimised: klipp_core::OptimisedPlayback::AlwaysOptimised, ..Default::default() })).unwrap();
     cmd.send(AppCommand::Pause).unwrap();
 
     // Sampled until the frame at `frame` is the original's: every time the
@@ -120,7 +120,6 @@ fn a_parked_stand_in_frame_is_redrawn_and_said_to_be() {
         cmd.send(AppCommand::SeekTo(tc(frame))).unwrap();
         assert!(settles_green(frame), "the parked frame at {frame} is redrawn from the original and said to be");
     }
-    klipp_engine::video_decoder::set_optimised_playback_mode(0);
 }
 
 /// A 23.976 fps original whose frame N is grey level 16 + 3N, so the
@@ -156,7 +155,6 @@ fn a_parked_redraw_is_the_nearest_file_frame() {
         eprintln!("skipping: no ffmpeg");
         return;
     };
-    klipp_engine::video_decoder::set_optimised_playback_mode(2);
     let fps = Fps::new(25, 1);
     let at = |f: i64| common::frame_tc(f, fps);
     let mut pool = MediaPool::default();
@@ -187,6 +185,8 @@ fn a_parked_redraw_is_the_nearest_file_frame() {
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
     let _thread = engine.spawn();
+    // Every clip from its stand-in, as heavy footage plays.
+    cmd.send(AppCommand::SetDecodeSettings(klipp_core::DecodeSettings { optimised: klipp_core::OptimisedPlayback::AlwaysOptimised, ..Default::default() })).unwrap();
     cmd.send(AppCommand::Pause).unwrap();
 
     // The grey of the original's redraw parked at timeline frame `frame`.
@@ -220,5 +220,4 @@ fn a_parked_redraw_is_the_nearest_file_frame() {
         let got = 37.0 + (parked_grey(frame) - g37) / per_frame;
         assert!((got - want).abs() < 0.4, "timeline frame {frame} (file frame {:.2}): parked on file frame {got:.2}, the nearest is {want}", file_frame(frame));
     }
-    klipp_engine::video_decoder::set_optimised_playback_mode(0);
 }

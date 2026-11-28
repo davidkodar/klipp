@@ -144,6 +144,17 @@ pub fn frame_tc(f: i64, fps: Fps) -> RationalTime {
     RationalTime { value: f * fps.den as i64, rate: fps.num }
 }
 
+thread_local! {
+    static DECODE: std::cell::Cell<DecodeSettings> = std::cell::Cell::new(DecodeSettings::default());
+}
+
+/// How the engines this thread starts from now on decode: a probe's 4K
+/// viewer, say. Each test runs on a thread of its own, so another's
+/// engine keeps the default.
+pub fn decode_with(settings: DecodeSettings) {
+    DECODE.with(|d| d.set(settings));
+}
+
 /// The engine, running headless on one clip of `src` graded with an
 /// Exposure node, parked on frame 10.
 pub struct Parked {
@@ -283,6 +294,7 @@ impl Parked {
         let thread = Some(engine.spawn());
         let parked = Self { cmd, fb, playhead, fps, perf, params, thread, clip_id, source_node, exposure_node, foreground, sequence };
 
+        parked.send(AppCommand::SetDecodeSettings(DECODE.with(|d| d.get())));
         parked.send(AppCommand::SetPlayhead(tc(10)));
         let g = parked.generation();
         parked.wait_new(g, Duration::from_secs(20)).expect("no first frame");

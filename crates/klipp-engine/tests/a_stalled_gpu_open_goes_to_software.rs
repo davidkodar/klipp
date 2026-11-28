@@ -35,7 +35,7 @@ fn a_stalled_gpu_open_goes_on_in_software() {
     // An open in time hands over a working decoder, on the GPU where
     // there is one.
     video_decoder::stall_next_hw_open(Duration::ZERO);
-    let dec = VideoDecoder::open(&src, 0).expect("open");
+    let dec = VideoDecoder::open(&src, 0, klipp_core::DecodeSettings::default()).expect("open");
     dec.resume();
     assert!(first_frame(&dec).is_some(), "no frame from a decoder opened in time");
     // A GPU required is a GPU, not hardware decode (Asahi has none):
@@ -50,7 +50,7 @@ fn a_stalled_gpu_open_goes_on_in_software() {
     // An open that stalls past the limit: frames come in software, soon
     // after the limit and long before the stall ends.
     video_decoder::stall_next_hw_open(Duration::from_secs(10));
-    let dec = VideoDecoder::open(&src, 0).expect("open");
+    let dec = VideoDecoder::open(&src, 0, klipp_core::DecodeSettings::default()).expect("open");
     dec.resume();
     let took = first_frame(&dec).expect("no frame after the GPU open stalled");
     assert!(took < Duration::from_secs(6), "the first frame came {took:?} after the open, past the limit and its margin");
@@ -59,7 +59,7 @@ fn a_stalled_gpu_open_goes_on_in_software() {
     drop(dec);
 
     // The next stream skips the GPU without waiting.
-    let dec = VideoDecoder::open(&src, 0).expect("open");
+    let dec = VideoDecoder::open(&src, 0, klipp_core::DecodeSettings::default()).expect("open");
     dec.resume();
     let took = first_frame(&dec).expect("no frame from the stream after");
     assert!(took < Duration::from_secs(2), "the stream after waited {took:?}");

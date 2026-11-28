@@ -208,6 +208,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::PickHueCurve { .. }
         | AppCommand::PickKeyColour { .. }
         | AppCommand::SetLutTetrahedral(..)
+        | AppCommand::SetDecodeSettings(..)
         | AppCommand::SetSdrTransfer(..)
         | AppCommand::SaveBuiltinEffectPreset { .. }
         | AppCommand::DeleteBuiltinEffectPreset { .. }

@@ -220,9 +220,9 @@ pub(super) fn same_shape((aw, ah): (u32, u32), (bw, bh): (u32, u32)) -> bool {
 /// the decoded picture as it is, step aside for such a picture
 /// (`picture_frame_blocker`), so the frame is the same size whichever
 /// path draws it.
-pub(super) fn viewer_canvas(picture: (u32, u32), sequence: (u32, u32)) -> (u32, u32) {
+pub(super) fn viewer_canvas(picture: (u32, u32), sequence: (u32, u32), max_height: u32) -> (u32, u32) {
     let around = picture_canvas(picture, sequence);
-    let cap = crate::video_decoder::playback_dimensions(sequence.0, sequence.1, 0);
+    let cap = crate::video_decoder::playback_dimensions(max_height, sequence.0, sequence.1, 0);
     if cap.0 >= around.0 && cap.1 >= around.1 { cap } else { around }
 }
 
@@ -247,11 +247,11 @@ fn picture_canvas(picture: (u32, u32), sequence: (u32, u32)) -> (u32, u32) {
 
 /// Why a fast path, which shows `picture` as decoded, cannot stand in
 /// for the renderer's frame of it: see `PlaybackEngine::picture_frame_blocker`.
-pub(super) fn picture_frame_blocker(picture: (u32, u32), sequence: (u32, u32)) -> Option<&'static str> {
+pub(super) fn picture_frame_blocker(picture: (u32, u32), sequence: (u32, u32), max_height: u32) -> Option<&'static str> {
     if !same_shape(picture, sequence) {
         return Some("picture is not the sequence's shape");
     }
-    (viewer_canvas(picture, sequence) != picture).then_some("picture is smaller than the viewer's frame")
+    (viewer_canvas(picture, sequence, max_height) != picture).then_some("picture is smaller than the viewer's frame")
 }
 
 /// The frame the viewer renders in: [`viewer_canvas`] around the primary
@@ -261,10 +261,10 @@ pub(super) fn picture_frame_blocker(picture: (u32, u32), sequence: (u32, u32)) -
 /// drawn at the sequence's size: a 4K chain (126.6 MiB a buffer) under
 /// layer streams decoded at 1080p, each fitted up to it (#3205). Export
 /// and full-size grabs ask for their own size.
-pub(crate) fn playback_canvas(primary: Option<(u32, u32)>, sequence: (u32, u32)) -> (u32, u32) {
+pub(crate) fn playback_canvas(primary: Option<(u32, u32)>, sequence: (u32, u32), max_height: u32) -> (u32, u32) {
     match primary {
-        Some(p) => viewer_canvas(p, sequence),
-        None => crate::video_decoder::playback_dimensions(sequence.0, sequence.1, 0),
+        Some(p) => viewer_canvas(p, sequence, max_height),
+        None => crate::video_decoder::playback_dimensions(max_height, sequence.0, sequence.1, 0),
     }
 }
 
@@ -1269,7 +1269,7 @@ impl PlaybackEngine {
         }
         let full = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            playback_canvas(None, (seq.resolution.width, seq.resolution.height))
+            playback_canvas(None, (seq.resolution.width, seq.resolution.height), self.decode.max_height)
         };
         let (w, h) = reduced_for_quality(full, quality_divisor_for(PlaybackState::Playing, crate::video_decoder::playback_quality_divisor()));
         if w == 0 || h == 0 || self.empty_stack_warm == Some((w, h)) {
@@ -1416,7 +1416,7 @@ impl PlaybackEngine {
         let solo_cut = self.solo.as_ref().is_some_and(|at| cut_for_solo(&mut seq, at));
         self.frame_phases.frame_snapshot_ms = ms(t);
         let seq_size = (seq.resolution.width, seq.resolution.height);
-        let (w, h) = playback_canvas(primary.as_ref().map(|p| (p.width, p.height)), seq_size);
+        let (w, h) = playback_canvas(primary.as_ref().map(|p| (p.width, p.height)), seq_size, self.decode.max_height);
         // Playback Quality applies while playing: a parked frame is for
         // judging, and renders full size.
         let (w, h) = reduced_for_quality((w, h), quality_divisor_for(self.state, crate::video_decoder::playback_quality_divisor()));
@@ -2088,20 +2088,20 @@ mod playback_quality_tests {
     #[test]
     fn a_small_picture_does_not_shrink_the_viewer_frame() {
         let uhd = (3840, 2160);
-        let cap = crate::video_decoder::playback_dimensions(uhd.0, uhd.1, 0);
+        let cap = crate::video_decoder::playback_dimensions(1080, uhd.0, uhd.1, 0);
         assert!(cap.0 > 1280 && cap.1 > 720, "the playback cap {cap:?} is above 720p");
-        assert_eq!(viewer_canvas((1280, 720), uhd), cap);
-        assert_eq!(picture_frame_blocker((1280, 720), uhd), Some("picture is smaller than the viewer's frame"));
+        assert_eq!(viewer_canvas((1280, 720), uhd, 1080), cap);
+        assert_eq!(picture_frame_blocker((1280, 720), uhd, 1080), Some("picture is smaller than the viewer's frame"));
         // A picture decoded at the cap is the frame, and shown as it is.
-        assert_eq!(viewer_canvas(cap, uhd), cap);
-        assert_eq!(picture_frame_blocker(cap, uhd), None);
+        assert_eq!(viewer_canvas(cap, uhd, 1080), cap);
+        assert_eq!(picture_frame_blocker(cap, uhd, 1080), None);
         // Never beyond the sequence: a 720p sequence is drawn at 720p.
-        assert_eq!(viewer_canvas((1280, 720), (1280, 720)), (1280, 720));
-        assert_eq!(picture_frame_blocker((1280, 720), (1280, 720)), None);
+        assert_eq!(viewer_canvas((1280, 720), (1280, 720), 1080), (1280, 720));
+        assert_eq!(picture_frame_blocker((1280, 720), (1280, 720), 1080), None);
         // A picture of another shape is still barred in the sequence's.
-        let portrait = viewer_canvas((720, 1280), uhd);
+        let portrait = viewer_canvas((720, 1280), uhd, 1080);
         assert!(same_shape(portrait, uhd) && portrait.0 >= cap.0, "{portrait:?}");
-        assert_eq!(picture_frame_blocker((720, 1280), uhd), Some("picture is not the sequence's shape"));
+        assert_eq!(picture_frame_blocker((720, 1280), uhd, 1080), Some("picture is not the sequence's shape"));
     }
 
     #[test]

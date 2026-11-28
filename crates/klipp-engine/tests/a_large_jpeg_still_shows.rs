@@ -26,7 +26,7 @@ fn a_large_jpeg_still_hands_over_its_picture() {
         eprintln!("skipping: no ffmpeg");
         return;
     };
-    let dec = VideoDecoder::open(&path, 0).expect("open");
+    let dec = VideoDecoder::open(&path, 0, klipp_core::DecodeSettings::default()).expect("open");
     dec.resume();
     let until = Instant::now() + Duration::from_secs(10);
     let frame = loop {

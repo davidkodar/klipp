@@ -327,8 +327,8 @@ struct ClipStream {
 }
 
 impl ClipStream {
-    fn open(want: &Want, path: &std::path::Path, rotation: i32, lease: crate::decode_budget::Lease, frames: usize) -> Option<Self> {
-        let decoder = VideoDecoder::open_with_queue(path, rotation, lease, frames)
+    fn open(want: &Want, path: &std::path::Path, rotation: i32, settings: klipp_core::DecodeSettings, lease: crate::decode_budget::Lease, frames: usize) -> Option<Self> {
+        let decoder = VideoDecoder::open_with_queue(path, rotation, settings, lease, frames)
             .map_err(|e| warn!("clip stream: cannot open {path:?}: {e}"))
             .ok()?;
         let target = want.source_secs.max(0.0);
@@ -493,12 +493,13 @@ pub(crate) struct ClipStreams {
     /// The drive each stream reads from and the bytes a second it reads,
     /// open or opening (#2128).
     reads: HashMap<ClipId, (u64, f64)>,
-    /// The frames a stream queues when memory allows: the preference's,
-    /// or a test's.
-    queue_frames: fn() -> usize,
-    /// The pixels a second all streams together may ask for:
-    /// [`crate::decode_budget::stream_capacity`], or a test's.
-    capacity: fn() -> f64,
+    /// How the streams' decoders decode, the engine's: the frames a stream
+    /// queues when memory allows are its `queue_frames`.
+    pub(crate) decode: klipp_core::DecodeSettings,
+    /// The pixels a second all streams together may ask for, with hardware
+    /// decode on or off: [`crate::decode_budget::stream_capacity`], or a
+    /// test's.
+    capacity: fn(bool) -> f64,
     /// What the GPU's decoder has left: [`crate::decode_budget::gpu_headroom`],
     /// or a test's.
     gpu_headroom: fn() -> f64,
@@ -523,7 +524,7 @@ pub(crate) struct ClipStreams {
 
 impl ClipStreams {
     pub fn new() -> Self {
-        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), bytes: HashMap::new(), free_memory: crate::decode_budget::free_memory, vram: HashMap::new(), free_vram: crate::decode_budget::free_vram, reads: HashMap::new(), queue_frames: crate::video_decoder::frame_queue_size, capacity: crate::decode_budget::stream_capacity, gpu_headroom: crate::decode_budget::gpu_headroom, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), shared: HashMap::new(), neighbours: Vec::new(), panics: HashMap::new(), given_up: false }
+        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), bytes: HashMap::new(), free_memory: crate::decode_budget::free_memory, vram: HashMap::new(), free_vram: crate::decode_budget::free_vram, reads: HashMap::new(), decode: klipp_core::DecodeSettings::default(), capacity: crate::decode_budget::stream_capacity, gpu_headroom: crate::decode_budget::gpu_headroom, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), shared: HashMap::new(), neighbours: Vec::new(), panics: HashMap::new(), given_up: false }
     }
 
     /// The reader of `path`'s frames at any time for an OFX plug-in's
@@ -606,8 +607,8 @@ impl ClipStreams {
                     let Some((path, rotation, cost)) = resolve(w) else { continue };
                     // The decoder forward playback uses, its frames on the
                     // GPU where there is one, held a window at a time.
-                    let lease = crate::decode_budget::admit_class(cost.rate, cost.class, crate::decode_budget::Priority::Overflow);
-                    match VideoDecoder::open_with_queue(&path, rotation, lease, MIN_QUEUE_FRAMES * 2) {
+                    let lease = crate::decode_budget::admit_class(cost.rate, cost.class, crate::decode_budget::Priority::Overflow, self.decode.hardware);
+                    match VideoDecoder::open_with_queue(&path, rotation, self.decode, lease, MIN_QUEUE_FRAMES * 2) {
                         Ok(decoder) => {
                             let free = window_free(crate::video_decoder::should_attach_gpu_source(), (self.free_vram)(), (self.free_memory)());
                             e.insert(Reversed::Gop(super::reverse_gop::ReverseGop::for_memory(decoder, cost.frame_bytes, free, 0.0)))
@@ -668,20 +669,20 @@ impl ClipStreams {
                         let Some((frames, on_gpu)) = self.make_room(cost, w.ahead) else {
                             debug!(
                                 "clip streams: no room ({:.0} of {:.0} Mpx/s, {:.0} MB queued, {} streams), not opening one ahead for {:?}",
-                                self.rates.values().sum::<f64>() / 1e6, (self.capacity)() / 1e6, self.bytes.values().sum::<f64>() / 1e6, self.streams.len() + self.opening.len(), w.clip,
+                                self.rates.values().sum::<f64>() / 1e6, (self.capacity)(self.decode.hardware) / 1e6, self.bytes.values().sum::<f64>() / 1e6, self.streams.len() + self.opening.len(), w.clip,
                             );
                             continue;
                         };
                         let (tx, rx) = std::sync::mpsc::channel();
-                        let want = w.clone();
+                        let (want, settings) = (w.clone(), self.decode);
                         // Admitted here, in order, not on the thread.
-                        let lease = crate::decode_budget::admit_class(cost.rate, cost.class, crate::decode_budget::Priority::Overflow);
+                        let lease = crate::decode_budget::admit_class(cost.rate, cost.class, crate::decode_budget::Priority::Overflow, self.decode.hardware);
                         // Counted while it opens: a process exiting while
                         // ffmpeg or the GPU is mid-open crashes (#2261).
                         let alive = crate::video_decoder::DecodeThreadToken::new();
                         let spawned = std::thread::Builder::new().name("clip stream open".into()).spawn(move || {
                             let _alive = alive;
-                            let _ = tx.send(ClipStream::open(&want, &path, rot, lease, frames));
+                            let _ = tx.send(ClipStream::open(&want, &path, rot, settings, lease, frames));
                         });
                         if spawned.is_ok() {
                             super::STREAMS_OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -753,8 +754,8 @@ impl ClipStreams {
     /// room, the biggest first, and past that it opens all the same, with
     /// a shorter queue when memory is what is short.
     fn make_room(&mut self, cost: Cost, ahead: bool) -> Option<(usize, bool)> {
-        let capacity = (self.capacity)();
-        let full = (self.queue_frames)().max(MIN_QUEUE_FRAMES);
+        let capacity = (self.capacity)(self.decode.hardware);
+        let full = self.decode.queue_frames.max(MIN_QUEUE_FRAMES);
         // Where its frames will be: on the GPU when its decoder has room
         // for it and the GPU's memory can be read, else in memory.
         let free_vram = (self.free_vram)();
@@ -1180,7 +1181,7 @@ mod tests {
         let ahead = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: true };
         let mut streams = ClipStreams::new();
         // Whatever other tests ask of the process's decode budget.
-        streams.capacity = || f64::INFINITY;
+        streams.capacity = |_| f64::INFINITY;
         streams.gpu_headroom = || f64::INFINITY;
         streams.sync(std::slice::from_ref(&ahead), frame, &resolve);
         assert!(streams.has(ahead.clip) && streams.ready(frame), "opening ahead: nothing waits for it");
@@ -1220,7 +1221,7 @@ mod tests {
         let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
         let frame = 1.0 / 25.0;
         let mut streams = ClipStreams::new();
-        streams.capacity = || f64::INFINITY;
+        streams.capacity = |_| f64::INFINITY;
         streams.gpu_headroom = || f64::INFINITY;
         // A hard disk (120 MB/s, 96 for the streams) and an NVMe drive; each
         // stream reads 40 MB/s.
@@ -1242,7 +1243,7 @@ mod tests {
         assert!(streams.has(a1.clip) && streams.has(a2.clip), "two fit the disk");
         // However much one reads, it is opened when its drive is idle.
         let mut alone = ClipStreams::new();
-        alone.capacity = || f64::INFINITY;
+        alone.capacity = |_| f64::INFINITY;
         alone.gpu_headroom = || f64::INFINITY;
         let huge = |_: &Want| Some((path.clone(), 0, Cost { read_bytes: 500e6, drive: Some(drive(disk)), ..Default::default() }));
         let first = want(disk, true);
@@ -1281,7 +1282,7 @@ mod tests {
         let frame = 1.0 / 25.0;
         let mut streams = ClipStreams::new();
         // Room for four streams of 100.
-        streams.capacity = || 400.0;
+        streams.capacity = |_| 400.0;
         streams.gpu_headroom = || f64::INFINITY;
         let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 100.0, frame_bytes: 0.0, ..Default::default() }));
         let want = |ahead: bool| Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 0.0, reversed: false, ahead };
@@ -1324,9 +1325,9 @@ mod tests {
         let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
         let frame = 1.0 / 25.0;
         let mut streams = ClipStreams::new();
-        streams.capacity = || f64::INFINITY;
+        streams.capacity = |_| f64::INFINITY;
         streams.gpu_headroom = || f64::INFINITY;
-        streams.queue_frames = || 16;
+        streams.decode.queue_frames = 16;
         // Half of what is free and what the queues hold: 16 frames of 100
         // bytes with nothing held. Frames in memory, not on the GPU.
         streams.free_memory = || 3200.0;
@@ -1375,9 +1376,9 @@ mod tests {
         let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
         let frame = 1.0 / 25.0;
         let mut streams = ClipStreams::new();
-        streams.capacity = || f64::INFINITY;
+        streams.capacity = |_| f64::INFINITY;
         streams.gpu_headroom = || f64::INFINITY;
-        streams.queue_frames = || 16;
+        streams.decode.queue_frames = 16;
         streams.free_memory = || f64::INFINITY;
         // Half of the GPU's free memory and what is queued there: 16
         // frames of 100 bytes with nothing held.
@@ -1422,7 +1423,7 @@ mod tests {
         crate::decode_budget::set_enabled(true);
         // The GPU asked for more than any gives, by a decoder that is never
         // moved; then a small stream, which software keeps up with.
-        let _full = crate::decode_budget::admit(1e15, crate::decode_budget::Priority::Fixed);
+        let _full = crate::decode_budget::admit(1e15, crate::decode_budget::Priority::Fixed, true);
         let mut streams = ClipStreams::new();
         let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 64.0 * 36.0 * 25.0, frame_bytes: 0.0, ..Default::default() }));
         streams.sync(std::slice::from_ref(&w), frame, &resolve);
@@ -1588,7 +1589,7 @@ mod tests {
         // A decoder as playback leaves it at a cut: decoded on from 0, the
         // frame at the cut popped, the next ones queued.
         let taken_over = |at: usize| {
-            let dec = VideoDecoder::open(&path, 0).expect("opens");
+            let dec = VideoDecoder::open(&path, 0, klipp_core::DecodeSettings::default()).expect("opens");
             dec.resume();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while dec.frame_queue().lock().unwrap().len() < at + 2 {

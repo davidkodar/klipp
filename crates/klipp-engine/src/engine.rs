@@ -2389,6 +2389,9 @@ pub struct PlaybackEngine {
     last_peak_time: std::time::Instant,
     // Proxy: when true, decode from proxy files instead of originals
     use_proxies: bool,
+    /// How the decoders decode, from the preferences: each is given it
+    /// as it opens.
+    decode: klipp_core::DecodeSettings,
     // Skim audio — shared with app layer for browser hover audio
     skim_consumer: crate::audio_output::SkimConsumer,
     // Loop playback — cycle between in/out points or whole sequence
@@ -2789,12 +2792,13 @@ impl PlaybackEngine {
                         let item = pool.get(&c.media_id()?)?;
                         // The item's size is already upright.
                         Some(crate::video_decoder::playback_dimensions(
+                            self.decode.max_height,
                             item.resolution.width,
                             item.resolution.height,
                             0,
                         ))
                     });
-                let (w, h) = view::playback_canvas(decoded, (seq.resolution.width, seq.resolution.height));
+                let (w, h) = view::playback_canvas(decoded, (seq.resolution.width, seq.resolution.height), self.decode.max_height);
                 // Warmed for playback, so at Playback Quality's size.
                 let (w, h) = view::reduced_for_quality((w, h), crate::video_decoder::playback_quality_divisor());
                 if w == 0 || h == 0 {
@@ -3494,6 +3498,7 @@ impl PlaybackEngine {
             tone_map_op: klipp_color::display::ToneMapOp::None,
             last_peak_time: std::time::Instant::now(),
             use_proxies: true,
+            decode: klipp_core::DecodeSettings::default(),
             skim_consumer,
             loop_enabled: false,
             render_status_at: std::time::Instant::now(),
@@ -4428,6 +4433,14 @@ impl PlaybackEngine {
                     (self.repaint_cb)();
                 }
             }
+            AppCommand::SetDecodeSettings(settings) => {
+                // Decoders open with it from now on, as the preferences
+                // always took hold; those open keep theirs.
+                info!("Engine: decode settings = {settings:?}");
+                self.decode = settings;
+                self.streams.decode = settings;
+                self.skim_pool.decode = settings;
+            }
             AppCommand::SetUseProxies(enabled) => {
                 info!("Engine: use_proxies = {enabled}");
                 if enabled != self.use_proxies {
@@ -5164,7 +5177,7 @@ impl PlaybackEngine {
                 // during transcode, so source_rotation must be 0 there.
                 let effective_rot = self.effective_decode_rotation(media_id, &path, source_rotation);
                 // Open video decoder
-                match VideoDecoder::open(&path, effective_rot) {
+                match VideoDecoder::open(&path, effective_rot, self.decode) {
                     Ok(dec) => {
                         if source_secs > 0.01 {
                             dec.seek(source_secs);
@@ -7734,7 +7747,7 @@ impl PlaybackEngine {
 
             // Open new video decoder
             let effective_rot = self.effective_decode_rotation(media_id, &path, source_rotation);
-            match VideoDecoder::open(&path, effective_rot) {
+            match VideoDecoder::open(&path, effective_rot, self.decode) {
                 Ok(dec) => {
                     if source_in_secs > 0.01 {
                         dec.seek(source_in_secs);
@@ -7948,12 +7961,13 @@ impl PlaybackEngine {
                 // Opened ahead, it is among the first to decode in
                 // software when the GPU's decoder is full (#2116).
                 let cost = self.media_cost(media_id, &path);
-                let lease = crate::decode_budget::admit_class(cost.rate, cost.class, crate::decode_budget::Priority::Overflow);
+                let lease = crate::decode_budget::admit_class(cost.rate, cost.class, crate::decode_budget::Priority::Overflow, self.decode.hardware);
                 // Counted while it opens (#2261), as a decoder's own thread is.
                 let alive = crate::video_decoder::DecodeThreadToken::new();
+                let settings = self.decode;
                 std::thread::spawn(move || crate::thread_guard::catch_panic("klipp-preroll", move || {
                     let _alive = alive;
-                    match VideoDecoder::open_with(&path, effective_preroll_rot, lease) {
+                    match VideoDecoder::open_with(&path, effective_preroll_rot, settings, lease) {
                         Ok(dec) => {
                             if source_in_secs > 0.01 {
                                 dec.seek(source_in_secs);
@@ -8579,7 +8593,7 @@ impl PlaybackEngine {
                             // Path-aware rotation — see overlay path above for the rationale.
                             // Skim/proxy is already upright; only rotate originals.
                             let effective_rot = self.effective_decode_rotation(media_id, &path, rot);
-                            if let Ok(dec) = VideoDecoder::open(&path, effective_rot) {
+                            if let Ok(dec) = VideoDecoder::open(&path, effective_rot, self.decode) {
                                 dec.seek(source_secs);
                                 dec.resume();
                                 self.v1_decoder = Some(dec);
@@ -8660,7 +8674,7 @@ impl PlaybackEngine {
                     self.v1_decoder = None;
                     self.stop_all_audio();
                     let effective_rot = self.effective_decode_rotation(media_id, &path, rot);
-                    match VideoDecoder::open(&path, effective_rot) {
+                    match VideoDecoder::open(&path, effective_rot, self.decode) {
                         Ok(dec) => {
                             dec.seek(source_secs);
                             dec.resume();
@@ -8908,7 +8922,7 @@ impl PlaybackEngine {
                     if !keep_sound {
                         self.stop_all_audio();
                     }
-                    match VideoDecoder::open(&path, effective_rot) {
+                    match VideoDecoder::open(&path, effective_rot, self.decode) {
                         Ok(dec) => {
                             dec.seek(source_secs);
                             dec.resume();
@@ -9142,8 +9156,8 @@ impl PlaybackEngine {
         if self.step_back.as_ref().is_none_or(|(id, _)| *id != clip.id) {
             let Some(path) = self.path_for_media(media) else { return false };
             let rotation = self.effective_decode_rotation(media, &path, clip.source_rotation);
-            let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Fixed);
-            let Ok(decoder) = VideoDecoder::open_with_queue(&path, rotation, lease, 8) else { return false };
+            let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Fixed, self.decode.hardware);
+            let Ok(decoder) = VideoDecoder::open_with_queue(&path, rotation, self.decode, lease, 8) else { return false };
             let bytes = self.media_pool.read().unwrap_or_else(|e| e.into_inner()).get(&media).map_or(0.0, |m| m.resolution.width as f64 * m.resolution.height as f64 * 4.0);
             self.step_back = Some((clip.id, reverse_gop::ReverseGop::for_memory(decoder, bytes, crate::decode_budget::free_vram(), 0.0)));
         }
@@ -9761,7 +9775,7 @@ impl PlaybackEngine {
             self.parked_refresh_done_for = Some(ph);
             return;
         };
-        match VideoDecoder::open(&orig_path, rotation) {
+        match VideoDecoder::open(&orig_path, rotation, self.decode) {
             Ok(dec) => {
                 dec.seek(source_secs);
                 dec.resume();
@@ -9918,7 +9932,7 @@ impl PlaybackEngine {
     /// the file's could not be read.
     fn picture_frame_blocker(&self, picture: (u32, u32)) -> Option<&'static str> {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        view::picture_frame_blocker(picture, (seq.resolution.width, seq.resolution.height))
+        view::picture_frame_blocker(picture, (seq.resolution.width, seq.resolution.height), self.decode.max_height)
     }
 
     /// Whether the only things standing between the decoder and the
@@ -11774,7 +11788,7 @@ impl PlaybackEngine {
         // Its samples' depth as probed, for what software decoding costs;
         // HDR stands in only for a file probed without it.
         let class = crate::decode_budget::Class::of(codec, crate::decode_budget::deep_samples(samples.0, samples.1).unwrap_or(deep), w, h);
-        let (pw, ph) = crate::video_decoder::playback_dimensions(w.max(1), h.max(1), 0);
+        let (pw, ph) = crate::video_decoder::playback_dimensions(self.decode.max_height, w.max(1), h.max(1), 0);
         // What it reads: the item's probed rates for its own file; a proxy
         // or skim file's size over the item's length.
         let read_bytes = match pool.get(&media_id) {
@@ -11803,7 +11817,7 @@ impl PlaybackEngine {
     fn resolve_media_path(&self, media_id: MediaId, log: bool) -> Option<PathBuf> {
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
         let item = pool.get(&media_id)?;
-        let optimised = klipp_media::OptimisedPlayback::from_u8(crate::video_decoder::optimised_playback_mode());
+        let optimised = self.decode.optimised;
         let chosen = item.file_for(klipp_media::Purpose::Picture, klipp_media::Sources { use_proxies: self.use_proxies, optimised })?;
         if log {
             match chosen.kind {
@@ -12242,7 +12256,7 @@ impl PlaybackEngine {
     #[allow(dead_code)]
     fn grab_first_frame(&mut self) {
         if let Some(path) = &self.current_file {
-            match VideoDecoder::open(path, self.current_source_rotation) {
+            match VideoDecoder::open(path, self.current_source_rotation, self.decode) {
                 Ok(dec) => {
                     dec.resume();
                     self.v1_decoder = Some(dec);
@@ -12286,7 +12300,7 @@ impl PlaybackEngine {
         // Tear down anything currently bound — clean slate.
         self.stop_source();
 
-        match VideoDecoder::open(&path, source_rotation) {
+        match VideoDecoder::open(&path, source_rotation, self.decode) {
             Ok(dec) => {
                 dec.resume();
                 self.source_decoder = Some(dec);
@@ -17042,5 +17056,42 @@ mod composition_fast_path_tests {
         engine.state = PlaybackState::Playing;
         let blockers = engine.fast_path_blockers_for(FastPath::Playing);
         assert!(!blockers.contains(&"Veylvik composition on clip"), "{blockers:?}");
+    }
+}
+
+#[cfg(test)]
+mod decode_settings_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// The preferences sent to the engine are the ones its decoders and
+    /// its choice of file go by: Always optimised plays the skim file of a
+    /// clip Auto would play from the original, and the streams and the
+    /// skim decoders take the same settings.
+    #[test]
+    fn the_engine_decodes_as_it_was_last_told() {
+        let dir = std::env::temp_dir().join(format!("klipp-engine-decode-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let skim = dir.join("a.skim.mp4");
+        std::fs::write(&skim, b"").unwrap();
+        let mut item = klipp_media::MediaItem::synthetic_for_test(dir.join("a.mov"), None);
+        item.skim_file = Some(skim.clone());
+        let (id, original) = (item.id, item.path.clone());
+        let mut pool = klipp_media::MediaPool::new();
+        pool.add(item);
+        let (_cmd, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut e = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::new(klipp_timeline::SharedSequence::new(klipp_timeline::Sequence::new_default())), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        assert_eq!(e.resolve_media_path(id, false), Some(original), "a 1080p24 clip plays from its original in Auto");
+        let settings = klipp_core::DecodeSettings { optimised: klipp_core::OptimisedPlayback::AlwaysOptimised, max_height: 2160, hardware: false, ..Default::default() };
+        e.handle_command(AppCommand::SetDecodeSettings(settings));
+        assert_eq!(e.resolve_media_path(id, false), Some(skim), "and from its skim file once told Always optimised");
+        assert_eq!((e.decode, e.streams.decode, e.skim_pool.decode), (settings, settings, settings));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -46,7 +46,7 @@ fn refused_hardware_frames_go_on_in_software() {
     let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).with_writer(std::io::stderr).try_init();
     // The GPU refuses every hardware frame from the first.
     video_decoder::refuse_next_hw_frames(u32::MAX);
-    let dec = VideoDecoder::open(&src, 0).expect("open");
+    let dec = VideoDecoder::open(&src, 0, klipp_core::DecodeSettings::default()).expect("open");
     dec.resume();
     let frames = drain(&dec, Duration::from_millis(600));
     video_decoder::refuse_next_hw_frames(0);

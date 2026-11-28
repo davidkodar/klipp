@@ -553,14 +553,8 @@ impl KlippApp {
         }
         let _ = app.cmd_tx.send(AppCommand::SetPanLaw(app.prefs.audio.pan_law));
         klipp_engine::pcm_reader::set_anti_click_fade_ms(app.prefs.advanced.anti_click_fade_ms);
-        klipp_engine::video_decoder::set_hardware_decode(app.prefs.system.hardware_decode);
+        let _ = app.cmd_tx.send(AppCommand::SetDecodeSettings(app.prefs.decode_settings()));
         klipp_core::GpuVendor::set_vaapi_preference(app.prefs.system.vaapi_decode);
-        klipp_engine::video_decoder::set_max_playback_height(app.prefs.system.max_playback_height);
-        klipp_engine::video_decoder::set_frame_queue_size(app.prefs.system.frame_queue_size);
-        klipp_engine::video_decoder::set_decode_threads(app.prefs.system.decode_threads);
-        klipp_engine::video_decoder::set_optimised_playback_mode(
-            app.prefs.playback.optimised_playback.to_engine_mode(),
-        );
         klipp_engine::video_decoder::set_playback_quality_divisor(crate::prefs::playback_quality_divisor(
             app.prefs.playback.playback_quality,
         ));

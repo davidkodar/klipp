@@ -65,11 +65,14 @@ struct Entry {
 pub struct SkimDecoders {
     open: Vec<Entry>,
     max_open: usize,
+    /// How a decoder opened from now on decodes: a worker's, from the
+    /// job it answers.
+    pub decode: klipp_core::DecodeSettings,
 }
 
 impl SkimDecoders {
     pub fn new(max_open: usize) -> Self {
-        Self { open: Vec::new(), max_open: max_open.max(1) }
+        Self { open: Vec::new(), max_open: max_open.max(1), decode: klipp_core::DecodeSettings::default() }
     }
 
     pub fn open_count(&self) -> usize {
@@ -206,7 +209,7 @@ impl SkimDecoders {
             // Least recently used first: entries are kept in use order.
             self.open.remove(0);
         }
-        let decoder = VideoDecoder::open(path, rotation).map_err(|e| format!("opening {}: {e}", path.display()))?;
+        let decoder = VideoDecoder::open(path, rotation, self.decode).map_err(|e| format!("opening {}: {e}", path.display()))?;
         self.open.push(Entry { path: path.to_path_buf(), rotation, decoder, last_used: Instant::now(), last: None });
         Ok(false)
     }
@@ -241,6 +244,8 @@ pub struct SkimJob<T: Clone + Send + 'static> {
     pub rotation: i32,
     pub secs: f64,
     pub max_height: u32,
+    /// How a decoder opened for it decodes, from the preferences.
+    pub decode: klipp_core::DecodeSettings,
     /// Anything the requester needs back with the frame.
     pub tag: T,
 }
@@ -274,6 +279,7 @@ impl<T: Clone + Send + 'static> SkimWorker<T> {
                     job = newer;
                 }
                 let t0 = Instant::now();
+                decoders.decode = job.decode;
                 let result = decoders
                     .frame_at(&job.path, job.rotation, job.secs, job.max_height, Duration::from_millis(400))
                     .or_else(|e| match &job.fallback_path {
@@ -340,6 +346,7 @@ impl<T: Clone + Send + 'static> SkimBatchWorker<T> {
                 }
                 let Some((index, job)) = pending.pop_front() else { continue };
                 next_start = index + 1;
+                decoders.decode = job.decode;
                 let result = decoders
                     .frame_at(&job.path, job.rotation, job.secs, job.max_height, Duration::from_millis(300))
                     .or_else(|e| match &job.fallback_path {

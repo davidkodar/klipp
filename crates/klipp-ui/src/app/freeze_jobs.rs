@@ -299,7 +299,7 @@ impl KlippApp {
             folder,
             revision: self.sequence.revision(),
             tracks,
-            size: klipp_engine::freeze::playback_size((seq.resolution.width, seq.resolution.height)),
+            size: klipp_engine::freeze::playback_size((seq.resolution.width, seq.resolution.height), self.prefs.decode_settings().max_height),
             draw: self.freeze_draw(),
             environment: klipp_engine::freeze::environment(working, self.state.use_proxies, self.freeze_draw()),
         };

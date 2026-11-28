@@ -83,6 +83,7 @@ pub mod sync;
 pub mod media_marker;
 pub mod span;
 pub mod debug_log;
+pub mod decode_settings;
 pub mod startup_timer;
 pub mod piece_transition;
 pub mod quote;
@@ -111,6 +112,7 @@ pub use config::{
     ScopeQuality, VectorscopeSettings, WaveformParadeSettings,
 };
 pub use gpu_vendor::{GpuVendor, VaapiUse};
+pub use decode_settings::{DecodeSettings, OptimisedPlayback};
 pub use working_colorspace::{grade_encoding, set_grade_encoding, GradeEncoding, WorkingColorspace};
 pub use shot::{ShotMetadata, StreamEnds};
 pub use logging::ClipLog;

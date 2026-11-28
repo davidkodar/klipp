@@ -2304,6 +2304,9 @@ pub enum AppCommand {
     GenerateProxy { media_id: MediaId },
     CancelProxy { media_id: MediaId },
     SetUseProxies(bool),
+    /// How the viewer's decoders decode, from the preferences: given to
+    /// each decoder as it opens.
+    SetDecodeSettings(crate::DecodeSettings),
     /// Show or hide one of the viewer's overlays (the inspector's
     /// switches; the keys and the palette toggle them in place).
     SetViewerOverlay { overlay: ViewerOverlay, on: bool },
