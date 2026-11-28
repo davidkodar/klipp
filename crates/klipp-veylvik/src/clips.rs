@@ -9,6 +9,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::host_key::HostKey;
 use klipp_core::ClipId;
 use klipp_timeline::{Clip, ClipKind, Sequence, TrackKind};
 use veylvik_document::{nodes, Composition, Node, Operation};
@@ -16,24 +17,21 @@ use veylvik_document::{nodes, Composition, Node, Operation};
 /// What a composition names the scene's clip `id` by: its id as the scene
 /// keeps it, not as one instance of the scene renames it.
 pub fn clip_key(id: ClipId) -> String {
-    format!("clip:{}", id.0)
+    HostKey::Clip(id).name()
 }
 
 /// The scene's clip `key` names, if it names one.
 pub fn clip_of_key(key: &str) -> Option<ClipId> {
-    key.strip_prefix("clip:").and_then(|id| uuid::Uuid::parse_str(id).ok()).map(ClipId)
+    match HostKey::parse(key)? {
+        HostKey::Clip(id) => Some(id),
+        _ => None,
+    }
 }
 
-/// The keys of the scene's clips `composition` has footage of.
+/// The keys of the scene's clips `composition` has footage of, as it
+/// writes them.
 pub fn clip_keys(composition: &Composition) -> BTreeSet<String> {
-    composition
-        .nodes
-        .values()
-        .filter_map(|n| match &n.operation {
-            Operation::Footage(f) if clip_of_key(&f.asset).is_some() => Some(f.asset.clone()),
-            _ => None,
-        })
-        .collect()
+    crate::host_key::host_names(composition).into_iter().filter_map(|(name, k)| matches!(k, HostKey::Clip(_)).then_some(name)).collect()
 }
 
 /// Whether the composition in `bytes` may have footage of a scene's
