@@ -223,7 +223,7 @@ pub(crate) fn offline_picture_at(seq: &klipp_timeline::Sequence, pool: &klipp_me
     // A clip's file that is missing, with no ready proxy to stand in.
     let missing = |c: &klipp_timeline::Clip| -> Option<String> {
         let item = pool.get(&c.media_id()?)?;
-        let proxy = item.proxy_ready && item.proxy_path.as_ref().is_some_and(|p| p.exists());
+        let proxy = item.proxy_on_disk();
         ((item.offline || !item.path.exists()) && !proxy).then(|| format!("{} is offline: {} is not there", item.filename, item.path.display()))
     };
     // Anything there that draws — a file that is there, a title, a

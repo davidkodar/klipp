@@ -2501,11 +2501,8 @@ fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fad
             // Before an incoming clip's in point this reaches back into
             // its head, past an outgoing clip's out point into its tail.
             let source_secs = klipp_compose::render::source_secs(clip, tc, seq.fps.as_f64());
-            let decode_path = if use_proxies && item.proxy_ready {
-                item.proxy_path.as_ref().filter(|p| p.exists()).cloned().unwrap_or_else(|| item.path.clone())
-            } else {
-                item.path.clone()
-            };
+            let sound = klipp_media::Sources { use_proxies, ..Default::default() };
+            let decode_path = item.file_for(klipp_media::Purpose::Sound, sound).map_or_else(|| item.path.clone(), |c| c.path);
             let path = if pcm_cache {
                 item.audio_cache.as_ref().map(|c| c.pcm_path.clone()).filter(|p| p.exists()).unwrap_or(decode_path)
             } else {
@@ -11804,51 +11801,22 @@ impl PlaybackEngine {
     /// for asking which file a clip would read, every seek, rather than
     /// opening it.
     fn resolve_media_path(&self, media_id: MediaId, log: bool) -> Option<PathBuf> {
-        self.media_pool
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&media_id)
-            .map(|item| {
-                // 1. Proxy files (explicit user choice, highest priority)
-                if self.use_proxies {
-                    if let Some(ref proxy_path) = item.proxy_path {
-                        if item.proxy_ready && proxy_path.exists() {
-                            if log {
-                                tracing::trace!("resolve_media_path: using proxy for {}", item.filename);
-                            }
-                            return proxy_path.clone();
-                        }
-                    }
-                }
-                // 2. Optimised playback: substitute the skim file for the
-                //    source when the source is too heavy for real-time
-                //    playback on the current pipeline. Mirrors
-                //    DaVinci Optimized Media + FCP Proxy. Pure decision
-                //    in `should_use_skim_for_playback` (unit-tested);
-                //    we just feed it the inputs and pick the path.
-                if let Some(ref skim_path) = item.skim_file {
-                    let mode = crate::video_decoder::optimised_playback_mode();
-                    let skim_ready = skim_path.exists();
-                    if crate::video_decoder::should_use_skim_for_playback(
-                        mode,
-                        item.resolution.height,
-                        item.fps.as_f64(),
-                        skim_ready,
-                    ) {
-                        if log {
-                            tracing::info!(
-                                "resolve_media_path: using skim ({} {}x{}@{:.2} fps) for {}",
-                                match mode { 1 => "AlwaysOriginal", 2 => "AlwaysOptimized", _ => "Auto" },
-                                item.resolution.width, item.resolution.height,
-                                item.fps.as_f64(), item.filename,
-                            );
-                        }
-                        return skim_path.clone();
-                    }
-                }
-                // 3. Original source file.
-                item.path.clone()
-            })
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        let item = pool.get(&media_id)?;
+        let optimised = klipp_media::OptimisedPlayback::from_u8(crate::video_decoder::optimised_playback_mode());
+        let chosen = item.file_for(klipp_media::Purpose::Picture, klipp_media::Sources { use_proxies: self.use_proxies, optimised })?;
+        if log {
+            match chosen.kind {
+                klipp_media::FileKind::Proxy => tracing::trace!("resolve_media_path: using proxy for {}", item.filename),
+                klipp_media::FileKind::Skim => tracing::info!(
+                    "resolve_media_path: using skim ({optimised:?} {}x{}@{:.2} fps) for {}",
+                    item.resolution.width, item.resolution.height,
+                    item.fps.as_f64(), item.filename,
+                ),
+                klipp_media::FileKind::Original => {}
+            }
+        }
+        Some(chosen.path)
     }
 
     /// Read `path`'s streams for the media pool, on the probe thread:

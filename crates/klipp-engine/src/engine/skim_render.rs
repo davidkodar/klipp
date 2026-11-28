@@ -157,10 +157,7 @@ impl SkimPool {
 /// Where each media's skim frames come from: its skim file, or a still
 /// image's own file. `None` for media with neither, still transcoding.
 pub(crate) fn skim_file(item: &klipp_media::MediaItem) -> Option<PathBuf> {
-    if item.is_still {
-        return Some(item.path.clone());
-    }
-    item.skim_file.clone().filter(|p| p.exists())
+    item.file_for(klipp_media::Purpose::Skim, klipp_media::Sources::default()).map(|c| c.path)
 }
 
 /// The frames of one skim position, by clip: decoded before the render,

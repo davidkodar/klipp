@@ -189,7 +189,7 @@ impl ViewerSource<'_> {
 pub(super) fn held_file_of(pool: &MediaPool, clip: &Clip, use_proxies: bool) -> Option<klipp_compose::HeldFile> {
     let media = clip.media_id()?;
     let item = pool.get(&media)?;
-    let proxy = item.proxy_path.clone().filter(|p| use_proxies && item.proxy_ready && p.exists());
+    let proxy = item.proxy_in_use(use_proxies).map(std::path::Path::to_path_buf);
     let path = item.path.clone();
     let log_format = crate::video_decoder::log_format_for_path(&path);
     klipp_compose::HeldFile::stamp(media, path, log_format, proxy)

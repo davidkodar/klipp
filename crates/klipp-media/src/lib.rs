@@ -42,6 +42,7 @@ pub mod relink;
 pub mod media_check;
 pub mod sidecar;
 mod item;
+pub mod decode_file;
 mod pool;
 mod thumbnail;
 pub mod waveform;
@@ -170,6 +171,7 @@ pub fn artwork_size(path: &std::path::Path) -> Option<(u32, u32)> {
 pub use audio_cache::AudioCacheEntry;
 pub use item::{describe_secs, merge_reprobed, same_file_as_probed, Bin, ColorLabel, ColourSpace, MediaItem, MediaItemKind};
 pub use pool::MediaPool;
+pub use decode_file::{FileChoice, FileKind, OptimisedPlayback, Purpose, Sources};
 pub use thumbnail::{FilmstripFrame, ThumbnailCache, ThumbnailEntry};
 pub use waveform::generate_waveform_from_samples;
 pub use field::{Field, FieldValue, SortKey};

@@ -134,13 +134,9 @@ pub fn angle_sources(seq: &Sequence, pool: &MediaPool, group: GroupId, playhead:
                 // every batch (#84: they could stall on network footage):
                 // a skim file or proxy that is gone fails to open in the
                 // worker, which then decodes the original.
-                let (path, fallback) = if let Some(skim) = item.skim_file.as_ref() {
-                    (skim.clone(), Some(item.path.clone()))
-                } else if let Some(proxy) = item.proxy_path.as_ref().filter(|_| item.proxy_ready) {
-                    (proxy.clone(), Some(item.path.clone()))
-                } else {
-                    (item.path.clone(), None)
-                };
+                let chosen = item.file_for(klipp_media::Purpose::MulticamAngle, klipp_media::Sources::default())?;
+                let fallback = (chosen.kind != klipp_media::FileKind::Original).then(|| item.path.clone());
+                let path = chosen.path;
                 let rotation = item.effective_rotation_for(&path);
                 Some(Decode { path, fallback, rotation, secs })
             });

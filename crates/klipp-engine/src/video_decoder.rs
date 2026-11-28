@@ -1884,13 +1884,9 @@ static FRAME_QUEUE_SIZE_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::
 static DECODE_THREADS_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Optimised-playback policy. Encoded as a u8 atomic so the engine
-/// can read it lock-free from the playback path:
-///   0 = Auto (default) — use skim when source > 1080p OR > 30fps,
-///       fall back to source otherwise.
-///   1 = AlwaysOriginal — never substitute, even for heavy 4K60 sources.
-///   2 = AlwaysOptimized — always use skim if available.
-/// Unrecognised values fall back to Auto so a future enum extension
-/// degrades gracefully.
+/// can read it lock-free from the playback path: the numbers of
+/// [`klipp_media::OptimisedPlayback`], which decides with it (0 Auto,
+/// 1 Always original, 2 Always optimised).
 static OPTIMISED_PLAYBACK_PREF: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 pub fn set_optimised_playback_mode(mode: u8) {
@@ -1952,37 +1948,6 @@ pub fn working_colorspace() -> klipp_core::WorkingColorspace {
     klipp_core::WorkingColorspace::from_u8(
         WORKING_COLORSPACE_PREF.load(std::sync::atomic::Ordering::Relaxed),
     )
-}
-
-/// Decide whether the playback decoder should open the skim file
-/// instead of the original source. Pure function — separated from the
-/// engine so it's unit-testable. Three inputs:
-///   * `mode`: 0 Auto / 1 AlwaysOriginal / 2 AlwaysOptimized.
-///   * `source_height`, `source_fps`: source media stats.
-///   * `skim_ready`: whether a finalised skim file exists on disk.
-///
-/// Heuristic in Auto mode: any one of "taller than 1080p" or "faster
-/// than ~30 fps" pushes us off real-time on the current pipeline, so
-/// substitute the skim when it's available.
-pub fn should_use_skim_for_playback(
-    mode: u8,
-    source_height: u32,
-    source_fps: f64,
-    skim_ready: bool,
-) -> bool {
-    match mode {
-        1 => false, // AlwaysOriginal
-        2 => skim_ready,
-        _ => {
-            // Auto. Only meaningful when the skim file is actually on disk —
-            // we don't want to silently swallow play because the proxy is
-            // still being generated.
-            if !skim_ready { return false; }
-            let too_big = source_height > 1080;
-            let too_fast = source_fps > 30.5;
-            too_big || too_fast
-        }
-    }
 }
 
 /// Set whether hardware decode (NVDEC / VAAPI) is enabled from preferences.
@@ -4134,76 +4099,6 @@ mod decoder_linearisation_tests {
         let (rotated, nw, nh) = rotate_linear_rgba(&src, 2, 2, 0);
         assert_eq!((nw, nh), (2, 2));
         assert_eq!(rotated, src);
-    }
-
-    // ─── should_use_skim_for_playback ──────────────────────────────
-    // Pure decision function: takes pref mode + source media stats +
-    // skim-readiness, returns whether the playback decoder should
-    // open the skim instead of the source. Tested in isolation so
-    // the engine call site can stay a one-liner.
-
-    #[test]
-    fn auto_uses_skim_for_4k60_when_skim_ready() {
-        // Mode 0 (Auto), 4K60 source, skim built — must substitute.
-        assert!(should_use_skim_for_playback(0, 2160, 60.0, true));
-    }
-
-    #[test]
-    fn auto_uses_skim_for_4k30_when_skim_ready() {
-        // 4K resolution alone is enough to swap.
-        assert!(should_use_skim_for_playback(0, 2160, 30.0, true));
-    }
-
-    #[test]
-    fn auto_uses_skim_for_1080p60_when_skim_ready() {
-        // 60 fps alone is enough to swap.
-        assert!(should_use_skim_for_playback(0, 1080, 60.0, true));
-    }
-
-    #[test]
-    fn auto_keeps_source_for_1080p30() {
-        // Comfortable for the current pipeline — no swap.
-        assert!(!should_use_skim_for_playback(0, 1080, 29.97, true));
-    }
-
-    #[test]
-    fn auto_keeps_source_when_skim_not_ready() {
-        // Even a heavy 4K60 source plays from original until skim
-        // finishes. (Engine should still try to start the skim
-        // transcode in the background.)
-        assert!(!should_use_skim_for_playback(0, 2160, 60.0, false));
-    }
-
-    #[test]
-    fn always_original_never_swaps_even_for_4k60() {
-        // Mode 1 explicit — user wants source quality at all costs.
-        assert!(!should_use_skim_for_playback(1, 2160, 60.0, true));
-    }
-
-    #[test]
-    fn always_optimized_swaps_whenever_skim_exists() {
-        // Mode 2 — even on a 720p30 source we use skim if available.
-        assert!(should_use_skim_for_playback(2, 720, 23.976, true));
-        // …but not if the skim hasn't been built yet.
-        assert!(!should_use_skim_for_playback(2, 720, 23.976, false));
-    }
-
-    #[test]
-    fn unknown_mode_falls_back_to_auto() {
-        // Defensive default — a future enum variant we forgot to
-        // teach the decoder about should NOT brick playback.
-        assert_eq!(
-            should_use_skim_for_playback(99, 2160, 60.0, true),
-            should_use_skim_for_playback(0, 2160, 60.0, true),
-        );
-    }
-
-    #[test]
-    fn fps_threshold_is_just_above_30() {
-        // Boundary: NTSC 29.97 stays on source; PAL 50 / 60 swaps.
-        assert!(!should_use_skim_for_playback(0, 1080, 29.97, true));
-        assert!(should_use_skim_for_playback(0, 1080, 50.0, true));
-        assert!(should_use_skim_for_playback(0, 1080, 59.94, true));
     }
 }
 
