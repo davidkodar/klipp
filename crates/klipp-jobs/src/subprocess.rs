@@ -119,21 +119,14 @@ impl SubprocessJob {
     fn send_stop(&self) {
         let pid = self.pid.load(Ordering::Acquire);
         if pid <= 0 { return; }
-        // SAFETY: `kill` is FFI; passing a PID we read from Child::id
-        // is well-defined for any value (kernel rejects non-existent
-        // PIDs by returning -1, which we ignore).
-        unsafe {
-            let _ = libc::kill(pid, libc::SIGSTOP);
-        }
+        crate::held_child::signal(pid as u32, true);
     }
 
     #[cfg(unix)]
     fn send_cont(&self) {
         let pid = self.pid.load(Ordering::Acquire);
         if pid <= 0 { return; }
-        unsafe {
-            let _ = libc::kill(pid, libc::SIGCONT);
-        }
+        crate::held_child::signal(pid as u32, false);
     }
 
     #[cfg(not(unix))]
