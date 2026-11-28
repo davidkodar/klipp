@@ -1123,6 +1123,85 @@ mod tests {
         }
     }
 
+    /// Export's mix through the aux buses is playback's: the same scene
+    /// (a post-fader and a pre-fader send, a muted track, a bus with a
+    /// reverb feeding a second bus, panned; then with a track soloed) mixed
+    /// by `AudioMixdown` and by the playback mixer set up as the engine's
+    /// `sync_routing` sets it, fed the same sound, frame after frame. The
+    /// two were written apart and must not drift.
+    #[test]
+    fn export_mixes_the_buses_as_playback_does() {
+        let (sr, frames) = (48000u32, 12u64);
+        let noise = |seed: u32| -> Vec<f32> {
+            let mut x = seed.wrapping_mul(2654435761).max(1);
+            (0..(sr as usize * 2) * 2).map(|_| { x ^= x << 13; x ^= x >> 17; x ^= x << 5; (x as f32 / u32::MAX as f32 - 0.5) * 0.5 }).collect()
+        };
+        let clip = AudioClipSnapshot {
+            timeline_start_frame: 0, timeline_end_frame: 48, source_start_secs: 0.0, path: std::path::PathBuf::new(),
+            audio_effects: vec![], audio_effect_keyframes: std::collections::HashMap::new(), source_range: (0.0, 2.0),
+            shape: AudioClipShape::default(), varispeed: None, exact_secs: None,
+        };
+        let (verb, out) = (klipp_timeline::AuxBus::new("Verb"), klipp_timeline::AuxBus::new("Out"));
+        let mut verb = verb;
+        verb.output = Some(out.id);
+        verb.effects = vec![klipp_core::AudioEffectInstance { effect_type: "reverb".into(), enabled: true, wet_dry: 1.0, params: vec![] }];
+        let mut out = out;
+        (out.volume, out.pan) = (0.7, 0.3);
+        let send = |bus: klipp_core::BusId, level: f32, pre_fader: bool| klipp_timeline::AuxSend { level, pre_fader, ..klipp_timeline::AuxSend::new(bus) };
+
+        for solo in [false, true] {
+            let mut snapshot = make_empty_snapshot(3);
+            snapshot.sample_rate = sr;
+            snapshot.audio_buses = vec![verb.clone(), out.clone()];
+            for (i, t) in snapshot.audio_tracks.iter_mut().enumerate() {
+                t.clips = vec![clip.clone()];
+                (t.volume, t.pan) = ([0.8, 0.5, 1.0][i], [-0.4, 0.6, 0.0][i]);
+            }
+            snapshot.audio_tracks[0].sends = vec![send(verb.id, 0.5, false)];
+            snapshot.audio_tracks[1].sends = vec![send(verb.id, 0.8, true), send(out.id, 0.3, false)];
+            snapshot.audio_tracks[2].sends = vec![send(verb.id, 1.0, false)];
+            snapshot.audio_tracks[2].muted = true;
+            snapshot.audio_tracks[1].solo = solo;
+
+            let mut export = AudioMixdown::new(&snapshot).unwrap();
+            for (i, state) in export.track_decoders.iter_mut().enumerate() {
+                state.buffers = vec![(0, noise(i as u32 + 1))];
+            }
+            let sounds: Vec<TrackAudioState> = export.track_decoders.iter().map(|s| TrackAudioState { clips: s.clips.clone(), buffers: s.buffers.clone(), rung_out: Default::default(), may_ring: Default::default() }).collect();
+
+            // The playback mixer as `sync_routing` and the level sync set it.
+            let mut mixer = klipp_audio::AudioMixer::new(3);
+            mixer.set_sample_rate(sr);
+            mixer.pan_law = snapshot.pan_law;
+            let buses = &snapshot.audio_buses;
+            let index = |id: klipp_core::BusId| buses.iter().position(|b| b.id == id);
+            mixer.set_bus_count(buses.len());
+            for (i, b) in buses.iter().enumerate() {
+                let lane = &mut mixer.buses[i];
+                (lane.volume, lane.pan, lane.muted, lane.output) = (b.volume, b.pan, b.muted, b.output.and_then(index));
+                mixer.set_bus_inserts(i, &b.effects);
+            }
+            mixer.set_bus_order(&klipp_timeline::routing::bus_order_of(buses));
+            for (lane, t) in mixer.tracks.iter_mut().zip(&snapshot.audio_tracks) {
+                (lane.volume, lane.pan, lane.muted, lane.solo) = (t.volume, t.pan, t.muted, t.solo);
+                lane.sends = t.sends.iter().filter_map(|s| Some(klipp_audio::SendLane::new(index(s.bus)?, s.level, s.pre_fader, s.muted))).collect();
+            }
+            mixer.refresh_pdc();
+
+            let mut sounds = sounds;
+            for f in 0..frames {
+                let exported = export.get_frame_audio(f);
+                let (first, end) = export.frame_sample_range(f);
+                let fed: Vec<Vec<f32>> = sounds.iter_mut().map(|s| get_track_samples(s, f, first, end, sr, 24, 1, 24.0)).collect();
+                let played = mixer.mix(&fed.iter().enumerate().map(|(i, b)| (i, b.as_slice())).collect::<Vec<_>>());
+                assert_eq!(exported.len(), played.len(), "frame {f}");
+                let worst = exported.iter().zip(&played).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                assert!(worst < 1e-5, "solo {solo}, frame {f}: export and playback differ by {worst}");
+                assert!(played.iter().any(|s| s.abs() > 1e-3), "solo {solo}, frame {f}: the scene sounds");
+            }
+        }
+    }
+
     fn make_empty_snapshot(num_audio_tracks: usize) -> SequenceSnapshot {
         let audio_tracks: Vec<AudioTrackSnapshot> = (0..num_audio_tracks)
             .map(|_| AudioTrackSnapshot {
