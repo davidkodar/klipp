@@ -174,3 +174,5 @@ mod old_ids_open;
 mod roles_round_trip;
 #[path = "../every_clip_field_survives.rs"]
 mod every_clip_field_survives;
+#[path = "../every_saved_field_survives.rs"]
+mod every_saved_field_survives;
