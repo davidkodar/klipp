@@ -1044,6 +1044,10 @@ fn resolve_title_paths(td: &mut klipp_timeline::TitleData, project_dir: &Path) {
 }
 
 /// Load ClipKind from JSON — backward-compatible with old `media_id`-only format.
+/// The most effects a clip read from a file remembers its All effects
+/// switch turning off.
+const MAX_SWITCHED_OFF: usize = 1024;
+
 /// The most takes an audition read from a file keeps (#3209).
 const MAX_TAKES: usize = 100;
 
@@ -1135,7 +1139,8 @@ fn load_clip(c: &ClipJson, project_dir: &Path, effects_by_clip: &HashMap<&str, V
             active_grade_version: c.active_grade_version,
         }
         .into(),
-        effects_switched_off: Vec::new(),
+        // Read as untrusted: no more than a clip has effects to switch.
+        effects_switched_off: c.effects_switched_off.iter().take(MAX_SWITCHED_OFF).copied().collect(),
         linked_clip_id: c.linked_clip_id.as_ref().and_then(|s| {
             parse_uuid(s).ok().map(ClipId)
         }),

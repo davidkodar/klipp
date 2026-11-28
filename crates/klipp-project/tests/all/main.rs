@@ -172,3 +172,5 @@ mod zero_mix_round_trip;
 mod old_ids_open;
 #[path = "../roles_round_trip.rs"]
 mod roles_round_trip;
+#[path = "../every_clip_field_survives.rs"]
+mod every_clip_field_survives;
