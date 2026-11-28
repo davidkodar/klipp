@@ -30,6 +30,7 @@ use klipp_nodes::frame_context::GpuFramePixels;
 use klipp_timeline::{Clip, CompositionId};
 use veylvik_document::{Composition, Time};
 
+use crate::host_key::HostKey;
 use crate::{mix, working_pixels, ClipFootage, ClipSource, HostSource, KlippHost, Renderer, SourceInfo};
 
 /// The project's compositions, by id: each file's bytes (as
@@ -659,27 +660,36 @@ impl Compositor {
             let below = GivenFootage { info, size: [bw, bh], pixels: working_pixels(key.working), current: Arc::clone(&current), device: Arc::clone(&self.device), clear: OnceLock::new(), clip: None };
             host.insert(BELOW_KEY, Arc::new(HostSource::new(below, FOOTAGE_BUDGET)));
         }
-        // A precomposition's clips it lays in, each the picture handed to
-        // the render, clear where the clip isn't.
-        let clips = if key.clips.is_some() { crate::clips::clip_keys(&composition) } else { Default::default() };
-        if let Some([cw, ch]) = key.clips {
-            for name in &clips {
-                let info = SourceInfo { width: cw, height: ch, duration, frame_rate: Some(rate), frames, description: "a clip of the precomposition in Klipp".into() };
-                let footage = GivenFootage { info, size: [cw, ch], pixels: working_pixels(key.working), current: Arc::clone(&current), device: Arc::clone(&self.device), clear: OnceLock::new(), clip: Some(name.clone()) };
-                host.insert(name.as_str(), Arc::new(HostSource::new(footage, FOOTAGE_BUDGET)));
+        // The rest of what it names, by what each name is.
+        let (mut clips, mut pool) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
+        for (name, named) in crate::host_key::host_names(&composition) {
+            match named {
+                // Given above, whether it names them or not.
+                HostKey::ClipMedia | HostKey::Below => {}
+                // A precomposition's clip it lays in, the picture handed to
+                // the render, clear where the clip isn't; a clip's own
+                // composition has none to give.
+                HostKey::Clip(_) => {
+                    let Some([cw, ch]) = key.clips else { continue };
+                    let info = SourceInfo { width: cw, height: ch, duration, frame_rate: Some(rate), frames, description: "a clip of the precomposition in Klipp".into() };
+                    let footage = GivenFootage { info, size: [cw, ch], pixels: working_pixels(key.working), current: Arc::clone(&current), device: Arc::clone(&self.device), clear: OnceLock::new(), clip: Some(name.clone()) };
+                    host.insert(name.as_str(), Arc::new(HostSource::new(footage, FOOTAGE_BUDGET)));
+                    clips.insert(name);
+                }
+                // Media of Klipp's pool, decoded as an export decodes it;
+                // one the pool hasn't (gone meanwhile) is unavailable.
+                HostKey::Media(id) => {
+                    if let Some(found) = project_media(id) {
+                        let (item, state) = &*found;
+                        // A live view plays from proxies as Klipp's viewer
+                        // does; an export reads the files.
+                        let proxies = key.live && USE_PROXIES.load(Ordering::Relaxed);
+                        let footage = crate::editor_footage::EditorFootage::of(item, key.working, *state, proxies, Arc::clone(&self.device), Arc::clone(&self.queue));
+                        host.insert(name.as_str(), Arc::new(HostSource::new(footage, FOOTAGE_BUDGET)));
+                    }
+                    pool.insert(name);
+                }
             }
-        }
-        // Media of Klipp's pool it lays in, each decoded as an export
-        // decodes it; one the pool hasn't (gone meanwhile) is unavailable.
-        let pool = crate::pool::pool_keys(&composition);
-        for name in &pool {
-            let Some(found) = crate::pool::media_of_key(name).and_then(project_media) else { continue };
-            let (item, state) = &*found;
-            // A live view plays from proxies as Klipp's viewer does; an
-            // export reads the files.
-            let proxies = key.live && USE_PROXIES.load(Ordering::Relaxed);
-            let footage = crate::editor_footage::EditorFootage::of(item, key.working, *state, proxies, Arc::clone(&self.device), Arc::clone(&self.queue));
-            host.insert(name.as_str(), Arc::new(HostSource::new(footage, FOOTAGE_BUDGET)));
         }
         // Its assets in its folder in the project; a project never saved
         // has none yet, and an empty folder of the session's own stands in.
@@ -820,7 +830,7 @@ pub fn bytes_read_below(bytes: &[u8]) -> bool {
     if !bytes.windows(BELOW_KEY.len()).any(|w| w == BELOW_KEY.as_bytes()) {
         return false;
     }
-    serde_json::from_slice::<Composition>(bytes).is_ok_and(|c| c.nodes.values().any(|n| matches!(&n.operation, veylvik_document::Operation::Footage(f) if f.asset == BELOW_KEY)))
+    serde_json::from_slice::<Composition>(bytes).is_ok_and(|c| crate::host_key::host_keys(&c).contains(&crate::host_key::HostKey::Below))
 }
 
 /// The open project's compositions now: on open, on a save that gave a

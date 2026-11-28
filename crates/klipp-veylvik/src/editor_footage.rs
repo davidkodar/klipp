@@ -334,16 +334,23 @@ impl crate::Host for TabHost {
     }
 
     fn media(&self, key: &str) -> Option<Arc<dyn veylvik_render::FrameSource>> {
-        let slot = match key {
-            crate::CLIP_MEDIA_KEY => &self.footage,
-            crate::BELOW_KEY => &self.below,
-            _ => return self.pool.lock().unwrap_or_else(|e| e.into_inner()).get(key).cloned(),
+        use crate::host_key::HostKey;
+        let slot = match HostKey::parse(key)? {
+            HostKey::ClipMedia => &self.footage,
+            HostKey::Below => &self.below,
+            // By the name as the composition writes it, as set.
+            HostKey::Media(_) => return self.pool.lock().unwrap_or_else(|e| e.into_inner()).get(key).cloned(),
+            // The page opens a clip of media, never a precomposition: it
+            // has no scene's clips to give.
+            HostKey::Clip(_) => return None,
         };
         slot.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn media_sound(&self, key: &str, window: [f64; 2], rate: u32) -> Option<veylvik_audio::Pcm> {
-        if key != crate::CLIP_MEDIA_KEY {
+        // The clip's own sound only: the layers below, a scene's clips and
+        // pool media are pictures here.
+        if crate::host_key::HostKey::parse(key) != Some(crate::host_key::HostKey::ClipMedia) {
             return None;
         }
         // Mixed off the lock: the editor's mix thread may take a while.

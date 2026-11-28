@@ -7,29 +7,27 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::host_key::HostKey;
 use klipp_core::MediaId;
 use veylvik_document::{Composition, Node, Operation};
 
 /// What a composition names media `id` of Klipp's pool by.
 pub fn media_key(id: MediaId) -> String {
-    format!("media:{}", id.0)
+    HostKey::Media(id).name()
 }
 
 /// The media of Klipp's pool `key` names, if it names one.
 pub fn media_of_key(key: &str) -> Option<MediaId> {
-    key.strip_prefix("media:").and_then(|id| uuid::Uuid::parse_str(id).ok()).map(MediaId)
+    match HostKey::parse(key)? {
+        HostKey::Media(id) => Some(id),
+        _ => None,
+    }
 }
 
-/// The keys of Klipp's pool media `composition` has footage of.
+/// The keys of Klipp's pool media `composition` has footage of, as it
+/// writes them.
 pub fn pool_keys(composition: &Composition) -> BTreeSet<String> {
-    composition
-        .nodes
-        .values()
-        .filter_map(|n| match &n.operation {
-            Operation::Footage(f) if media_of_key(&f.asset).is_some() => Some(f.asset.clone()),
-            _ => None,
-        })
-        .collect()
+    crate::host_key::host_names(composition).into_iter().filter_map(|(name, k)| matches!(k, HostKey::Media(_)).then_some(name)).collect()
 }
 
 /// The composition in `bytes` with media `id` of Klipp's pool laid over its
