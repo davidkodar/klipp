@@ -40,6 +40,7 @@ fn fault(message: impl Into<String>) -> veylvik_render::Error {
     veylvik_render::Error::Message(message.into())
 }
 
+pub mod actions;
 pub mod below;
 pub mod clips;
 pub mod host_key;

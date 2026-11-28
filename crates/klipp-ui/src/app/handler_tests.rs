@@ -1508,3 +1508,38 @@ fn a_committed_track_height_stops_at_the_preferences_cap() {
     }
     assert_eq!(crate::panels::timeline::track_height_cap(&crate::prefs::TimelinePrefs::default()), 300.0, "the default is the old fixed cap");
 }
+
+/// The clip menu's Veylvik actions pass over a clip they can't change and
+/// say why, as the control socket says it (both ask
+/// `klipp_veylvik::actions`): no composition to reset, the layers below
+/// drawn under it already; with several clips, why the first was passed
+/// over. One that can be changed is, as one step.
+#[test]
+fn a_veylvik_action_says_why_it_passes_a_clip_over() {
+    use klipp_core::CompositionClipAction as A;
+    let (mut app, _engine) = KlippApp::for_test();
+    let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let c = klipp_veylvik::Composition::from_host_footage(klipp_veylvik::CLIP_MEDIA_KEY, "Clip", None, [64, 36], klipp_veylvik::Time { ticks: 24, rate: 1 }, 24).unwrap();
+    let plain: std::sync::Arc<[u8]> = serde_json::to_vec(&c).unwrap().into();
+    let (over_id, composed_id) = (klipp_timeline::CompositionId::new(), klipp_timeline::CompositionId::new());
+    app.state.compositions.insert(over_id, klipp_veylvik::below::over_below(&plain).unwrap());
+    app.state.compositions.insert(composed_id, plain);
+    let bare = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+    let over = klipp_timeline::Clip { composition: Some(over_id), ..klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(2.0), t(4.0), t(0.0), t(2.0)) };
+    let composed = klipp_timeline::Clip { composition: Some(composed_id), ..klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(4.0), t(6.0), t(0.0), t(2.0)) };
+    let gap = klipp_timeline::Clip::gap(t(6.0), t(8.0));
+    let ids = [bare.id, over.id, composed.id, gap.id];
+    app.state.document.sequences[0].tracks[0].clips = vec![bare.clone(), over.clone(), composed, gap];
+    let said = |app: &KlippApp, clip: &klipp_timeline::Clip, action| klipp_veylvik::actions::passes_over(action, clip, &app.state.compositions).unwrap().to_string();
+
+    assert_eq!(app.composition_clips(&ids[..1], A::Reset), Err(said(&app, &bare, A::Reset)));
+    assert_eq!(app.composition_clips(&ids[1..2], A::OverBelow), Err(said(&app, &over, A::OverBelow)));
+    let both = app.composition_clips(&[ids[0], ids[3]], A::Remove).unwrap_err();
+    assert_eq!(both, format!("none of the clips was changed: {}", said(&app, &bare, A::Remove)));
+    assert_eq!(app.state.undo_depth(), 0, "nothing changed, no step");
+
+    assert!(app.composition_clips(&ids, A::Remove).is_ok(), "the two with one are changed");
+    assert_eq!(app.state.undo_depth(), 1);
+    let left = app.state.document.sequences[0].tracks[0].clips.iter().filter(|c| c.composition.is_some()).count();
+    assert_eq!(left, 0, "both compositions removed, the others passed over");
+}
