@@ -3,8 +3,8 @@ use crate::path_util::{atomic_write, to_project_relative};
 use klipp_graph_format::lifted::Stage;
 use klipp_graph_format::path::Root;
 use klipp_media::{MediaItem, MediaPool};
-use klipp_timeline::picture_v1::ClipPictureV1;
-use klipp_timeline::{ClipKind, Look, Sequence, TrackKind};
+use crate::clip_codec::clip_to_json;
+use klipp_timeline::{Look, Sequence, TrackKind};
 use std::path::Path;
 use tracing::{info, warn};
 
@@ -457,7 +457,7 @@ fn commit_pair(dir: &Path, project: &[u8], manifest: &[u8], backup_count: u32, g
 /// it was not counted in reads back as another time. The rate is the
 /// least common multiple of theirs, so every time is stored exactly; a
 /// clip whose times already share a rate is written as before.
-fn one_rate(times: [klipp_core::Timecode; 4]) -> ([i64; 4], u32) {
+pub(crate) fn one_rate(times: [klipp_core::Timecode; 4]) -> ([i64; 4], u32) {
     fn gcd(a: u64, b: u64) -> u64 {
         if b == 0 { a } else { gcd(b, a % b) }
     }
@@ -478,7 +478,7 @@ fn one_rate(times: [klipp_core::Timecode; 4]) -> ([i64; 4], u32) {
     })
 }
 
-fn timecode_to_json(tc: &klipp_core::Timecode) -> TimecodeJson {
+pub(crate) fn timecode_to_json(tc: &klipp_core::Timecode) -> TimecodeJson {
     TimecodeJson { value: tc.value, rate: tc.rate }
 }
 
@@ -589,290 +589,6 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 clips: t.clips.iter().map(|c| clip_to_json(c, project_dir)).collect(),
             }
         }).collect(),
-    }
-}
-
-/// A clip as the project file holds it, its audition's takes (#3209)
-/// saved the same way.
-fn clip_to_json(c: &klipp_timeline::Clip, project_dir: &Path) -> ClipJson {
-    // The picture fields come from the one mapping the
-    // picture store lifts too (#1089, M1b).
-    let ClipPictureV1 {
-        node_graph,
-        color_grade,
-        effects,
-        builtin_effects,
-        builtin_effects_enabled,
-        opacity_keyframes,
-        transform_pos_x_keyframes,
-        transform_pos_y_keyframes,
-        transform_scale_keyframes,
-        transform_scale_y_keyframes,
-        transform_rotation_keyframes,
-        transform_tilt_x_keyframes,
-        transform_tilt_y_keyframes,
-        effect_keyframes,
-        param_modifiers,
-        grade_versions,
-        active_grade_version,
-    } = ClipPictureV1::of(c);
-    let ([timeline_in, timeline_out, source_in, source_out], rate) =
-        one_rate([c.timeline_in, c.timeline_out, c.source_in, c.source_out]);
-    ClipJson {
-        id: c.id.to_string(),
-        media_id: c.media_id().map(|mid| mid.to_string()),
-        kind: Some(clip_kind_to_json(&c.kind, project_dir)),
-        timeline_in,
-        timeline_out,
-        source_in,
-        source_out,
-        rate,
-        node_graph,
-        color_grade,
-        effects,
-        builtin_effects,
-        builtin_effects_enabled,
-        effects_switched_off: c.effects_switched_off.clone(),
-        magnetic_anchor: c.magnetic_anchor.clone(),
-        linked_clip_id: c.linked_clip_id.map(|id| id.to_string()),
-        linked_title_asset_id: c.linked_title_asset_id.map(|id| id.to_string()),
-        group_id: c.group_id.map(|id| id.to_string()),
-        grade_group: c.grade_group.map(|id| id.to_string()),
-        gain: if (c.gain - 1.0).abs() > f32::EPSILON { Some(c.gain) } else { None },
-        volume: if (c.volume - 1.0).abs() > f32::EPSILON { Some(c.volume) } else { None },
-        pan: if c.pan.abs() > f32::EPSILON { Some(c.pan) } else { None },
-        fade_in_secs: if c.fade_in_secs.abs() > f32::EPSILON { Some(c.fade_in_secs) } else { None },
-        fade_out_secs: if c.fade_out_secs.abs() > f32::EPSILON { Some(c.fade_out_secs) } else { None },
-        fade_in_curve: if c.fade_in_curve != klipp_timeline::FadeCurve::Linear { Some(c.fade_in_curve) } else { None },
-        fade_out_curve: if c.fade_out_curve != klipp_timeline::FadeCurve::Linear { Some(c.fade_out_curve) } else { None },
-        channel_config: if c.channel_config != klipp_timeline::ChannelConfig::Default { Some(c.channel_config) } else { None },
-        volume_keyframes: if c.volume_keyframes.is_empty() { None } else { Some(c.volume_keyframes.clone()) },
-        pan_keyframes: if c.pan_keyframes.is_empty() { None } else { Some(c.pan_keyframes.clone()) },
-        gain_keyframes: if c.gain_keyframes.is_empty() { None } else { Some(c.gain_keyframes.clone()) },
-        opacity_keyframes,
-        transform_pos_x_keyframes,
-        transform_pos_y_keyframes,
-        transform_scale_keyframes,
-        transform_scale_y_keyframes,
-        transform_rotation_keyframes,
-        transform_tilt_x_keyframes,
-        transform_tilt_y_keyframes,
-        frame_glide: c.frame_glide,
-        matte_feather_keyframes: if c.matte_feather_keyframes.is_empty() { None } else { Some(c.matte_feather_keyframes.clone()) },
-        matte_choke_keyframes: if c.matte_choke_keyframes.is_empty() { None } else { Some(c.matte_choke_keyframes.clone()) },
-        clip_markers: if c.clip_markers.is_empty() { None } else {
-            Some(c.clip_markers.iter().map(|m| crate::format::ClipMarkerJson {
-                time_secs: m.time_secs,
-                name: m.name.clone(),
-                color: format!("{:?}", m.color),
-                comment: m.comment.clone(),
-            }).collect())
-        },
-        effect_keyframes,
-        role: None,
-        role_id: (c.role.is_some() || !c.role_source.is_unset()).then(|| c.role.clone()),
-        role_source: c.role_source,
-        matched_to: c.matched_to,
-        param_modifiers,
-        speed: if (c.speed - 1.0).abs() < f64::EPSILON { None } else { Some(c.speed) },
-        speed_keyframes: if c.speed_keyframes.is_empty() { None } else { Some(c.speed_keyframes.clone()) },
-        keep_pitch: c.keep_pitch.then_some(true),
-        sound_apart: c.sound_apart.then_some(true),
-        composition: c.composition,
-        composition_versions: c.composition_versions.clone(),
-        hold: c.hold.as_ref().map(timecode_to_json),
-        source_rotation: if c.source_rotation == 0 { None } else { Some(c.source_rotation) },
-        enabled: if c.enabled { None } else { Some(false) },
-        audio_effects: if c.audio_effects.is_empty() { None } else { Some(c.audio_effects.clone()) },
-        audio_effect_keyframes: c.audio_effect_keyframes.clone(),
-        multicam_group: c.multicam_group.map(|g| g.to_string()),
-        multicam_angle: if c.multicam_angle == 0 { None } else { Some(c.multicam_angle) },
-        multicam_cuts: c.multicam_cuts.clone(),
-        multicam_sound: Some(c.multicam_sound).filter(|s| !s.is_default()),
-        solo: if c.solo { Some(true) } else { None },
-        blend_mode: if matches!(c.blend_mode, klipp_core::BlendMode::Normal) {
-            None
-        } else {
-            Some(c.blend_mode)
-        },
-        depth: ((c.depth - 1.0).abs() > 1e-6).then_some(c.depth),
-        matte_source: c.matte_source.as_ref().map(|m| crate::format::MatteBindingJson {
-            source_clip_id: m.source_clip_id.0.to_string(),
-            channel: m.channel,
-            invert: m.invert,
-            feather_px: m.feather_px,
-            choke_px: m.choke_px,
-        }),
-        matte_stencil: c.matte_stencil.as_ref().map(|s| crate::format::StencilSettingsJson {
-            channel: s.channel,
-            invert: s.invert,
-            feather_px: s.feather_px,
-            choke_px: s.choke_px,
-        }),
-        consumed_as_matte: if c.consumed_as_matte { Some(true) } else { None },
-        transform_link: c.transform_link.as_ref().map(|tl| crate::format::TransformLinkJson {
-            target: tl.target,
-            mode: tl.mode,
-            inherit_scale: tl.inherit_scale,
-            inherit_position: tl.inherit_position,
-            inherit_rotation: tl.inherit_rotation,
-            inherit_anchor: tl.inherit_anchor,
-        }),
-        grade_versions,
-        active_grade_version,
-        track_points: c.track_points.clone(),
-        surfaces: c.surfaces.clone(),
-        surface_pin: c.surface_pin,
-        name: c.name.clone(),
-        colour_label: c.colour_label,
-        grade_flag: c.grade_flag,
-        audition: c.audition.as_ref().map(|a| crate::format::AuditionJson {
-            active: a.active.to_string(),
-            takes: a.takes.iter().map(|t| crate::format::TakeJson {
-                id: t.id.to_string(),
-                name: t.name.clone(),
-                clip: t.clip.as_deref().map(|c| Box::new(clip_to_json(c, project_dir))),
-                sound: t.sound.iter().map(|(track, c)| crate::format::TakeSoundJson { track: track.to_string(), clip: clip_to_json(c, project_dir) }).collect(),
-            }).collect(),
-        }),
-    }
-}
-
-/// The title as it goes into the file: every texture path made relative
-/// to the project directory, the way the flat fields have always stored
-/// it, so a project that is moved still finds its textures. The
-/// in-memory data keeps its absolute paths.
-fn title_data_for_file(data: &klipp_timeline::TitleData, project_dir: &Path) -> klipp_timeline::TitleData {
-    let mut copy = data.clone();
-    for obj in &mut copy.objects {
-        match &mut obj.content {
-            klipp_timeline::TitleObjectContent::TextBox(tb) => {
-                if let Some(p) = tb.texture_fill.as_mut().and_then(|t| t.file_path_mut()) {
-                    *p = to_project_relative(project_dir, Path::new(p)).to_string_lossy().to_string();
-                }
-            }
-            klipp_timeline::TitleObjectContent::Image(img) => {
-                img.path = to_project_relative(project_dir, Path::new(&img.path)).to_string_lossy().to_string();
-            }
-            klipp_timeline::TitleObjectContent::Shape(_) => {}
-        }
-    }
-    copy
-}
-
-#[allow(clippy::needless_borrows_for_generic_args)]
-fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
-    match kind {
-        ClipKind::Media { media_id } => ClipKindJson::Media {
-            media_id: media_id.to_string(),
-        },
-        // A layer with a stack of its own, a blend or a mask (#1513) is
-        // the newest thing a title can carry, and takes the newest tag; a
-        // path without one keeps its tag; a title with neither keeps the
-        // oldest.
-        ClipKind::Title(data) if data.objects.iter().any(|o| !o.fx().is_default() || o.blend != klipp_core::BlendMode::Normal || o.mask.is_some()) => {
-            ClipKindJson::TitleV2 { title_data: title_data_for_file(data, project_dir) }
-        }
-        ClipKind::Title(data) if data.objects.iter().any(|o| matches!(&o.content,klipp_timeline::TitleObjectContent::Shape(shape) if matches!(shape.kind,klipp_timeline::ShapeKind::Path(_)))) => {
-            ClipKindJson::VectorTitle {title_data:title_data_for_file(data,project_dir)}
-        }
-        ClipKind::Title(data) => {
-            // Serialise via the legacy single-text-flat shape for
-            // commit 1: read the primary TextBox + first object's
-            // transform centre. Multi-object titles will get a
-            // proper `objects` array in the JSON in a follow-up
-            // commit when the loader can read them.
-            let tb = data.primary_text_or_default();
-            // Still and bare by the arm above, so these are the empty
-            // stacks an older reader expects to find here.
-            let fx = data.primary_fx();
-            let pos = data.position();
-            ClipKindJson::Title {
-                title_data: serde_json::to_value(title_data_for_file(data, project_dir)).ok(),
-                text: tb.text.clone(),
-                font_size: tb.font_size,
-                font_name: tb.font_name.clone(),
-                font_style: format!("{:?}", tb.font_style),
-                color: tb.color,
-                alignment: format!("{:?}", tb.alignment),
-                position_x: pos.x,
-                position_y: pos.y,
-                background: serde_json::to_value(&data.background).unwrap_or_default(),
-                // Legacy single-shadow JSON field — emit shadows[0]
-                // for back-compat with older Klipp readers; the full
-                // stack lives under `shadows`.
-                shadow: serde_json::to_value(fx.shadows.first()).unwrap_or_default(),
-                shadows: serde_json::to_value(&fx.shadows).unwrap_or_default(),
-                shadow_stack_enabled: fx.shadow_stack_enabled,
-                // Single-outline JSON field is legacy; the canonical
-                // list lives under `outlines`. Emit the first outline
-                // as `outline` for compat with older readers, and the
-                // full list under `outlines`.
-                outline: serde_json::to_value(fx.outlines.first()).unwrap_or_default(),
-                outlines: serde_json::to_value(&fx.outlines).unwrap_or_default(),
-                outline_stack_enabled: fx.outline_stack_enabled,
-                // Legacy single-glow field — emit glows[0] for
-                // back-compat. Full stack lives under `glows`.
-                glow: serde_json::to_value(fx.glows.first()).unwrap_or_default(),
-                glows: serde_json::to_value(&fx.glows).unwrap_or_default(),
-                glow_stack_enabled: fx.glow_stack_enabled,
-                gradient: serde_json::to_value(&tb.gradient).unwrap_or_default(),
-                // Legacy single-inner-shadow field — emit inner_shadows[0]
-                // for back-compat with older readers; the full stack
-                // lives under `inner_shadows`.
-                inner_shadow: serde_json::to_value(fx.inner_shadows.first()).unwrap_or_default(),
-                inner_shadows: serde_json::to_value(&fx.inner_shadows).unwrap_or_default(),
-                inner_shadow_stack_enabled: fx.inner_shadow_stack_enabled,
-                pattern_fill: serde_json::to_value(&tb.pattern_fill).unwrap_or_default(),
-                tracking: tb.tracking,
-                line_spacing: tb.line_spacing,
-                write_on: tb.write_on,
-                extrusion: serde_json::to_value(&tb.extrusion).unwrap_or_default(),
-                text_path: serde_json::to_value(&tb.text_path).unwrap_or_default(),
-                char_animation: serde_json::to_value(&tb.char_animation).unwrap_or_default(),
-                // Legacy path field — written when the source is a
-                // File so older Klipp versions can still render the
-                // texture. Procedural-preset sources have no path
-                // representation, so this is None for those.
-                texture_fill_path: tb.texture_fill.as_ref()
-                    .and_then(|t| t.file_path())
-                    .map(|p| {
-                        crate::path_util::to_project_relative(project_dir, Path::new(p))
-                            .to_string_lossy()
-                            .to_string()
-                    }),
-                // New canonical field — full TextureFill struct.
-                // Project-relative path is rewritten in the same
-                // way before serialisation so the project stays
-                // portable.
-                texture_fill: tb.texture_fill.as_ref().map(|t| {
-                    let mut copy = t.clone();
-                    if let Some(p) = copy.file_path_mut() {
-                        *p = crate::path_util::to_project_relative(project_dir, Path::new(&p))
-                            .to_string_lossy()
-                            .to_string();
-                    }
-                    serde_json::to_value(&copy).unwrap_or_default()
-                }).unwrap_or_default(),
-                motion_blur: serde_json::to_value(&fx.motion_blur).unwrap_or_default(),
-                style_runs: serde_json::to_value(&tb.style_runs).unwrap_or_default(),
-            }
-        }
-        ClipKind::Gap => ClipKindJson::Gap,
-        ClipKind::Sequence { sequence_id } => ClipKindJson::Sequence {
-            sequence_id: sequence_id.to_string(),
-        },
-        ClipKind::Generator(data) => ClipKindJson::Generator {
-            data: serde_json::to_value(data).unwrap_or_default(),
-        },
-        ClipKind::AdjustmentLayer => ClipKindJson::AdjustmentLayer,
-        ClipKind::Precomposition { sequence_id } => ClipKindJson::Precomposition {
-            sequence_id: sequence_id.to_string(),
-        },
-        ClipKind::TemplatePrecomposition { sequence_id, template_instance } => ClipKindJson::TemplatePrecomposition {
-            sequence_id: sequence_id.to_string(),
-            template_instance: template_instance.clone(),
-        },
     }
 }
 

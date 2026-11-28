@@ -48,6 +48,7 @@ pub mod collect_report;
 pub mod collect_analysis;
 pub mod project_fonts;
 pub mod consolidate_trim;
+mod clip_codec;
 mod format;
 pub mod fcpxml;
 pub mod fcpxml_import;
