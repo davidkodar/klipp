@@ -398,6 +398,11 @@ pub struct ClipJson {
     /// entry means enabled. Empty is left out of the file.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub builtin_effects_enabled: Vec<bool>,
+    /// The effects the inspector's All effects switch turned off, by their
+    /// picture nodes, so switching it on after a reopen brings back those
+    /// and no other. Empty is left out of the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects_switched_off: Vec<uuid::Uuid>,
     /// The clip's magnetic anchor, when it is a connected clip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub magnetic_anchor: Option<klipp_timeline::MagneticAnchor>,
@@ -1159,7 +1164,7 @@ mod tests {
             color_grade: None,
             effects: vec![],
             builtin_effects: None,
-            builtin_effects_enabled: Vec::new(),
+            builtin_effects_enabled: Vec::new(), effects_switched_off: Vec::new(),
             magnetic_anchor: None,
             linked_clip_id: None,
             linked_title_asset_id: None,
@@ -1242,7 +1247,7 @@ mod tests {
             timeline_in: 0, timeline_out: 24,
             source_in: 0, source_out: 24, rate: 24,
             node_graph: None, color_grade: None,
-            effects: vec![], builtin_effects: None, builtin_effects_enabled: Vec::new(), magnetic_anchor: None,
+            effects: vec![], builtin_effects: None, builtin_effects_enabled: Vec::new(), effects_switched_off: Vec::new(), magnetic_anchor: None,
             linked_clip_id: None, linked_title_asset_id: None, group_id: None, grade_group: None,
             gain: None, volume: None, pan: None,
             fade_in_secs: None, fade_out_secs: None,
@@ -1459,7 +1464,7 @@ mod tests {
             timeline_in: 0, timeline_out: 24,
             source_in: 0, source_out: 24, rate: 24,
             node_graph: None, color_grade: None,
-            effects: vec![], builtin_effects: None, builtin_effects_enabled: Vec::new(), magnetic_anchor: None,
+            effects: vec![], builtin_effects: None, builtin_effects_enabled: Vec::new(), effects_switched_off: Vec::new(), magnetic_anchor: None,
             linked_clip_id: None, linked_title_asset_id: None, group_id: None, grade_group: None,
             gain: None, volume: None, pan: None,
             fade_in_secs: None, fade_out_secs: None,

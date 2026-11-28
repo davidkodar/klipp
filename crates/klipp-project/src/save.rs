@@ -632,6 +632,7 @@ fn clip_to_json(c: &klipp_timeline::Clip, project_dir: &Path) -> ClipJson {
         effects,
         builtin_effects,
         builtin_effects_enabled,
+        effects_switched_off: c.effects_switched_off.clone(),
         magnetic_anchor: c.magnetic_anchor.clone(),
         linked_clip_id: c.linked_clip_id.map(|id| id.to_string()),
         linked_title_asset_id: c.linked_title_asset_id.map(|id| id.to_string()),
