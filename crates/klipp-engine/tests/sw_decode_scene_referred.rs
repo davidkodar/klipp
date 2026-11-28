@@ -170,7 +170,7 @@ fn slog3_through_the_software_decoder_carries_codes_to_the_grade() {
         eprintln!("skipping: ffmpeg unavailable");
         return;
     };
-    let dec = klipp_engine::video_decoder::VideoDecoder::open(clip, 0).unwrap();
+    let dec = klipp_engine::video_decoder::VideoDecoder::open(clip, 0, klipp_core::DecodeSettings::default()).unwrap();
     // Decode threads start paused.
     dec.resume();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -207,7 +207,7 @@ fn a_twelve_bit_clip_keeps_its_precision_to_the_grade() {
         eprintln!("skipping: ffmpeg unavailable");
         return;
     };
-    let dec = klipp_engine::video_decoder::VideoDecoder::open(clip, 0).unwrap();
+    let dec = klipp_engine::video_decoder::VideoDecoder::open(clip, 0, klipp_core::DecodeSettings::default()).unwrap();
     dec.resume();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let frame = loop {

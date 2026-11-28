@@ -397,6 +397,7 @@ impl KlippApp {
             rotation,
             secs: time_secs,
             max_height,
+            decode: self.prefs.decode_settings(),
             tag: (media_id, target),
         });
     }

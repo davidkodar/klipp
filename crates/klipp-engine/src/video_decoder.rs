@@ -315,9 +315,10 @@ unsafe fn scene_referred_linear_frame(
     frame: *const ffmpeg_next::ffi::AVFrame,
     source_cs: klipp_core::SourceColorspace,
     source_rotation: i32,
+    max_height: u32,
 ) -> Option<LinearFrame> {
     let (src_w, src_h) = ((*frame).width.max(1) as u32, (*frame).height.max(1) as u32);
-    let (out_w, out_h) = playback_dimensions(src_w, src_h, source_rotation);
+    let (out_w, out_h) = playback_dimensions(max_height, src_w, src_h, source_rotation);
     let (display, hdr) =
         scene_referred_sw_frame(frame, source_cs, out_w, out_h, source_rotation.rem_euclid(360) as u32)?;
     Some(LinearFrame {
@@ -558,22 +559,23 @@ fn read_pts(slot: &std::sync::atomic::AtomicU64) -> Option<f64> {
 impl VideoDecoder {
     /// Open a video file for decoding with optional VAAPI hardware acceleration.
     /// `source_rotation` is the media rotation in degrees (0, 90, 180, 270) from metadata.
-    /// It asks the GPU, always, and is counted as asking (#2116).
-    pub fn open(path: &Path, source_rotation: i32) -> Result<Self, DecoderError> {
-        Self::open_inner(path, source_rotation, None, None)
+    /// It asks the GPU, always, and is counted as asking (#2116);
+    /// `settings` is how it decodes, as the preferences were when it opened.
+    pub fn open(path: &Path, source_rotation: i32, settings: klipp_core::DecodeSettings) -> Result<Self, DecoderError> {
+        Self::open_inner(path, source_rotation, settings, None, None)
     }
 
     /// Open as [`Self::open`], decoding as `lease` was admitted: in
     /// software when the GPU's decoder was full (#2116).
-    pub fn open_with(path: &Path, source_rotation: i32, lease: crate::decode_budget::Lease) -> Result<Self, DecoderError> {
-        Self::open_inner(path, source_rotation, Some(lease), None)
+    pub fn open_with(path: &Path, source_rotation: i32, settings: klipp_core::DecodeSettings, lease: crate::decode_budget::Lease) -> Result<Self, DecoderError> {
+        Self::open_inner(path, source_rotation, settings, Some(lease), None)
     }
 
     /// Open as [`Self::open_with`], holding at most `frames` decoded frames
-    /// rather than the preference's: a layer opened while memory is short
+    /// rather than the settings': a layer opened while memory is short
     /// (#2128).
-    pub fn open_with_queue(path: &Path, source_rotation: i32, lease: crate::decode_budget::Lease, frames: usize) -> Result<Self, DecoderError> {
-        Self::open_inner(path, source_rotation, Some(lease), Some(frames))
+    pub fn open_with_queue(path: &Path, source_rotation: i32, settings: klipp_core::DecodeSettings, lease: crate::decode_budget::Lease, frames: usize) -> Result<Self, DecoderError> {
+        Self::open_inner(path, source_rotation, settings, Some(lease), Some(frames))
     }
 
     /// How this decoder was asked to decode.
@@ -581,7 +583,7 @@ impl VideoDecoder {
         self.lease.decoding
     }
 
-    fn open_inner(path: &Path, source_rotation: i32, lease: Option<crate::decode_budget::Lease>, frames: Option<usize>) -> Result<Self, DecoderError> {
+    fn open_inner(path: &Path, source_rotation: i32, settings: klipp_core::DecodeSettings, lease: Option<crate::decode_budget::Lease>, frames: Option<usize>) -> Result<Self, DecoderError> {
         // Validate file can be opened before spawning the thread, and read
         // the stream's own frame rate: which of its frames a time shows
         // is decided at half of *its* frame, as export's decoder does (#696).
@@ -596,10 +598,10 @@ impl VideoDecoder {
             (r.numerator() > 0 && r.denominator() > 0).then(|| r.numerator() as f64 / r.denominator() as f64)
         };
         // Its rate is set by the decode thread, which reads the size.
-        let lease = lease.unwrap_or_else(|| crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Fixed));
+        let lease = lease.unwrap_or_else(|| crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Fixed, settings.hardware));
         let (lease_id, decoding) = (lease.id(), lease.decoding);
 
-        let queue_cap = frames.unwrap_or_else(frame_queue_size);
+        let queue_cap = frames.unwrap_or(settings.queue_frames);
         let frame_queue: SharedFrameQueue = Arc::new(Mutex::new(FrameQueue::new(queue_cap)));
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
         let queue_clone = frame_queue.clone();
@@ -621,7 +623,7 @@ impl VideoDecoder {
         // cannot return while this one is still inside ffmpeg's teardown.
         let thread = spawn_counted("klipp-vdec", move || {
             if crate::thread_guard::caught_panic("klipp-vdec", || {
-                decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone, last_decoded_pts_clone, frames_decoded_clone, lease_id, decoding, source_fps.unwrap_or(30.0));
+                decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone, last_decoded_pts_clone, frames_decoded_clone, lease_id, decoding, source_fps.unwrap_or(30.0), settings);
             }) {
                 panicked_clone.store(true, std::sync::atomic::Ordering::Release);
             }
@@ -1384,6 +1386,7 @@ unsafe fn try_create_bsf(
 /// `decoder.send_packet()` — see the loop in `decode_thread_main`.
 fn try_open_cuvid_decoder(
     stream: &ffmpeg_next::format::stream::Stream,
+    max_height: u32,
 ) -> Option<(ffmpeg_next::codec::Context, Option<BsfContext>)> {
     use ffmpeg_next::ffi::*;
     let codec_id = stream.parameters().id();
@@ -1436,7 +1439,7 @@ fn try_open_cuvid_decoder(
     // decode path + export pipeline — it just doesn't override the
     // HW transfer cap because that's about PCIe physics, not user
     // intent.
-    let (resize_w, resize_h) = hw_transfer_cap_dimensions(src_w, src_h);
+    let (resize_w, resize_h) = hw_transfer_cap_dimensions(max_height, src_w, src_h);
     let want_resize = resize_w != src_w || resize_h != src_h;
     unsafe {
         let ctx_ptr = ctx.as_mut_ptr();
@@ -1563,7 +1566,7 @@ pub(crate) struct OpenedDecoder {
 }
 
 /// Apply the `thread_count` policy to a fresh codec context. Pure
-/// software decoders read `DECODE_THREADS_PREF` (0 = ffmpeg auto);
+/// software decoders take the settings' `threads` (0 = ffmpeg auto);
 /// HW decoders default to the same but `KLIPP_HW_SINGLE_THREAD=1`
 /// pins them to a single thread (NVDEC parallelises on the GPU; CPU
 /// worker threads can confuse hwaccel negotiation — see the
@@ -1573,6 +1576,7 @@ unsafe fn apply_thread_count(
     ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext,
     hw_accel: HwAccel,
     sw_threads: Option<usize>,
+    threads: u32,
 ) {
     let hw_single_thread = hw_accel != HwAccel::Software
         && std::env::var("KLIPP_HW_SINGLE_THREAD").as_deref() == Ok("1");
@@ -1581,7 +1585,7 @@ unsafe fn apply_thread_count(
     } else if let Some(n) = sw_threads.filter(|_| hw_accel == HwAccel::Software) {
         n as i32
     } else {
-        DECODE_THREADS_PREF.load(std::sync::atomic::Ordering::Relaxed) as i32
+        threads as i32
     };
     (*ctx_ptr).thread_count = tc;
     if hw_accel != HwAccel::Software {
@@ -1608,12 +1612,13 @@ pub(crate) fn open_video_decoder(
     hw_enabled: bool,
     try_cuvid: bool,
     sw_threads: Option<usize>,
+    settings: &klipp_core::DecodeSettings,
 ) -> Result<OpenedDecoder, ffmpeg_next::Error> {
     // Tier 1: cuvid (standalone NVDEC). Only attempted when the
     // pref AND the env-var gate both authorise it.
     if try_cuvid {
-        if let Some((mut ctx, bsf)) = try_open_cuvid_decoder(stream) {
-            unsafe { apply_thread_count(ctx.as_mut_ptr(), HwAccel::Cuda, None) };
+        if let Some((mut ctx, bsf)) = try_open_cuvid_decoder(stream, settings.max_height) {
+            unsafe { apply_thread_count(ctx.as_mut_ptr(), HwAccel::Cuda, None, settings.threads) };
             match ctx.decoder().video() {
                 Ok(decoder) => {
                     return Ok(OpenedDecoder {
@@ -1656,7 +1661,7 @@ pub(crate) fn open_video_decoder(
             HwAccel::Software
         }
     };
-    unsafe { apply_thread_count(ctx.as_mut_ptr(), hw_accel, sw_threads) };
+    unsafe { apply_thread_count(ctx.as_mut_ptr(), hw_accel, sw_threads, settings.threads) };
     let decoder = ctx.decoder().video()?;
     Ok(OpenedDecoder {
         decoder,
@@ -1736,7 +1741,7 @@ pub fn stall_next_hw_open(stall: Duration) {
 /// process exits. A decoder dropped while its GPU open ran left it
 /// creating a CUDA context as `exit()` tore the process down, and the
 /// process aborted after every test had passed.
-fn open_hardware_in_time(path: &Path, try_cuvid: bool, stop: &std::sync::atomic::AtomicBool) -> Option<Result<OpenedDecoder, ffmpeg_next::Error>> {
+fn open_hardware_in_time(path: &Path, try_cuvid: bool, stop: &std::sync::atomic::AtomicBool, settings: klipp_core::DecodeSettings) -> Option<Result<OpenedDecoder, ffmpeg_next::Error>> {
     let (tx, rx) = std::sync::mpsc::channel();
     let owned = path.to_path_buf();
     let spawned = spawn_counted("klipp-hw-open", move || {
@@ -1744,7 +1749,7 @@ fn open_hardware_in_time(path: &Path, try_cuvid: bool, stop: &std::sync::atomic:
         if stall > 0 {
             std::thread::sleep(Duration::from_millis(stall));
         }
-        let _ = tx.send(open_hardware_to_first_frame(&owned, try_cuvid));
+        let _ = tx.send(open_hardware_to_first_frame(&owned, try_cuvid, &settings));
     });
     if spawned.is_err() {
         return Some(Err(ffmpeg_next::Error::Bug));
@@ -1772,11 +1777,11 @@ fn open_hardware_in_time(path: &Path, try_cuvid: bool, stop: &std::sync::atomic:
 
 /// [`open_hardware_in_time`]'s work: open the decoder on a container of
 /// its own and decode until the first frame comes.
-fn open_hardware_to_first_frame(path: &Path, try_cuvid: bool) -> Result<OpenedDecoder, ffmpeg_next::Error> {
+fn open_hardware_to_first_frame(path: &Path, try_cuvid: bool, settings: &klipp_core::DecodeSettings) -> Result<OpenedDecoder, ffmpeg_next::Error> {
     let mut format_ctx = klipp_media::open_input(path)?;
     let stream = format_ctx.streams().best(ffmpeg_next::media::Type::Video).ok_or(ffmpeg_next::Error::StreamNotFound)?;
     let stream_index = stream.index();
-    let mut opened = open_video_decoder(&stream, true, try_cuvid, None)?;
+    let mut opened = open_video_decoder(&stream, true, try_cuvid, None, settings)?;
     drop(stream);
     if opened.hw_accel == HwAccel::Software {
         return Ok(opened);
@@ -1874,29 +1879,6 @@ pub fn refuse_next_hw_frames(n: u32) {
     REFUSE_HW_FRAMES.store(n, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Maximum playback resolution — frames larger than this are downscaled during
-/// format conversion. This is the single biggest performance win: swscale does
-/// both NV12/P010→RGBA conversion AND resize in one pass, and the resulting
-/// RGBA buffer is 4× smaller (1920×1080 = 8MB vs 3840×2160 = 33MB).
-static HARDWARE_DECODE_PREF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-static MAX_PB_HEIGHT_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1080);
-static FRAME_QUEUE_SIZE_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16);
-static DECODE_THREADS_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// Optimised-playback policy. Encoded as a u8 atomic so the engine
-/// can read it lock-free from the playback path: the numbers of
-/// [`klipp_media::OptimisedPlayback`], which decides with it (0 Auto,
-/// 1 Always original, 2 Always optimised).
-static OPTIMISED_PLAYBACK_PREF: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-
-pub fn set_optimised_playback_mode(mode: u8) {
-    OPTIMISED_PLAYBACK_PREF.store(mode, std::sync::atomic::Ordering::Relaxed);
-}
-
-pub fn optimised_playback_mode() -> u8 {
-    OPTIMISED_PLAYBACK_PREF.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// A delay added to every decoded frame, for tests: a decoder slower than
 /// the timeline is what a loaded machine makes, and the frames that race
 /// ahead of their streams under load only show up then. Zero outside
@@ -1950,46 +1932,6 @@ pub fn working_colorspace() -> klipp_core::WorkingColorspace {
     )
 }
 
-/// Set whether hardware decode (NVDEC / VAAPI) is enabled from preferences.
-pub fn set_hardware_decode(enabled: bool) {
-    HARDWARE_DECODE_PREF.store(enabled, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Whether hardware decode is enabled in preferences.
-pub fn hardware_decode_enabled() -> bool {
-    HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Set decode thread count from preferences (0 = auto/all cores).
-pub fn set_decode_threads(count: u32) {
-    DECODE_THREADS_PREF.store(count, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Set the frame queue capacity from preferences.
-pub fn set_frame_queue_size(size: u32) {
-    FRAME_QUEUE_SIZE_PREF.store(size.max(4), std::sync::atomic::Ordering::Relaxed);
-}
-
-/// The frames a decoder holds decoded ahead, from preferences.
-pub(crate) fn frame_queue_size() -> usize {
-    FRAME_QUEUE_SIZE_PREF.load(std::sync::atomic::Ordering::Relaxed) as usize
-}
-
-/// Set the max playback height from preferences.
-pub fn set_max_playback_height(h: u32) {
-    MAX_PB_HEIGHT_PREF.store(h, std::sync::atomic::Ordering::Relaxed);
-}
-
-fn max_playback_height() -> u32 {
-    MAX_PB_HEIGHT_PREF.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-fn max_playback_width() -> u32 {
-    // Use 2:1 ratio to accommodate all aspect ratios (16:9, 21:9, 4:3, etc.)
-    // The actual downscale is aspect-preserving — this just sets the bounding box.
-    max_playback_height() * 2
-}
-
 /// NVDEC resize target for the hardware-decode path.
 ///
 /// Honours the user's "Max playback resolution" preference, the same as
@@ -2005,8 +1947,8 @@ fn max_playback_width() -> u32 {
 /// which meant selecting it silently did nothing for hardware-decoded
 /// media — i.e. for most media. A setting that cannot be observed to
 /// work is worse than no setting.
-fn hw_transfer_cap_dimensions(src_w: u32, src_h: u32) -> (u32, u32) {
-    playback_dimensions(src_w, src_h, 0)
+fn hw_transfer_cap_dimensions(max_height: u32, src_w: u32, src_h: u32) -> (u32, u32) {
+    playback_dimensions(max_height, src_w, src_h, 0)
 }
 
 #[cfg(test)]
@@ -2062,12 +2004,46 @@ mod straggler_tests {
             eprintln!("skipping: no ffmpeg");
             return;
         }
-        let mut decoder = VideoDecoder::open(&path, 0).expect("opens");
+        let mut decoder = VideoDecoder::open(&path, 0, klipp_core::DecodeSettings::default()).expect("opens");
         let before = STRAGGLERS_KEPT.load(std::sync::atomic::Ordering::Relaxed);
         decoder.stop_detached();
         assert!(STRAGGLERS_KEPT.load(std::sync::atomic::Ordering::Relaxed) > before, "its thread kept, not forgotten");
         drop(decoder);
         assert_eq!(join_stragglers(Duration::from_secs(10)), 0, "and joined");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Each decoder decodes as it was opened to: two open together, one at
+    /// a 360-line playback resolution and one at 1080, hand back their own
+    /// sizes. The setting was the process's once, and a test that changed
+    /// it changed every other test's decoders with it.
+    #[test]
+    fn two_decoders_keep_their_own_settings() {
+        let path = std::env::temp_dir().join(format!("klipp-own-settings-{}.mkv", std::process::id()));
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=24:d=1", "-c:v", "ffv1"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        }
+        let at = |max_height| klipp_core::DecodeSettings { hardware: false, max_height, ..Default::default() };
+        let (small, full) = (VideoDecoder::open(&path, 0, at(360)).expect("opens"), VideoDecoder::open(&path, 0, at(1080)).expect("opens"));
+        let first = |d: &VideoDecoder| {
+            d.resume();
+            let until = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(f) = d.frame_queue().lock().unwrap().pop() {
+                    break (f.width, f.height);
+                }
+                assert!(std::time::Instant::now() < until, "no frame within 10 s");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        assert_eq!(first(&small), (640, 360));
+        assert_eq!(first(&full), (1280, 720), "a picture under the cap is decoded whole");
         let _ = std::fs::remove_file(&path);
     }
 }
@@ -2131,48 +2107,25 @@ mod hw_cap_tests {
     /// It previously hardcoded 1920×1080 and ignored the preference, so
     /// selecting 4K in the UI did nothing for hardware-decoded media and
     /// nothing caught it — there was no test on this function at all.
-    ///
-    /// Both directions are asserted in one test on purpose: the
-    /// preference is a process-global atomic, so splitting this across
-    /// two tests would have them race each other under the default
-    /// parallel runner.
     #[test]
     fn hw_resize_target_follows_the_playback_resolution_pref() {
-        let restore = max_playback_height();
-
         // 4K selected: a 4K source must pass through untouched.
-        set_max_playback_height(2160);
-        assert_eq!(
-            hw_transfer_cap_dimensions(3840, 2160),
-            (3840, 2160),
-            "with the pref at 4K, a 4K source must not be downscaled",
-        );
-
+        assert_eq!(hw_transfer_cap_dimensions(2160, 3840, 2160), (3840, 2160), "with the pref at 4K, a 4K source must not be downscaled");
         // 1080p selected: the same source must come back halved,
         // aspect-preserved.
-        set_max_playback_height(1080);
-        assert_eq!(
-            hw_transfer_cap_dimensions(3840, 2160),
-            (1920, 1080),
-            "with the pref at 1080p, a 4K source must be downscaled",
-        );
-
+        assert_eq!(hw_transfer_cap_dimensions(1080, 3840, 2160), (1920, 1080), "with the pref at 1080p, a 4K source must be downscaled");
         // Sub-cap sources are never touched either way.
-        assert_eq!(hw_transfer_cap_dimensions(1280, 720), (1280, 720));
+        assert_eq!(hw_transfer_cap_dimensions(1080, 1280, 720), (1280, 720));
 
         // Portrait: the box turns with the picture. A portrait 4K clip at
         // the 4K setting is decoded whole, not cut to 1214x2160, and at
         // 1080p it is the portrait of 1080p. The software path sizes after
         // rotation and the hardware path before it; they agree.
-        set_max_playback_height(2160);
-        assert_eq!(playback_dimensions(3840, 2160, 90), (2160, 3840), "a portrait 4K clip at the 4K setting is not downscaled");
-        assert_eq!(playback_dimensions(2160, 3840, 0), (2160, 3840));
-        set_max_playback_height(1080);
-        assert_eq!(playback_dimensions(3840, 2160, 90), (1080, 1920), "a portrait 4K clip at 1080p decodes at 1080x1920");
-        assert_eq!(playback_dimensions(2160, 3840, 0), (1080, 1920));
-        assert_eq!(hw_transfer_cap_dimensions(3840, 2160), (1920, 1080), "the hardware path, before rotation, agrees");
-
-        set_max_playback_height(restore);
+        assert_eq!(playback_dimensions(2160, 3840, 2160, 90), (2160, 3840), "a portrait 4K clip at the 4K setting is not downscaled");
+        assert_eq!(playback_dimensions(2160, 2160, 3840, 0), (2160, 3840));
+        assert_eq!(playback_dimensions(1080, 3840, 2160, 90), (1080, 1920), "a portrait 4K clip at 1080p decodes at 1080x1920");
+        assert_eq!(playback_dimensions(1080, 2160, 3840, 0), (1080, 1920));
+        assert_eq!(hw_transfer_cap_dimensions(1080, 3840, 2160), (1920, 1080), "the hardware path, before rotation, agrees");
     }
 }
 
@@ -2186,17 +2139,15 @@ mod hw_cap_tests {
 /// setting a 2160x3840 iPhone clip decoded at 1214x2160, and the viewer and
 /// every scope saw 56 % of it. Turned, the software path (sized after
 /// rotation) and the hardware path (sized before it) agree.
-pub(crate) fn playback_dimensions(src_w: u32, src_h: u32, rotation: i32) -> (u32, u32) {
+pub(crate) fn playback_dimensions(max_height: u32, src_w: u32, src_h: u32, rotation: i32) -> (u32, u32) {
     let (eff_w, eff_h) = if rotation == 90 || rotation == 270 {
         (src_h, src_w)
     } else {
         (src_w, src_h)
     };
-    let (box_w, box_h) = if eff_h > eff_w {
-        (max_playback_height(), max_playback_width())
-    } else {
-        (max_playback_width(), max_playback_height())
-    };
+    // A box twice as wide as it is tall takes every shape of picture
+    // (16:9, 21:9, 4:3); the fit inside it keeps the picture's shape.
+    let (box_w, box_h) = if eff_h > eff_w { (max_height, max_height * 2) } else { (max_height * 2, max_height) };
     if eff_w <= box_w && eff_h <= box_h {
         return (eff_w, eff_h);
     }
@@ -2365,6 +2316,7 @@ unsafe fn download_hw_frame(
     gpu_converter: Option<&mut klipp_effects::nv12_gpu::GpuNv12Converter>,
     gpu_p010: &mut Option<klipp_effects::p010_gpu::GpuP010Converter>,
     source_rotation: i32,
+    max_height: u32,
     cs_baseline: klipp_core::SourceColorspace,
 ) -> Option<LinearFrame> {
     use ffmpeg_next::ffi::*;
@@ -2406,7 +2358,7 @@ unsafe fn download_hw_frame(
     let src_h = (*sw_frame).height as u32;
     let sw_fmt = std::mem::transmute::<i32, AVPixelFormat>((*sw_frame).format);
     let is_hi_bit_depth = source_is_high_bit_depth(sw_fmt);
-    let (out_w, out_h) = playback_dimensions(src_w, src_h, source_rotation);
+    let (out_w, out_h) = playback_dimensions(max_height, src_w, src_h, source_rotation);
 
     // Resolve the source's colour metadata once per frame. Per-frame
     // tags from the AVFrame override the codec-context baseline only
@@ -2553,7 +2505,7 @@ unsafe fn download_hw_frame(
 
     // Scene-referred frames with no GPU converter: the CPU twin of the
     // shaders' codes route rather than swscale's display-referred RGB.
-    if let Some(frame) = scene_referred_linear_frame(sw_frame, source_cs, source_rotation) {
+    if let Some(frame) = scene_referred_linear_frame(sw_frame, source_cs, source_rotation, max_height) {
         av_frame_free(&mut (sw_frame as *mut _));
         log_first_resident_delivery(false, "scene_referred_cpu");
         return Some(frame);
@@ -2567,7 +2519,7 @@ unsafe fn download_hw_frame(
         AVPixelFormat::AV_PIX_FMT_RGBA
     };
     let bytes_per_pixel: usize = if is_hi_bit_depth { 8 } else { 4 };
-    let (sws_out_w, sws_out_h) = playback_dimensions(src_w, src_h, 0);
+    let (sws_out_w, sws_out_h) = playback_dimensions(max_height, src_w, src_h, 0);
     let sws = sws_getCachedContext(
         sws_ctx.unwrap_or(std::ptr::null_mut()),
         src_w as i32,
@@ -2778,6 +2730,7 @@ fn decode_thread_main(
     lease_id: u64,
     decoding: crate::decode_budget::Decoding,
     source_fps: f64,
+    settings: klipp_core::DecodeSettings,
 ) {
     DECODE_PATH.with(|p| *p.borrow_mut() = Some(path.clone()));
     let mut format_ctx = match klipp_media::open_input(&path) {
@@ -2861,12 +2814,12 @@ fn decode_thread_main(
         crate::decode_budget::Decoding::Software { threads } => Some(threads),
         crate::decode_budget::Decoding::Gpu => None,
     };
-    let hw_enabled = sw_threads.is_none() && !gpu_decodes_wrongly(&video_stream.parameters()) && HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed) && !hw_shunned();
+    let hw_enabled = sw_threads.is_none() && !gpu_decodes_wrongly(&video_stream.parameters()) && settings.hardware && !hw_shunned();
     let try_cuvid = hw_enabled && std::env::var("KLIPP_USE_CUVID").as_deref() != Ok("0");
 
     // The GPU open, and its first frame, within a time limit; software
     // when it runs out (#2394).
-    let hw_opened = if hw_enabled && !still { open_hardware_in_time(&path, try_cuvid, &stop_flag) } else { None };
+    let hw_opened = if hw_enabled && !still { open_hardware_in_time(&path, try_cuvid, &stop_flag, settings) } else { None };
     if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
@@ -2875,7 +2828,7 @@ fn decode_thread_main(
     // GPU's JPEG decoder reached the file's end with no frame, and the
     // viewer showed nothing where the export drew it. A GPU open that
     // failed or ran out of time, or no GPU wanted, goes on in software too.
-    let opened = match hw_opened.map_or_else(|| open_video_decoder(&video_stream, false, false, sw_threads), Ok) {
+    let opened = match hw_opened.map_or_else(|| open_video_decoder(&video_stream, false, false, sw_threads, &settings), Ok) {
         Ok(o) => o,
         Err(e) => {
             warn!("decode_thread: video decoder error: {e}");
@@ -3277,10 +3230,10 @@ fn decode_thread_main(
             let frame_result = if is_hw_frame {
                 hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 let refused = REFUSE_HW_FRAMES.try_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| n.checked_sub(1)).is_ok();
-                if refused { None } else { unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), &mut gpu_p010, source_rotation, cs_baseline) } }
+                if refused { None } else { unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), &mut gpu_p010, source_rotation, settings.max_height, cs_baseline) } }
             } else {
-                sw_frame_on_gpu(&received_frame, &mut sw_repack, &mut gpu_nv12, &mut gpu_p010, source_rotation, cs_baseline)
-                    .or_else(|| convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us, source_rotation, cs_baseline))
+                sw_frame_on_gpu(&received_frame, &mut sw_repack, &mut gpu_nv12, &mut gpu_p010, source_rotation, settings.max_height, cs_baseline)
+                    .or_else(|| convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us, source_rotation, settings.max_height, cs_baseline))
             };
 
             let mut linear_frame = match frame_result {
@@ -3493,6 +3446,7 @@ fn sw_frame_on_gpu(
     gpu_nv12: &mut Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
     gpu_p010: &mut Option<klipp_effects::p010_gpu::GpuP010Converter>,
     source_rotation: i32,
+    max_height: u32,
     cs_baseline: klipp_core::SourceColorspace,
 ) -> Option<LinearFrame> {
     use ffmpeg_next::format::Pixel;
@@ -3526,7 +3480,7 @@ fn sw_frame_on_gpu(
     let r = repack.as_mut()?;
     r.scaler.run(frame, &mut r.out).map_err(|e| warn!("sw_frame_on_gpu: repack failed: {e}")).ok()?;
     let source_cs = frame_colorspace(frame, cs_baseline);
-    let out = playback_dimensions(w, h, source_rotation);
+    let out = playback_dimensions(max_height, w, h, source_rotation);
     let planes = SemiPlanar { y: r.out.data(0), uv: r.out.data(1), width: w, height: h, y_stride: r.out.stride(0) as u32, uv_stride: r.out.stride(1) as u32, chroma_offsets: klipp_media::yuv_samples::chroma_siting(frame).shader_offsets() };
     let (data, gpu_source, hdr) = semi_planar_frame(converter, &planes, out, source_rotation, source_cs, &LINEAR_US);
     log_first_resident_delivery(gpu_source.is_some(), if packed == Pixel::NV12 { "nv12_software" } else { "p010_software" });
@@ -3565,6 +3519,7 @@ fn convert_sw_frame(
     sw_scaler: &mut Option<ffmpeg_next::software::scaling::Context>,
     perf_copy_us: &mut u64,
     source_rotation: i32,
+    max_height: u32,
     cs_baseline: klipp_core::SourceColorspace,
 ) -> Option<LinearFrame> {
     // One-shot per-process: log the source format and resolved
@@ -3591,7 +3546,7 @@ fn convert_sw_frame(
     {
         let source_cs = frame_colorspace(received_frame, cs_baseline);
         if let Some(frame) = unsafe {
-            scene_referred_linear_frame(received_frame.as_ptr(), source_cs, source_rotation)
+            scene_referred_linear_frame(received_frame.as_ptr(), source_cs, source_rotation, max_height)
         } {
             return Some(frame);
         }
@@ -3615,7 +3570,7 @@ fn convert_sw_frame(
         let source_cs = frame_colorspace(received_frame, cs_baseline);
         let src_w = received_frame.width();
         let src_h = received_frame.height();
-        let (dst_w, dst_h) = playback_dimensions(src_w, src_h, 0);
+        let (dst_w, dst_h) = playback_dimensions(max_height, src_w, src_h, 0);
         let y_stride = received_frame.stride(0);
         let u_stride = received_frame.stride(1);
         let v_stride = received_frame.stride(2);
@@ -3672,7 +3627,7 @@ fn convert_sw_frame(
         let source_cs = frame_colorspace(received_frame, cs_baseline);
         if let Some(yuv) = unsafe { klipp_media::yuv_samples::read_yuv_samples(received_frame.as_ptr()) } {
             let rot = source_rotation.rem_euclid(360) as u32;
-            let (dst_w, dst_h) = playback_dimensions(
+            let (dst_w, dst_h) = playback_dimensions(max_height, 
                 received_frame.width(),
                 received_frame.height(),
                 source_rotation,
@@ -3718,7 +3673,7 @@ fn convert_sw_frame(
     };
 
     // swscale does resize only — use unrotated dimensions, then rotate RGBA output
-    let (out_w, out_h) = playback_dimensions(received_frame.width(), received_frame.height(), 0);
+    let (out_w, out_h) = playback_dimensions(max_height, received_frame.width(), received_frame.height(), 0);
     let need_scaler = match sw_scaler {
         Some(s) => {
             let inp = s.input();
@@ -4318,13 +4273,13 @@ mod sw_frames_on_gpu_tests {
             // matrix, primaries and transfer all ffmpeg's "unspecified".
             let baseline = klipp_core::SourceColorspace::resolve(0, 2, 2, 2, frame.width(), frame.height());
             let (mut repack, mut nv12, mut p010) = (None, None, None);
-            let Some(mut gpu) = sw_frame_on_gpu(&frame, &mut repack, &mut nv12, &mut p010, 0, baseline) else {
+            let Some(mut gpu) = sw_frame_on_gpu(&frame, &mut repack, &mut nv12, &mut p010, 0, 1080, baseline) else {
                 klipp_testing::gpu::missing("no GPU");
                 return;
             };
             assert_eq!((nv12.is_some(), p010.is_some()), (pix_fmt == "yuv420p", pix_fmt == "yuv420p10le"), "{pix_fmt}: the converter for its depth");
             gpu.ensure_cpu_data();
-            let cpu = convert_sw_frame(&frame, &mut None, &mut 0, 0, baseline).expect("the CPU path converts it");
+            let cpu = convert_sw_frame(&frame, &mut None, &mut 0, 0, 1080, baseline).expect("the CPU path converts it");
             assert_eq!((gpu.width, gpu.height), (cpu.width, cpu.height), "{pix_fmt}");
             assert_eq!(gpu.data.len(), cpu.data.len(), "{pix_fmt}");
             let diffs: Vec<f32> = gpu.data.iter().zip(&cpu.data).map(|(a, b)| (a - b).abs()).collect();

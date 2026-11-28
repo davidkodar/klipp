@@ -265,7 +265,7 @@ impl GridRuntime {
     /// Ask for the tiles of `group` at `playhead`: once per position when
     /// paused, and while playing every tenth of a second once the last
     /// batch is in (or given up on).
-    pub fn request(&mut self, seq: &Sequence, pool: &MediaPool, group: GroupId, playhead: Timecode, playing: bool) {
+    pub fn request(&mut self, seq: &Sequence, pool: &MediaPool, group: GroupId, playhead: Timecode, playing: bool, decode: klipp_core::DecodeSettings) {
         let key = (group, playhead.value, playhead.rate);
         // Another group: its cameras are not these. Keyed by angle alone,
         // the old group's pictures showed under the new group's labels.
@@ -305,6 +305,7 @@ impl GridRuntime {
                     rotation: d.rotation,
                     secs: d.secs,
                     max_height: TILE_MAX_HEIGHT,
+                    decode,
                     tag: (self.generation, s.angle),
                 })
             })

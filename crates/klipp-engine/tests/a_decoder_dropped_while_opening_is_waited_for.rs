@@ -40,7 +40,7 @@ fn a_decoder_dropped_while_opening_is_waited_for() {
     // Dropped as soon as it is made, again and again: the wait returns
     // only once each GPU open is over.
     for round in 0..10 {
-        drop(VideoDecoder::open(&src, 0).expect("open"));
+        drop(VideoDecoder::open(&src, 0, klipp_core::DecodeSettings::default()).expect("open"));
         assert!(video_decoder::wait_for_decode_threads(Duration::from_secs(10)), "round {round}: decode threads still running");
         assert_eq!(opening_threads(), 0, "round {round}: a GPU open outlived the wait");
     }
@@ -49,7 +49,7 @@ fn a_decoder_dropped_while_opening_is_waited_for() {
     // which goes on in software. Dropping that decoder ends its own
     // thread at once, but the wait holds on until the open does.
     video_decoder::stall_next_hw_open(Duration::from_millis(4500));
-    let dec = VideoDecoder::open(&src, 0).expect("open");
+    let dec = VideoDecoder::open(&src, 0, klipp_core::DecodeSettings::default()).expect("open");
     dec.resume();
     let start = Instant::now();
     while video_decoder::hw_opens_timed_out() == 0 {

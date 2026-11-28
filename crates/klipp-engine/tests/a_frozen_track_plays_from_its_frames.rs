@@ -252,7 +252,7 @@ fn a_frozen_track_plays_from_its_frames_and_isnt_decoded() {
     assert!(live.size.0 > 0 && live.frames > 10, "live played: {live:?}");
 
     // Frozen at the size the app freezes at: the size the viewer drew.
-    let size = klipp_engine::freeze::playback_size((W, H));
+    let size = klipp_engine::freeze::playback_size((W, H), 1080);
     assert_eq!(size, live.size, "the app's freeze size is the size the viewer plays at");
     let folder = std::env::temp_dir().join(format!("klipp-frozen-folder-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&folder);

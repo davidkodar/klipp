@@ -31,7 +31,7 @@ fn wait_for_frames(dec: &VideoDecoder, secs: f64, epoch: u64, n: usize) -> bool 
 #[test]
 fn a_step_forward_keeps_the_read_ahead_and_a_seek_back_does_not() {
     let Some(path) = common::hevc_ramp() else { return };
-    let dec = VideoDecoder::open(&path, 0).expect("open the ramp");
+    let dec = VideoDecoder::open(&path, 0, klipp_core::DecodeSettings::default()).expect("open the ramp");
     let e1 = dec.seek(1.0);
     dec.resume();
     // The decoder may deliver from a frame before 1.0 s (its skip

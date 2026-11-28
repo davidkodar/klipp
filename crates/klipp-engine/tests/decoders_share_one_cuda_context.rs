@@ -50,7 +50,7 @@ fn own_vram_mb() -> Option<f64> {
 
 /// A decoder of `src`, its first frame decoded, so its hardware is made.
 fn opened(src: &std::path::Path) -> VideoDecoder {
-    let dec = VideoDecoder::open(src, 0).expect("open");
+    let dec = VideoDecoder::open(src, 0, klipp_core::DecodeSettings::default()).expect("open");
     dec.resume();
     let by = Instant::now() + Duration::from_secs(20);
     while Instant::now() < by && dec.frame_queue().lock().unwrap().is_empty() {

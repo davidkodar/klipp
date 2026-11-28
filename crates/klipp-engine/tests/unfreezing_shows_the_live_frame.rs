@@ -146,7 +146,7 @@ fn unfreezing_a_parked_track_shows_its_live_frame() {
     let files: &'static HashMap<MediaId, klipp_render::MediaFile> = Box::leak(Box::new(pool.all().map(|i| (i.id, klipp_render::MediaFile::of(i))).collect()));
     let fps = seq.fps.as_f64();
     let frames: Vec<Timecode> = (0..10 * common::FPS as i64).map(|f| common::frame_tc(f, seq.fps)).collect();
-    for size in [klipp_engine::freeze::playback_size((W, H)), (W, H)] {
+    for size in [klipp_engine::freeze::playback_size((W, H), 1080), (W, H)] {
         let req = klipp_engine::freeze::FreezeRequest {
             seq: Arc::new(seq.clone()),
             sequences: Arc::new(vec![]),

@@ -110,7 +110,7 @@ fn a_seek_claims_an_epoch_and_its_frames_carry_it() {
         eprintln!("skipping: no ffmpeg");
         return;
     };
-    let dec = VideoDecoder::open(&src, 0).expect("open");
+    let dec = VideoDecoder::open(&src, 0, klipp_core::DecodeSettings::default()).expect("open");
     assert_eq!(dec.requested_seek(), 0, "no seek asked for yet");
 
     // Decoding from the start: epoch 0, the frames of no seek at all.
@@ -171,7 +171,7 @@ fn frames_from_before_a_seek_stay_on_the_older_epoch() {
         eprintln!("skipping: no ffmpeg");
         return;
     };
-    let dec = VideoDecoder::open(&src, 0).expect("open");
+    let dec = VideoDecoder::open(&src, 0, klipp_core::DecodeSettings::default()).expect("open");
     dec.resume();
 
     // Let the queue fill from the head of the file, then seek away without

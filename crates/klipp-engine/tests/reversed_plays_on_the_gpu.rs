@@ -476,15 +476,15 @@ fn reversed_by_flow_memory_report() {
     // What the GPU says as it goes wrong, with the rows: Klipp's
     // WGPU_UNCAPTURED lines and wgpu's own warnings (#3174).
     let _ = tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_test_writer().try_init();
-    if std::env::var("KLIPP_REPORT_HW").as_deref() == Ok("0") {
-        klipp_engine::video_decoder::set_hardware_decode(false);
-    }
     if ready().is_none() {
         return;
     }
     let video = pan_source().expect("ffmpeg made the panning source");
     let flow = klipp_timeline::test_clip::TestClip::of(clip_at(MediaId::new(), -0.1, 0.0, 80.0)).effect(klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 2 }).build();
     let r = start(&video, vec![flow]);
+    if std::env::var("KLIPP_REPORT_HW").as_deref() == Ok("0") {
+        r.cmd.send(AppCommand::SetDecodeSettings(klipp_core::DecodeSettings { hardware: false, ..Default::default() })).unwrap();
+    }
     let g = common::generation(&r.fb);
     r.cmd.send(AppCommand::SetPlayhead(tc(2.0))).unwrap();
     common::wait_new(&r.fb, g, Duration::from_secs(20));

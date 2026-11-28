@@ -399,8 +399,8 @@ impl BackgroundPerformance {
 }
 
 /// User-facing optimised-playback mode. Maps to the engine's
-/// `set_optimised_playback_mode(u8)` — kept as its own enum so the
-/// pref serialisation doesn't depend on engine internal numbering.
+/// [`klipp_core::OptimisedPlayback`]; kept as its own enum so the
+/// preference file's spelling doesn't depend on the engine's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum OptimisedPlayback {
     /// Use skim file when source > 1080p OR > 30 fps AND a skim is
@@ -426,14 +426,21 @@ pub fn playback_quality_divisor(q: klipp_core::PlaybackQuality) -> u8 {
 }
 
 impl OptimisedPlayback {
-    /// Map onto the engine-side u8 atomic. Kept as a method so the
-    /// numbering can shift without touching every call site.
-    pub fn to_engine_mode(self) -> u8 {
+    /// The engine's choice it stands for.
+    pub fn to_engine(self) -> klipp_core::OptimisedPlayback {
         match self {
-            OptimisedPlayback::Auto => 0,
-            OptimisedPlayback::AlwaysOriginal => 1,
-            OptimisedPlayback::AlwaysOptimized => 2,
+            OptimisedPlayback::Auto => klipp_core::OptimisedPlayback::Auto,
+            OptimisedPlayback::AlwaysOriginal => klipp_core::OptimisedPlayback::AlwaysOriginal,
+            OptimisedPlayback::AlwaysOptimized => klipp_core::OptimisedPlayback::AlwaysOptimised,
         }
+    }
+}
+
+impl Preferences {
+    /// How the viewer's decoders decode under these preferences.
+    pub fn decode_settings(&self) -> klipp_core::DecodeSettings {
+        let s = &self.system;
+        klipp_core::DecodeSettings::new(s.hardware_decode, s.max_playback_height, s.frame_queue_size, s.decode_threads, self.playback.optimised_playback.to_engine())
     }
 }
 
@@ -3929,5 +3936,28 @@ mod veylvik_settings_tests {
         let mut damaged = Preferences::default();
         damaged.veylvik.insert("loop_playback".into(), serde_json::json!("yes"));
         assert_eq!(damaged.veylvik_settings::<Settings>(), Settings::default(), "a value it can't read: the defaults, no failure");
+    }
+}
+
+#[cfg(test)]
+mod decode_settings_tests {
+    use super::*;
+
+    /// The decoders get what the preferences say: hardware decode, the
+    /// playback resolution, the queue (never below four), the threads and
+    /// optimised playback; the defaults are the engine's own.
+    #[test]
+    fn the_decoders_get_the_preferences() {
+        let mut prefs = Preferences::default();
+        assert_eq!(prefs.decode_settings(), klipp_core::DecodeSettings::default());
+        prefs.system.hardware_decode = false;
+        prefs.system.max_playback_height = 2160;
+        prefs.system.frame_queue_size = 2;
+        prefs.system.decode_threads = 6;
+        prefs.playback.optimised_playback = OptimisedPlayback::AlwaysOptimized;
+        let d = prefs.decode_settings();
+        assert_eq!((d.hardware, d.max_height, d.queue_frames, d.threads, d.optimised), (false, 2160, 4, 6, klipp_core::OptimisedPlayback::AlwaysOptimised));
+        prefs.playback.optimised_playback = OptimisedPlayback::AlwaysOriginal;
+        assert_eq!(prefs.decode_settings().optimised, klipp_core::OptimisedPlayback::AlwaysOriginal);
     }
 }

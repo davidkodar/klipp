@@ -5,54 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
+pub use klipp_core::OptimisedPlayback;
+
 use crate::MediaItem;
-
-/// When playback decodes a media's skim file in place of the original.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum OptimisedPlayback {
-    /// The skim file for a source too heavy to play as it is: taller than
-    /// 1080 lines, or faster than 30 frames a second.
-    #[default]
-    Auto,
-    /// Never; the original is always played.
-    AlwaysOriginal,
-    /// Whenever the skim file is there.
-    AlwaysOptimised,
-}
-
-impl OptimisedPlayback {
-    /// From the preference's number: 1 always original, 2 always
-    /// optimised, anything else Auto, so a value from a later version
-    /// still plays.
-    pub fn from_u8(mode: u8) -> Self {
-        match mode {
-            1 => Self::AlwaysOriginal,
-            2 => Self::AlwaysOptimised,
-            _ => Self::Auto,
-        }
-    }
-
-    /// The preference's number for it.
-    pub fn as_u8(self) -> u8 {
-        match self {
-            Self::Auto => 0,
-            Self::AlwaysOriginal => 1,
-            Self::AlwaysOptimised => 2,
-        }
-    }
-
-    /// Whether playback decodes the skim file for a source of `height`
-    /// lines at `fps`, when the skim file is there (`skim_there`).
-    pub fn plays_skim(self, height: u32, fps: f64, skim_there: bool) -> bool {
-        match self {
-            Self::AlwaysOriginal => false,
-            Self::AlwaysOptimised => skim_there,
-            // Never while the skim file is still being made: play is not
-            // held back for it.
-            Self::Auto => skim_there && (height > 1080 || fps > 30.5),
-        }
-    }
-}
 
 /// What a file is decoded for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,25 +119,6 @@ mod tests {
 
     const PROXY: &str = "/v/a.proxy.mov";
     const SKIM: &str = "/cache/a.skim.mp4";
-
-    /// The skim file plays in Auto for a source taller than 1080 lines or
-    /// faster than 30 frames, once it is there; never in Always original;
-    /// whenever it is there in Always optimised; and any other number of
-    /// the preference reads as Auto.
-    #[test]
-    fn optimised_playback_plays_the_skim_file_for_heavy_sources_only_when_it_is_there() {
-        use OptimisedPlayback::*;
-        for (height, fps, heavy) in [(2160, 60.0, true), (2160, 30.0, true), (1080, 60.0, true), (1080, 50.0, true), (1080, 59.94, true), (1080, 30.9, true), (1080, 30.0, false), (1080, 29.97, false), (720, 23.976, false)] {
-            assert_eq!(Auto.plays_skim(height, fps, true), heavy, "{height}p{fps}");
-            assert!(!Auto.plays_skim(height, fps, false), "not before it is made");
-            assert!(!AlwaysOriginal.plays_skim(height, fps, true));
-            assert!(AlwaysOptimised.plays_skim(height, fps, true) && !AlwaysOptimised.plays_skim(height, fps, false));
-        }
-        for mode in [0, 1, 2] {
-            assert_eq!(OptimisedPlayback::from_u8(mode).as_u8(), mode);
-        }
-        assert_eq!(OptimisedPlayback::from_u8(99), Auto);
-    }
 
     /// The picture is the proxy when proxies are on and it is made and
     /// there; else the skim file when optimised playback says so; else the

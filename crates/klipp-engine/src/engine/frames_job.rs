@@ -159,7 +159,7 @@ impl PlaybackEngine {
             let _ = self.event_tx.send(AppEvent::RenderRangeFinished { rendered: 0, passed_over: 0, cancelled: false, note: Some("nothing there to render".into()) });
             return;
         }
-        let full = super::view::playback_canvas(None, (seq.resolution.width, seq.resolution.height));
+        let full = super::view::playback_canvas(None, (seq.resolution.width, seq.resolution.height), self.decode.max_height);
         let sizes = super::view::prerender_sizes(full, crate::video_decoder::playback_quality_divisor());
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner()).clone();
         let files: Arc<std::collections::HashMap<klipp_core::MediaId, klipp_render::MediaFile>> = Arc::new(pool.all().map(|i| (i.id, klipp_render::MediaFile::of(i))).collect());
@@ -241,7 +241,7 @@ impl PlaybackEngine {
     /// when the sequence, the frames kept or the costs change.
     pub(super) fn update_render_cache_ranges(&mut self) {
         let (seq, revision) = self.sequence.snapshot_with_revision();
-        let size = crate::freeze::playback_size((seq.resolution.width, seq.resolution.height));
+        let size = crate::freeze::playback_size((seq.resolution.width, seq.resolution.height), self.decode.max_height);
         let (all, bytes) = {
             let store = self.frames_store();
             let store = store.lock().unwrap_or_else(|e| e.into_inner());

@@ -77,6 +77,11 @@ fn play_sequence(seq: Sequence, pool: MediaPool, from: f64, secs: f64) -> Option
     let _ = klipp_effects::gpu_context::GpuContext::shared();
     engine.prewarm_gpu();
     let thread = engine.spawn();
+    // `KLIPP_HW_DECODE=0`: every stream decodes in software, as with the
+    // preference off.
+    if std::env::var("KLIPP_HW_DECODE").as_deref() == Ok("0") {
+        cmd.send(AppCommand::SetDecodeSettings(klipp_core::DecodeSettings { hardware: false, ..Default::default() })).unwrap();
+    }
     // `KLIPP_WARM`: play it once first, so what is measured is a second
     // Play in a process that has drawn the section before.
     if std::env::var_os("KLIPP_WARM").is_some() {
@@ -189,11 +194,6 @@ fn measure_project_window() {
         }
     }
     let (from, secs) = (num("KLIPP_FROM", 48.0), num("KLIPP_SECS", 3.0));
-    // `KLIPP_HW_DECODE=0`: every stream decodes in software, as with the
-    // preference off.
-    if std::env::var("KLIPP_HW_DECODE").as_deref() == Ok("0") {
-        klipp_engine::video_decoder::set_hardware_decode(false);
-    }
     match play_sequence(seq, pool, from, secs) {
         Some((render, total, frames)) => eprintln!("MEASURE project {from}+{secs}s: render {render:.1} ms, frame {total:.1} ms, median of {frames}"),
         None => eprintln!("MEASURE project: no frames"),
@@ -281,7 +281,7 @@ fn measure_decoder_open() {
     let Ok(files) = std::env::var("KLIPP_FILES") else { return };
     for f in files.split(':') {
         let t = Instant::now();
-        let dec = klipp_engine::video_decoder::VideoDecoder::open(std::path::Path::new(f), 0);
+        let dec = klipp_engine::video_decoder::VideoDecoder::open(std::path::Path::new(f), 0, klipp_core::DecodeSettings::default());
         let opened = t.elapsed();
         let ok = dec.is_ok();
         drop(dec);

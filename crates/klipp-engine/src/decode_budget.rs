@@ -323,16 +323,18 @@ impl Drop for Lease {
 // The smallest on screen would be the better one to move: a layer drawn
 // small loses nothing to software, and its scaled frames are cheap. Not
 // done yet: what a layer covers is the renderer's to say.
-pub fn admit(rate: f64, priority: Priority) -> Lease {
-    admit_class(rate, Class::default(), priority)
+pub fn admit(rate: f64, priority: Priority, hardware: bool) -> Lease {
+    admit_class(rate, Class::default(), priority, hardware)
 }
 
 /// [`admit`] for a stream of `class`: it moves to software only if what
 /// software was measured delivering for its class (or the class's
 /// default) holds its rate, never while another moved stream is short.
-pub fn admit_class(rate: f64, class: Class, priority: Priority) -> Lease {
+/// With hardware decode off (`hardware` false) there is no GPU to move
+/// it off.
+pub fn admit_class(rate: f64, class: Class, priority: Priority, hardware: bool) -> Lease {
     let mut r = registry().lock().unwrap_or_else(|e| e.into_inner());
-    let decoding = if priority == Priority::Overflow && enabled() && crate::video_decoder::hardware_decode_enabled() {
+    let decoding = if priority == Priority::Overflow && enabled() && hardware {
         let gpu_demand: f64 = r.entries.iter().filter(|e| e.on_gpu).map(|e| e.rate).sum();
         let used: usize = r.entries.iter().map(|e| e.threads).sum();
         let per_thread = if r.entries.iter().any(|e| e.short) { 0.0 } else { r.classes.per_thread(class) };
@@ -562,9 +564,9 @@ pub fn calibrated(budget: f64, measured: bool, rate: f64, busy: bool, peak: f64)
 /// The pixels a second the viewer's streams may ask for together (#2128):
 /// what the GPU's decoder gives, and what software decoding takes on when
 /// it is full. Hardware decode off, software alone, on every thread.
-pub fn stream_capacity() -> f64 {
+pub fn stream_capacity(hardware: bool) -> f64 {
     let r = registry().lock().unwrap_or_else(|e| e.into_inner());
-    if !crate::video_decoder::hardware_decode_enabled() {
+    if !hardware {
         return 2.0 * software_thread_cap().max(1) as f64 * r.software_per_thread;
     }
     let software = if enabled() { software_thread_cap() as f64 * r.software_per_thread } else { 0.0 };
@@ -894,7 +896,7 @@ mod tests {
 
     #[test]
     fn a_lease_is_counted_until_it_drops() {
-        let fixed = admit(1.0, Priority::Fixed);
+        let fixed = admit(1.0, Priority::Fixed, true);
         assert_eq!(fixed.decoding, Decoding::Gpu);
         let id = fixed.id();
         assert_eq!(on_gpu(id), Some(true));

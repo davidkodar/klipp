@@ -59,9 +59,10 @@ pub fn environment(working: klipp_core::WorkingColorspace, use_proxies: bool, dr
 /// The size playback draws a sequence of `sequence` size at while playing,
 /// with no other picture setting the frame: the size a track is frozen at.
 /// A frame the viewer draws at another size (a shot of another size below
-/// sets it) lays the track live.
-pub fn playback_size(sequence: (u32, u32)) -> (u32, u32) {
-    let full = crate::engine::view::playback_canvas(None, sequence);
+/// sets it) lays the track live. `max_height` is the decoders' (see
+/// [`klipp_core::DecodeSettings`]).
+pub fn playback_size(sequence: (u32, u32), max_height: u32) -> (u32, u32) {
+    let full = crate::engine::view::playback_canvas(None, sequence, max_height);
     crate::engine::view::reduced_for_quality(full, crate::video_decoder::playback_quality_divisor())
 }
 

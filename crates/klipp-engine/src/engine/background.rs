@@ -246,7 +246,7 @@ impl PlaybackEngine {
         }
         let rate = seq.fps.rate();
         let frames: Vec<_> = ticks.into_iter().map(|value| klipp_core::RationalTime { value, rate }).collect();
-        let full = super::view::playback_canvas(None, (seq.resolution.width, seq.resolution.height));
+        let full = super::view::playback_canvas(None, (seq.resolution.width, seq.resolution.height), self.decode.max_height);
         let sizes = super::view::prerender_sizes(full, crate::video_decoder::playback_quality_divisor()).into_iter().take(1).collect();
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner()).clone();
         let files: Arc<std::collections::HashMap<klipp_core::MediaId, klipp_render::MediaFile>> = Arc::new(pool.all().map(|i| (i.id, klipp_render::MediaFile::of(i))).collect());

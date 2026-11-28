@@ -613,7 +613,7 @@ impl KlippApp {
             let seq = &self.state.document.sequences[self.state.active_sequence_idx];
             if let Some(group) = crate::multicam_grid::group_at(seq, self.state.multicam_opened, self.state.playhead) {
                 let runtime = self.multicam_grid.get_or_insert_with(|| crate::multicam_grid::GridRuntime::new(ctx));
-                runtime.request(seq, &self.state.document.media_pool, group, self.state.playhead, self.state.playback == PlaybackState::Playing);
+                runtime.request(seq, &self.state.document.media_pool, group, self.state.playhead, self.state.playback == PlaybackState::Playing, self.prefs.decode_settings());
                 runtime.drain(ctx, |t| old_tiles.push(t));
                 old_tiles.extend(runtime.take_retired());
             }
@@ -728,11 +728,8 @@ impl KlippApp {
             self.state.show_reused_footage = self.prefs.editing.show_reused_footage;
             self.state.show_first_cut_button = self.prefs.editing.show_first_cut_button;
             // Sync engine statics
-            klipp_engine::video_decoder::set_hardware_decode(self.prefs.system.hardware_decode);
+            let _ = self.cmd_tx.send(AppCommand::SetDecodeSettings(self.prefs.decode_settings()));
             klipp_core::GpuVendor::set_vaapi_preference(self.prefs.system.vaapi_decode);
-            klipp_engine::video_decoder::set_optimised_playback_mode(
-                self.prefs.playback.optimised_playback.to_engine_mode(),
-            );
             klipp_engine::video_decoder::set_playback_quality_divisor(crate::prefs::playback_quality_divisor(
                 self.prefs.playback.playback_quality,
             ));

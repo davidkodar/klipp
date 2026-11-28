@@ -41,7 +41,7 @@ engine_commands!(
     SetScopeRenderMode, SetScopeSettings, SetScopeSizes, SetScopesVisible,
     SetScrubAudioEnabled, SetSdrTransfer, SetSourceMedia, SetSpeed,
     SetSplitCompareNode, SetTrackMute, SetTrackPan, SetTrackSolo, SetTrackVolume, OverrideTrackAutomation,
-    SetUseProxies, SetViewChannel, SetVisibleNodeThumbs, StepSource, Stop, StopSource,
+    SetUseProxies, SetDecodeSettings, SetViewChannel, SetVisibleNodeThumbs, StepSource, Stop, StopSource,
     ToggleBeforeAfter, ToggleStabilizationCompare, InjectPanic, SetFreezeFolder, SetFrozenTracks, SetFrozenStems, SetCompositionSounds
 );
 
