@@ -17,26 +17,28 @@ use std::process::{Command, Stdio};
 /// with a terminal on stdin switches echo off to read its `q` key, and a
 /// killed one never switches it back (#1767).
 pub fn ends_with_app(program: &str) -> Command {
-    let mut c = match setpriv() {
-        Some(setpriv) => {
-            let mut c = Command::new(setpriv);
-            c.args(["--pdeathsig", "KILL", "--", program]);
-            c
-        }
-        None => Command::new(program),
+    let mut c = if setpriv() {
+        let mut c = Command::new("setpriv");
+        c.args(["--pdeathsig", "KILL", "--", program]);
+        c
+    } else {
+        Command::new(program)
     };
     c.stdin(Stdio::null());
     c
 }
 
-fn setpriv() -> Option<&'static str> {
-    static FOUND: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
-    *FOUND.get_or_init(|| {
-        if !cfg!(target_os = "linux") {
-            return None;
-        }
-        ["/usr/bin/setpriv", "/bin/setpriv"].into_iter().find(|p| std::path::Path::new(p).exists())
-    })
+/// Whether `setpriv` can give a child a death signal here: the same
+/// finding the held children go by ([`crate::held_child`]).
+fn setpriv() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::held_child::setpriv()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -48,7 +50,7 @@ mod tests {
     /// would sleep on for a minute; a paused (stopped) one too (#1271).
     #[test]
     fn the_child_ends_when_its_parent_does() {
-        if setpriv().is_none() {
+        if !setpriv() {
             eprintln!("no setpriv here: unverified");
             return;
         }

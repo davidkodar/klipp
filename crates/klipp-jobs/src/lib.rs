@@ -21,6 +21,7 @@
 
 mod child;
 mod foreground;
+pub mod held_child;
 mod job;
 mod pause;
 mod scheduler;
